@@ -1,10 +1,11 @@
+import { campaignList } from "@/lib/campaign-list-data";
 import type { Campaign } from "@/types/dashboard";
 import type { IconName } from "@/components/ui/icon";
 
 // Presentation fixtures only. No live metrics or agent execution.
 export const stats: { label: string; value: string; change: string; icon: IconName; tone: string; bars: number[] }[] = [
-  { label: "Campañas totales", value: "8", change: "+12%", icon: "campaign", tone: "blue", bars: [25, 40, 32, 60, 48, 76, 90] },
-  { label: "Campañas activas", value: "3", change: "+8%", icon: "target", tone: "mint", bars: [20, 35, 30, 52, 65, 58, 85] },
+  { label: "Campañas totales", value: String(campaignList.length), change: "+12%", icon: "campaign", tone: "blue", bars: [25, 40, 32, 60, 48, 76, 90] },
+  { label: "Campañas activas", value: String(campaignList.filter(campaign => campaign.status === "Activa").length), change: "+8%", icon: "target", tone: "mint", bars: [20, 35, 30, 52, 65, 58, 85] },
   { label: "Contenidos creados", value: "24", change: "+24%", icon: "content", tone: "violet", bars: [25, 20, 40, 50, 45, 75, 95] },
   { label: "Conversiones", value: "1,284", change: "+18%", icon: "chart", tone: "orange", bars: [20, 38, 30, 55, 70, 60, 90] },
 ];
