@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 
@@ -29,7 +30,7 @@ export function CampaignProgress({ idea, onBack }: { idea: string; onBack: () =>
         const state = index < completed ? "done" : index === completed ? "current" : "pending";
         return <li key={step} className={state} aria-current={state === "current" ? "step" : undefined}><span className="activity-marker" aria-hidden="true">{state === "done" ? <Icon name="check" size={14} /> : state === "current" ? "●" : "○"}</span><span>{step}<span className="sr-only">: {state === "done" ? "completado" : state === "current" ? "en curso" : "pendiente"}</span></span></li>;
       })}</ol>
-      {done && <div className="preparation-next"><button type="button" className="button primary" disabled aria-describedby="campaign-next-note">Ver campaña <Icon name="arrow" size={16} /></button><p id="campaign-next-note">Próximo paso · El espacio de campaña estará disponible más adelante.</p></div>}
+      {done && <div className="preparation-next"><Link href="/campaigns/demo" className="button primary" aria-describedby="campaign-next-note">Ver campaña <Icon name="arrow" size={16} /></Link><p id="campaign-next-note">Abrirás Método Canino en Casa, un ejemplo fijo independiente de tu idea.</p></div>}
       <button type="button" className="auth-text-button preparation-back" onClick={onBack}>{done ? "Volver a mi idea" : "Cancelar simulación y volver"}</button>
     </section>
   );
