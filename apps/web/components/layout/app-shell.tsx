@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { PreviewButton } from "@/components/ui/preview-button";
 
@@ -11,7 +11,7 @@ const navigation: { label: string; icon: IconName }[] = [
   { label: "Calendario", icon: "calendar" }, { label: "Paid Media", icon: "target" },
   { label: "Métricas", icon: "chart" },
 ];
-export function AppShell({ children, section = "dashboard", context }: { children: ReactNode; section?: "dashboard" | "campaigns"; context?: string }) {
+export function AppShell({ children, section = "dashboard", context, breadcrumbs }: { children: ReactNode; section?: "dashboard" | "campaigns"; context?: string; breadcrumbs?: string[] }) {
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
   return <div className="app-shell" onKeyDown={(event) => {
@@ -29,6 +29,6 @@ export function AppShell({ children, section = "dashboard", context }: { childre
       })}</ul></nav>
       <div className="sidebar-bottom"><div className="plan-card"><span className="plan-label"><Icon name="spark" size={16} /> Tu próxima gran idea</span><p>De la inspiración al impacto, en un solo lugar.</p><span className="plan-badge">Plan Studio · Demo</span></div><PreviewButton className="nav-item"><Icon name="settings" />Configuración</PreviewButton><div className="user-profile"><span className="avatar">EM</span><div><strong>Emilia Martínez</strong><span>Plan Studio · Demo</span></div></div></div>
     </aside>
-    <div className="app-body"><header className={`topbar${context ? " workspace-topbar" : ""}`}><nav className="breadcrumb" aria-label="Ruta de navegación"><span>{section === "campaigns" ? "Campañas" : "Workspace"}</span><Icon name="chevron" size={13} /><strong aria-current="page">{context ?? (section === "campaigns" ? "Nueva campaña" : "Dashboard")}</strong></nav><div className="topbar-tools"><label className="search"><Icon name="search" size={18} /><span className="sr-only">Buscar, disponible próximamente</span><input type="search" placeholder="Buscar en tu espacio..." disabled /></label><PreviewButton className="icon-button notification" aria-label="Notificaciones, próximamente"><Icon name="bell" /><span /></PreviewButton><span className="topbar-divider" /><span className="avatar small" aria-label="Emilia Martínez">EM</span></div></header><main id="main-content" tabIndex={-1}>{children}</main></div>
+    <div className="app-body"><header className={`topbar${context || breadcrumbs ? " workspace-topbar" : ""}`}><nav className={`breadcrumb${breadcrumbs ? " breadcrumb-long" : ""}`} aria-label="Ruta de navegación">{(breadcrumbs ?? [section === "campaigns" ? "Campañas" : "Workspace", context ?? (section === "campaigns" ? "Nueva campaña" : "Dashboard")]).map((label, index, trail) => <Fragment key={`${label}-${index}`}>{index > 0 && <Icon name="chevron" size={13} />}{index === trail.length - 1 ? <strong aria-current="page">{label}</strong> : <span>{label}</span>}</Fragment>)}</nav><div className="topbar-tools"><label className="search"><Icon name="search" size={18} /><span className="sr-only">Buscar, disponible próximamente</span><input type="search" placeholder="Buscar en tu espacio..." disabled /></label><PreviewButton className="icon-button notification" aria-label="Notificaciones, próximamente"><Icon name="bell" /><span /></PreviewButton><span className="topbar-divider" /><span className="avatar small" aria-label="Emilia Martínez">EM</span></div></header><main id="main-content" tabIndex={-1}>{children}</main></div>
   </div>;
 }
