@@ -8,4 +8,5 @@ export type Campaign = {
   dateLabel: string;
   initials: string;
   tone: "blue" | "mint" | "violet";
+  workspaceHref?: "/campaigns/demo";
 };

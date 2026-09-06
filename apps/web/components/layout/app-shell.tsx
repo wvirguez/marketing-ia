@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Fragment, useRef, useState, type ReactNode } from "react";
+import { campaignList } from "@/lib/campaign-list-data";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { PreviewButton } from "@/components/ui/preview-button";
 
@@ -25,7 +26,7 @@ export function AppShell({ children, section = "dashboard", context, breadcrumbs
       <p className="nav-caption">WORKSPACE</p>
       <nav aria-label="Navegación principal"><ul className="nav-list">{navigation.map(({ label, icon }, index) => {
         const active = (index === 0 && section === "dashboard") || (index === 1 && section === "campaigns");
-        return <li key={label}>{index < 2 ? <Link href={index === 0 ? "/" : "/campaigns"} aria-current={active ? "page" : undefined} className={`nav-item${active ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name={icon} />{label}{active ? <span className="active-dot" /> : index === 1 && <span className="nav-count">8</span>}</Link> : <PreviewButton className="nav-item"><Icon name={icon} />{label}</PreviewButton>}</li>;
+        return <li key={label}>{index < 2 ? <Link href={index === 0 ? "/" : "/campaigns"} aria-current={active ? "page" : undefined} className={`nav-item${active ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name={icon} />{label}{active ? <span className="active-dot" /> : index === 1 && <span className="nav-count">{campaignList.length}</span>}</Link> : <PreviewButton className="nav-item"><Icon name={icon} />{label}</PreviewButton>}</li>;
       })}</ul></nav>
       <div className="sidebar-bottom"><div className="plan-card"><span className="plan-label"><Icon name="spark" size={16} /> Tu próxima gran idea</span><p>De la inspiración al impacto, en un solo lugar.</p><span className="plan-badge">Plan Studio · Demo</span></div><Link href="/settings" aria-current={section === "settings" ? "page" : undefined} className={`nav-item${section === "settings" ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name="settings" />Configuración</Link><div className="user-profile"><span className="avatar">EM</span><div><strong>Emilia Martínez</strong><span>Plan Studio · Demo</span></div></div></div>
     </aside>
