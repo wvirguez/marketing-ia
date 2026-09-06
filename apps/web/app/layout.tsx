@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Dashboard | Impulso",
-  description: "Tu espacio para crear campañas y contenidos con inteligencia artificial. Vista de demostración.",
+  title: "Impulso — Marketing AI",
+  description: "Plataforma inteligente para planificar, crear y optimizar campañas de marketing.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
