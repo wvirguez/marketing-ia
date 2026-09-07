@@ -23,22 +23,31 @@ Approved stage baseline for DEV-TOOL-01:
 
 | Stage | Status |
 | --- | --- |
-| FRONTEND-01 | CLOSED |
-| FRONTEND-02 | APPROVED |
-| FRONTEND-03 | APPROVED |
-| FRONTEND-04 | APPROVED |
-| FRONTEND-05 | APPROVED |
+| FRONTEND-01 | COMPLETE |
+| FRONTEND-02 | COMPLETE |
+| FRONTEND-03 | COMPLETE |
+| FRONTEND-04 | COMPLETE |
+| FRONTEND-05 | COMPLETE |
+| FRONTEND-06 | COMPLETE |
+| FRONTEND-07 | COMPLETE |
+| FRONTEND-08 | COMPLETE |
+| FRONTEND-09 | COMPLETE |
+| FRONTEND-MVP-REVIEW | APPROVED WITH RESERVATIONS |
 
-Approved UI: Dashboard, Login UX, New Campaign UX, and Campaign Workspace.
-Approval of these interfaces does not mean real authentication or backend
-integration exists.
+Approved UI: Dashboard, Login UX, New Campaign UX, Campaigns List, Campaign
+Workspace, Content Detail & Asset Preview, Metrics & Performance Workspace,
+and Settings & Workspace Profile. Approval of these interfaces does not mean
+real authentication or backend integration exists.
 
-Next planned stage: **FRONTEND-06 — Content Detail & Asset Preview**.
-Do not start it until requested.
+The frontend MVP is complete. No further FRONTEND-NN stage is currently
+planned. Next authorized/planned step is backend work — see the root
+`AGENTS.md` `## Project status` section and `docs/backend/` for the BACKEND-01
+architecture and the BACKEND-02 proposal. Begin backend work only when
+explicitly requested; planned status does not authorize starting it.
 
-Pending: Content Detail & Asset Preview, Metrics UI, backend, real
-authentication, PostgreSQL, and AI integrations. The future backend stack is
-Python 3, FastAPI, Uvicorn, and PostgreSQL; do not implement it before requested.
+Pending: backend implementation (FastAPI, PostgreSQL, real authentication,
+and AI integrations). None of these exist in this repository yet; do not
+implement them before requested.
 
 ## UI and architecture
 

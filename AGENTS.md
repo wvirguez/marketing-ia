@@ -2,14 +2,47 @@
 
 Impulso is a digital marketing SaaS assisted by multiple internal AI agents.
 These repository-wide instructions apply to Codex and Claude Code. Frontend
-instructions and approved stage status live in `apps/web/AGENTS.md`.
+stage status lives in `apps/web/AGENTS.md`; overall project status (frontend
+and backend) is tracked below.
+
+## Project status
+
+| Stage | Status |
+| --- | --- |
+| FRONTEND-01 through FRONTEND-09 | COMPLETE |
+| FRONTEND-MVP-REVIEW | APPROVED WITH RESERVATIONS |
+| BACKEND-01 — Architecture & Domain Model | APPROVED WITH RESERVATIONS |
+| BACKEND-02 — FastAPI Foundation | NEXT AUTHORIZED/PLANNED STEP — not started |
+
+Frontend MVP implementation (Login, Dashboard, Campaigns List, New Campaign,
+Campaign Workspace, Content Detail & Asset Preview, Metrics & Performance
+Workspace, Settings & Workspace Profile) is complete; see `apps/web/AGENTS.md`
+for the per-stage table and the FRONTEND-MVP-REVIEW findings.
+
+Backend architecture and domain model are complete and documented under
+`docs/backend/` (bounded contexts, entity catalog, ID strategy, state
+machines, API resource map, MVP scope, and phase proposal). Backend
+**implementation has not started**: there is no FastAPI code, no PostgreSQL,
+no authentication, and no AI orchestration in this repository yet. `apps/api`
+is currently an empty directory.
+
+When BACKEND-02 is explicitly authorized, it is limited to the FastAPI
+application skeleton (app structure, settings, health check). It must **not**
+include PostgreSQL, authentication, real agent execution, or AI providers —
+those are separately authorized, later steps per the phase proposal in
+`docs/backend/BACKEND-01-ARCHITECTURE.md`. Planned status does not authorize
+starting that step.
 
 ## Project layout and stack
 
 - Current application: `apps/web`, using Next.js 16, React 19, TypeScript,
-  Tailwind CSS 4, and the App Router.
+  Tailwind CSS 4, and the App Router. Frontend MVP is complete (see
+  Project status above).
 - Future backend: `apps/api`, planned with Python 3, FastAPI, Uvicorn, and
-  PostgreSQL. This backend is not implemented or authorized by this handoff.
+  PostgreSQL. Architecture and domain model are complete (BACKEND-01, see
+  `docs/backend/`); implementation is not started and `apps/api` is empty.
+  Do not implement backend code without separate, explicit authorization
+  for that specific step.
 
 ## Development boundaries
 
