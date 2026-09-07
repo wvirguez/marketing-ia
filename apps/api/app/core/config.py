@@ -83,6 +83,33 @@ class Settings(BaseSettings):
             )
         return value
 
+    # Session cookie (BACKEND-04). No secret lives here — the cookie
+    # carries only an opaque, high-entropy token; see app/auth/security.py.
+    SESSION_COOKIE_NAME: str = "impulso_session"
+    SESSION_COOKIE_SECURE: bool = False
+    SESSION_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    SESSION_TTL_SECONDS: int = 60 * 60 * 24 * 14  # 14 days
+
+    @model_validator(mode="after")
+    def _require_secure_cookie_in_production(self) -> "Settings":
+        if self.APP_ENV == "production" and not self.SESSION_COOKIE_SECURE:
+            raise ValueError(
+                "SESSION_COOKIE_SECURE must be true when APP_ENV=production. "
+                "Refusing to start with a session cookie that browsers would "
+                "send over plain HTTP in production."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _samesite_none_requires_secure(self) -> "Settings":
+        if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
+            raise ValueError(
+                "SESSION_COOKIE_SAMESITE=none requires SESSION_COOKIE_SECURE=true "
+                "— this is a browser requirement (SameSite=None cookies without "
+                "Secure are rejected outright), not just an application policy."
+            )
+        return self
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"

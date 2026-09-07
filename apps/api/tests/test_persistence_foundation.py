@@ -74,11 +74,19 @@ def test_alembic_config_loads_and_has_exactly_one_head() -> None:
     assert len(heads) == 1
 
 
-def test_no_domain_tables_exist_yet() -> None:
-    """BACKEND-03 scope check: the only table on the shared metadata is
-    the explicitly non-domain persistence probe — no User/Workspace/
-    Campaign/Content/etc. table has been prematurely introduced."""
-    assert set(metadata.tables.keys()) == {"_infra_persistence_probe"}
+def test_no_business_domain_tables_exist_yet() -> None:
+    """Scope check: identity/tenancy tables exist as of BACKEND-04, plus
+    the BACKEND-03 infrastructure probe — but no Campaign/Content/Agent/
+    Metric/Subscription business-domain table has been prematurely
+    introduced."""
+    assert set(metadata.tables.keys()) == {
+        "_infra_persistence_probe",
+        "users",
+        "organizations",
+        "workspaces",
+        "memberships",
+        "auth_sessions",
+    }
 
 
 @pytest.mark.parametrize(

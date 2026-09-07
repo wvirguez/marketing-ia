@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
+from app.core.api_errors import ApiError
 from app.core.middleware import REQUEST_ID_HEADER
 from app.shared.schemas import ErrorBody, ErrorDetail, ErrorResponse
 
@@ -103,6 +104,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+    """Handles every domain/service-raised `ApiError` (auth, tenancy,
+    validation) with the same envelope shape as every other error path.
+    Registered separately from the bare `Exception` handler so a stable,
+    intentional application error is never mistaken for — or logged
+    as — an unexpected server failure."""
+    request_id = _request_id(request)
+    return _error_response(
+        exc.status_code,
+        _envelope(exc.code, exc.message, request_id),
+        request_id,
+    )
+
+
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled exception while processing request", exc_info=exc)
     request_id = _request_id(request)
@@ -116,4 +131,5 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ApiError, api_error_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

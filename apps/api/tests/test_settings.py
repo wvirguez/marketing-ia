@@ -15,10 +15,12 @@ from app.core.config import Settings
 
 @pytest.mark.parametrize("env", ["development", "test", "production"])
 def test_accepts_each_supported_environment(env: str) -> None:
-    # production additionally requires DATABASE_URL — see
-    # test_production_requires_database_url below; that is a separate
-    # concern from "is this a recognized environment value."
-    settings = Settings(APP_ENV=env, DATABASE_URL="postgresql+psycopg://user@localhost/db")
+    # production additionally requires DATABASE_URL and a secure session
+    # cookie — see the dedicated tests below; those are separate concerns
+    # from "is this a recognized environment value."
+    settings = Settings(
+        APP_ENV=env, DATABASE_URL="postgresql+psycopg://user@localhost/db", SESSION_COOKIE_SECURE=True
+    )
     assert settings.APP_ENV == env
 
 
@@ -29,12 +31,40 @@ def test_rejects_unsupported_environment() -> None:
 
 def test_production_requires_database_url() -> None:
     with pytest.raises(ValidationError):
-        Settings(APP_ENV="production", DATABASE_URL=None)
+        Settings(APP_ENV="production", DATABASE_URL=None, SESSION_COOKIE_SECURE=True)
 
 
 def test_production_accepts_configured_database_url() -> None:
-    settings = Settings(APP_ENV="production", DATABASE_URL="postgresql+psycopg://user@localhost/db")
+    settings = Settings(
+        APP_ENV="production", DATABASE_URL="postgresql+psycopg://user@localhost/db", SESSION_COOKIE_SECURE=True
+    )
     assert settings.DATABASE_URL == "postgresql+psycopg://user@localhost/db"
+
+
+def test_production_requires_secure_session_cookie() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            APP_ENV="production",
+            DATABASE_URL="postgresql+psycopg://user@localhost/db",
+            SESSION_COOKIE_SECURE=False,
+        )
+
+
+def test_samesite_none_requires_secure_cookie() -> None:
+    with pytest.raises(ValidationError):
+        Settings(SESSION_COOKIE_SAMESITE="none", SESSION_COOKIE_SECURE=False)
+
+
+def test_samesite_none_accepted_with_secure_cookie() -> None:
+    settings = Settings(SESSION_COOKIE_SAMESITE="none", SESSION_COOKIE_SECURE=True)
+    assert settings.SESSION_COOKIE_SAMESITE == "none"
+
+
+def test_session_cookie_defaults_are_development_safe() -> None:
+    settings = Settings()
+    assert settings.SESSION_COOKIE_NAME == "impulso_session"
+    assert settings.SESSION_COOKIE_SAMESITE == "lax"
+    assert settings.SESSION_TTL_SECONDS > 0
 
 
 def test_development_and_test_allow_missing_database_url() -> None:

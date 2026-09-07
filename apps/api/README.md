@@ -1,31 +1,23 @@
 # Impulso API
 
-FastAPI + PostgreSQL persistence foundation for the Impulso backend —
-**BACKEND-02** (application skeleton) and **BACKEND-03** (persistence
-foundation).
+FastAPI + PostgreSQL + authentication/tenancy foundation for the
+Impulso backend — **BACKEND-02** (application skeleton), **BACKEND-03**
+(persistence foundation), and **BACKEND-04** (identity, authentication,
+workspace tenancy).
 
-This stage establishes the Python project structure, the FastAPI
-application factory, configuration, health/readiness endpoints, a
-structured error envelope, request correlation IDs, structured logging,
-a CORS foundation, a test foundation, and — new in BACKEND-03 — a
-PostgreSQL persistence foundation: SQLAlchemy 2.x engine/session
-lifecycle, Alembic migrations, and a metadata naming convention. It does
-**not** implement any business domain (campaigns, content,
-orchestration, etc.).
-
-> **NO AUTHENTICATION. NO AI EXECUTION. NO DOMAIN TABLES.**
-> These are all explicitly deferred to later, separately authorized
-> stages (see `docs/backend/BACKEND-01-ARCHITECTURE.md` §13 for the
-> proposed phase sequence). BACKEND-03 adds the database *foundation*
-> only — no `User`, `Workspace`, `Campaign`, `Content`, or `Agent`
-> tables exist yet.
+> **CAMPAIGNS NOT IMPLEMENTED. AI AGENTS NOT IMPLEMENTED. FRONTEND NOT WIRED.**
+> This stage adds real identity/auth/tenancy only. No `Campaign`,
+> `Content`, `Agent`, or billing table or route exists. `apps/web`
+> has not been touched and does not call this API yet — see
+> `docs/backend/BACKEND-01-ARCHITECTURE.md` §13 for the proposed phase
+> sequence.
 
 ## Purpose
 
-Provide a clean, minimal, production-oriented FastAPI + PostgreSQL
-skeleton that later phases (auth, orchestration, specialist agents,
-content, metrics) can extend without restructuring — following the
-modular-monolith bounded contexts approved in BACKEND-01.
+Provide the first real business/security domain: a user can register,
+log in, log out, and see their current session/workspace, with
+first-class multi-tenant isolation — following the modular-monolith
+bounded contexts approved in BACKEND-01.
 
 ## Python requirements
 
@@ -38,9 +30,7 @@ modular-monolith bounded contexts approved in BACKEND-01.
 ## PostgreSQL requirement
 
 This application targets **PostgreSQL specifically** — no other
-database is supported, and tests never fall back to SQLite. You need a
-running PostgreSQL server (14+ is what this stage was verified against)
-reachable from wherever you run the app or its tests.
+database is supported, and tests never fall back to SQLite.
 
 ## Setup
 
@@ -58,192 +48,217 @@ cp .env.example .env
 
 `.venv/` and `.env` are git-ignored — never commit either.
 
-### DATABASE_URL
-
-A SQLAlchemy + psycopg 3 connection string, e.g.:
-
-```
-DATABASE_URL=postgresql+psycopg://<user>:<password>@<host>:5432/<database>
-```
-
-No default is provided anywhere in the code. In `APP_ENV=production`,
-the app refuses to start at all without it (`app/core/config.py`). In
-`development`/`test`, it is optional — `/api/v1/readiness` simply
-reports `not_ready` if it is unset or unreachable; every non-database
-endpoint keeps working normally either way.
-
 ### Dedicated test databases — do not skip this
 
-Tests **never** reuse `DATABASE_URL`. Two additional, separate databases
-are required to run the database-dependent tests:
-
-- `TEST_DATABASE_URL` — used by the transaction/session tests
-  (`tests/test_transactions.py`) and the "database available" readiness
-  test. Its schema is dropped and recreated at the start of the test
-  session.
-- `TEST_MIGRATIONS_DATABASE_URL` — used only by the Alembic migration
-  round-trip tests (`tests/test_migrations.py`), kept **separate** from
-  `TEST_DATABASE_URL` so Alembic's own version bookkeeping never
-  collides with the other tests' direct table management of the same
-  schema.
-
-Both are validated by `app/persistence/testing.py` before any
-destructive operation runs: the database **name must contain `_test`**
-and the **host must be local** (`localhost`/`127.0.0.1`/`::1`). A URL
-that fails either check is refused, not silently allowed — this is a
-fail-closed safeguard, not just a naming convention.
+Tests **never** reuse `DATABASE_URL`. `TEST_DATABASE_URL` (transaction/
+auth/tenancy tests) and `TEST_MIGRATIONS_DATABASE_URL` (Alembic
+round-trip tests) must be separate databases, both validated by
+`app/persistence/testing.py` before any destructive operation: the
+database **name must contain `_test`** and the **host must be local**.
 
 > **Destructive test warning:** the migration tests run
-> `alembic downgrade base` (drops every table) against
-> `TEST_MIGRATIONS_DATABASE_URL`, and the transaction-test fixture drops
-> and recreates all tables on `TEST_DATABASE_URL` at session start. Never
-> point either at a database that holds anything you want to keep —
-> **never your development database, and never production.**
+> `alembic downgrade base` against `TEST_MIGRATIONS_DATABASE_URL`, and
+> the shared test fixture drops/recreates all tables on
+> `TEST_DATABASE_URL` at session start/end. Never point either at a
+> database you want to keep — **never development, never production.**
 
 ## Development run
-
-From `apps/api/`, with the virtual environment activated:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The app listens on `http://127.0.0.1:8000` by default. With it running:
+- `GET /`, `GET /health`, `GET /api/v1/health` — unchanged since BACKEND-02
+- `GET /api/v1/readiness` — unchanged since BACKEND-03
+- `POST /api/v1/auth/register`, `POST /api/v1/auth/login`,
+  `POST /api/v1/auth/logout`, `GET /api/v1/auth/session`,
+  `GET /api/v1/auth/csrf` — **new**
+- `GET /api/v1/users/me`, `GET /api/v1/workspaces/current` — **new**
+- `GET /docs`, `GET /redoc`, `GET /openapi.json` — OpenAPI (enabled)
 
-- `GET /` → service identity
-- `GET /health` → process liveness only (unchanged meaning from BACKEND-02)
-- `GET /api/v1/health` → the same, under the versioned prefix
-- `GET /api/v1/readiness` → **new in BACKEND-03**: `{"status": "ready", "database": "ok"}` (200) if the database is configured and reachable, `{"status": "not_ready", "database": "unavailable"}` (503) otherwise. Never leaks hostnames, usernames, DSNs, passwords, or SQL error text.
-- `GET /docs`, `GET /redoc`, `GET /openapi.json` → OpenAPI (enabled)
+If `DATABASE_URL` has migrations applied (`alembic upgrade head`), the
+full register → session → csrf → logout flow works with real cookies —
+verified live with `curl` (see delivery notes) and in
+`tests/test_auth_session.py`/`test_auth_csrf.py`/`test_registration.py`.
 
-## Migrations
+## Authentication model
 
-From `apps/api/`, with `DATABASE_URL` set (in `.env` or the environment):
+**Opaque server-side sessions, not JWT.** Browser flow:
+
+```
+browser --(HttpOnly cookie: opaque random token)--> API
+API --(SHA-256 hash of the token)--> AuthSession row in PostgreSQL
+AuthSession --> User --> Membership --> Workspace
+```
+
+- The browser only ever holds a random, high-entropy, opaque token
+  (`secrets.token_urlsafe(32)`, ~256 bits) — never a user id, public or
+  internal.
+- **The raw token is never written to the database** — only
+  `token_hash` (SHA-256 hex digest, one-way). A stolen database backup
+  cannot be used to forge a session.
+- Passwords and session tokens use **different** hashing tools on
+  purpose: passwords go through Argon2id (`pwdlib[argon2]`), which is
+  deliberately slow to resist offline guessing of a human-chosen,
+  low-entropy secret. Session tokens (and the CSRF secret) are already
+  maximally random — hashing them with a slow KDF would only waste CPU;
+  a single fast SHA-256 digest is the correct, standard tool for "a
+  stolen DB dump shouldn't hand out a working session." See
+  `app/auth/security.py` for the full reasoning in code.
+- Invariants preserved throughout: SESSION TOKEN ≠ USER ID, SESSION ≠
+  AUTHORIZATION, AUTHENTICATED ≠ AUTHORIZED FOR WORKSPACE (see
+  `app/auth/dependencies.py`).
+
+## Session model
+
+`AuthSession` (`app/auth/models.py`): `id` (internal UUID), `public_id`
+(`SES-...`), `user_id`, `token_hash`, `csrf_secret`, `created_at`,
+`last_seen_at` (set at creation only — see the known limitation below),
+`expires_at`, `revoked_at`, `user_agent_summary` (first 120 chars only —
+never a full fingerprint, never an IP address).
+
+- Expiration (`SESSION_TTL_SECONDS`, default 14 days) is enforced
+  server-side on every authenticated request (`get_current_session`).
+- Logout revokes (`revoked_at = now()`) rather than deletes — an audit
+  trail of "this session existed and was ended" survives.
+- A missing cookie, an unrecognized token hash, and a revoked session
+  are **deliberately indistinguishable** (`AUTHENTICATION_REQUIRED`,
+  401) — revealing "this session used to exist" is unnecessary
+  information. A **naturally expired** session gets its own code
+  (`SESSION_EXPIRED`, 401) instead, because "please log in again, your
+  session timed out" is useful, non-sensitive information about the
+  caller's own request (unlike login, which is about account
+  enumeration — see below).
+- Each login creates a **new** session; multiple concurrent sessions per
+  user are allowed by design (no "single session" policy in this
+  stage).
+
+**Known limitation:** `last_seen_at` is set once at creation and not
+live-updated on every request — doing so would require `get_current_session`
+(a pure-read dependency, used everywhere) to write, which would break
+the "reads never commit" half of the session contract for the sake of a
+nice-to-have observability field. Deferred.
+
+## Cookie contract
+
+Centralized in `app/auth/cookies.py`, configured via `Settings`:
+
+| Setting | Default | Production requirement |
+|---|---|---|
+| `SESSION_COOKIE_NAME` | `impulso_session` | — |
+| `SESSION_COOKIE_SECURE` | `false` | **must be `true`** — the app refuses to start otherwise |
+| `SESSION_COOKIE_SAMESITE` | `lax` | if set to `none`, `SECURE` must also be `true` (browser requirement, enforced at Settings validation) |
+| `SESSION_TTL_SECONDS` | 1209600 (14 days) | — |
+
+Always `HttpOnly=true`, `Path=/`. The token is never exposed to
+JavaScript.
+
+## CSRF model
+
+Because authentication uses a cookie, `SameSite=Lax` alone is not
+treated as a complete CSRF architecture. Synchronizer-token pattern:
+
+1. Each `AuthSession` gets its own random `csrf_secret` at creation
+   (plaintext in the database — see `app/auth/csrf.py` for why this,
+   unlike the session token, is safe: knowing it alone grants nothing
+   without also having the session cookie).
+2. `GET /api/v1/auth/csrf` returns it to the frontend (requires an
+   authenticated session; never exposes the session token itself).
+3. Every authenticated state-changing request (`POST`/`PUT`/`PATCH`/
+   `DELETE`) must send it back in an `X-CSRF-Token` header
+   (`require_csrf` dependency); constant-time comparison
+   (`hmac.compare_digest`) against the session's stored secret.
+4. `GET`/`HEAD`/`OPTIONS` never require it.
+
+**Pre-auth exemption:** `register`/`login` are exempt from this check —
+no session/CSRF secret exists yet before they succeed. The residual
+"login CSRF" risk (forcing a victim to log in as someone else's account)
+is mitigated by `SameSite=Lax` and by the fact that a successful login
+does not act on behalf of an already-authenticated identity. Documented
+trade-off, not an oversight — see `app/auth/service.py`.
+
+## Workspace tenancy
+
+`User -> Membership -> Organization -> Workspace`. Registration
+bootstraps exactly one Organization + one Workspace + one `OWNER`
+Membership per new user (`app/auth/service.py::AuthService.register`) —
+the schema supports multiple memberships per user; only the "current
+workspace" convenience lookup (earliest active membership) is
+single-workspace-shaped for this stage. A real workspace switcher is a
+later concern.
+
+No route in this stage accepts a client-supplied `workspace_id` —
+`get_current_workspace` (`app/auth/dependencies.py`) is the only path to
+a workspace, and it is derived entirely from the authenticated session's
+membership. `WorkspaceAccessService.get_authorized_workspace`
+(`app/workspaces/service.py`) is the reusable pattern every future
+by-public-id endpoint must use; it is exercised directly by
+`tests/test_tenancy.py`, proving a non-existent workspace and a
+workspace-you're-not-a-member-of return the identical `FORBIDDEN` error.
+
+## Setup for local development, continued
+
+### DATABASE_URL / migrations
 
 ```bash
 alembic upgrade head        # apply all migrations
 alembic current              # show the currently applied revision
-alembic revision --autogenerate -m "description"   # generate a new migration
-alembic downgrade base       # drop everything this project's migrations created — destructive, test databases only
+alembic revision --autogenerate -m "description"
 ```
 
-`alembic.ini` deliberately leaves `sqlalchemy.url` blank — `alembic/env.py`
-resolves it at runtime from `Settings().DATABASE_URL`, the same
-environment variable the FastAPI app itself reads, so the connection
-string is never duplicated or hardcoded in two places.
+`alembic.ini` leaves `sqlalchemy.url` blank; `alembic/env.py` resolves
+it at runtime from `Settings().DATABASE_URL`.
 
 ## Tests
 
-From `apps/api/`, with the virtual environment activated:
-
 ```bash
-pytest
-```
+pytest                    # everything; DB tests skip if no test DB configured
+pytest -m "not postgres"  # unit tests only, no database needed
 
-Most of the test suite requires **no** database, no network access, and
-no running server — it exercises the app in-process via
-`fastapi.testclient.TestClient`. Tests that need a real PostgreSQL
-database are marked `@pytest.mark.postgres` and are **skipped (not
-faked, never run against SQLite)** unless `TEST_DATABASE_URL` /
-`TEST_MIGRATIONS_DATABASE_URL` are set to real, reachable, test-scoped
-databases — each skip states the exact reason.
-
-```bash
-# unit tests only (always run, no database needed)
-pytest -m "not postgres"
-
-# full suite, including real PostgreSQL acceptance
 TEST_DATABASE_URL=postgresql+psycopg://user@localhost/impulso_dev_test \
 TEST_MIGRATIONS_DATABASE_URL=postgresql+psycopg://user@localhost/impulso_dev_test_migrations \
-pytest
+pytest                    # full acceptance, including real PostgreSQL
 ```
 
-## Current implemented scope (BACKEND-02 + BACKEND-03)
+New in BACKEND-04: `tests/test_auth_passwords.py` (hashing, no DB),
+`tests/test_authorization.py` (`require_role`, no DB),
+`tests/test_registration.py`, `tests/test_auth_session.py`,
+`tests/test_auth_csrf.py`, `tests/test_tenancy.py` (all `postgres`-marked).
 
-**BACKEND-02** (see prior delivery for full detail): application
-factory, typed settings, versioned routing, health endpoints, error
-envelope, request-ID middleware, structured logging, CORS foundation,
-OpenAPI, test foundation.
+## Security limitations (explicit, not implicit)
 
-**BACKEND-03 additions:**
-
-- `app/persistence/base.py` — shared `Base`/`metadata` with a
-  deterministic naming convention (`pk`/`fk`/`uq`/`ck`/`ix`) so Alembic
-  autogenerate produces stable constraint names; `UUIDPrimaryKeyMixin`
-  and `TimestampMixin` reusable mixins for future models
-- `app/persistence/session.py` — engine factory (conservative pool
-  defaults: `pool_size=5`, `max_overflow=10`, `pool_pre_ping=True`),
-  `configure_database()`/`get_engine()`/`dispose_engine()`, and the
-  `get_db()` FastAPI dependency implementing the session contract below
-- `app/persistence/probe.py` — `PersistenceProbe`, an explicitly
-  **non-domain** table that exists only to prove the foundation works
-  end-to-end (migrated, inserted into, committed, rolled back) without
-  prematurely creating `User`/`Workspace`/`Campaign`/etc.
-- `app/persistence/testing.py` — the test-database safety guard
-  (`assert_safe_test_database_url`)
-- `app/api/v1/readiness.py` — `GET /api/v1/readiness`
-- Alembic configured at `apps/api/alembic/`, importing the project's own
-  metadata (never a second `Base`); one migration, hand-verified to
-  round-trip (`upgrade head` → `current` → `downgrade base` → `upgrade
-  head`) against a real PostgreSQL 14 database
-- 29 new tests across `tests/test_persistence_foundation.py` (unit,
-  always run), `tests/test_transactions.py`, `tests/test_migrations.py`,
-  and `tests/test_readiness.py` (mixed; DB-only cases marked `postgres`)
-
-### Session / transaction contract
-
-- **One `Session` per request.** `get_db` is a generator dependency —
-  FastAPI calls it fresh every time; there is no global mutable
-  `Session`, only a stateless session factory.
-- **No implicit commit.** `get_db` never calls `session.commit()` — a
-  read-only request does nothing beyond closing its session. Only
-  application/service-layer code that explicitly needs to persist a
-  write calls `commit()` on the session it was given. SESSION lifecycle
-  (this module's job) is a distinct concern from TRANSACTION AUTHORITY
-  (the caller's job) — and both are distinct from GOVERNANCE AUTHORITY,
-  which belongs to a later, separately authorized stage: a database
-  write is not itself a governance decision.
-- **Rollback on exception**, always closed, never reused across
-  requests — see the docstring in `app/persistence/session.py` for the
-  full contract and the tests in `tests/test_transactions.py` that prove
-  each clause against a real database.
+- **No rate limiting.** Login/register are documented future rate-limit
+  targets (`app/auth/router.py`); **there is no brute-force protection
+  of any kind in this stage.** Do not deploy this publicly without it.
+- **No email verification, no password reset flow.**
+- **No account lockout** after repeated failed logins.
+- Registration reveals whether an email is already registered
+  (`EMAIL_ALREADY_REGISTERED`) — a deliberate, common trade-off, unlike
+  login, which never reveals anything about account existence.
+- `last_seen_at` is not live-updated (see Session model above).
+- UUIDv7 vs. UUIDv4: BACKEND-01 specifies UUIDv7 for internal primary
+  keys; `UUIDPrimaryKeyMixin` still generates UUIDv4 (no stdlib UUIDv7
+  before Python 3.14, no UUIDv7 package approved yet) — unchanged,
+  reported gap from BACKEND-03.
+- No Row-Level Security, no production pool tuning, no secret-manager
+  integration — see `docs/backend/BACKEND-01-ARCHITECTURE.md` §6.
 
 ## Explicitly deferred (not in this stage)
 
-- `User`, `Workspace`, `Campaign`, `Content`, `Agent`, or any other
-  domain/business table — see BACKEND-05 onward
-- Authentication, password hashing, sessions, JWTs, RBAC, CSRF — see
-  BACKEND-04
+- `Campaign`, `Content`, `Agent`, `Subscription`, or any other
+  business/billing table
 - `AGENT-00`…`AGENT-10`, `AOL-00`, Handoffs, Returns, Gates, or any
-  other orchestration/governance runtime — architecture-only until a
-  dedicated, separately authorized stage
+  orchestration/governance runtime
 - Any AI provider integration (OpenRouter, OpenAI, Anthropic, etc.)
 - Any external integration (Meta, Google Ads, Stripe, etc.)
-- Async SQLAlchemy (`asyncpg`) — this stage uses synchronous SQLAlchemy;
-  revisit only if a concrete, reported justification emerges
-- Production connection-pool tuning, PgBouncer, and Postgres Row-Level
-  Security — conservative development defaults only for now; see
-  `docs/backend/BACKEND-01-ARCHITECTURE.md` §5/§6
-- Rate limiting, secret-manager integration, and other hardening —
-  principles are documented in `docs/backend/BACKEND-01-ARCHITECTURE.md`
-  §6, not implemented here
-
-### Known gap: UUIDv7 vs. UUIDv4
-
-BACKEND-01 specifies **UUIDv7** (time-ordered) for internal primary
-keys. `UUIDPrimaryKeyMixin` currently generates **UUIDv4** instead:
-Python's stdlib has no UUIDv7 generator before 3.14 (this project
-targets 3.11–3.13), and no UUIDv7 package is among BACKEND-03's approved
-dependencies. This is reported, not silent — revisit once Python 3.14
-is the floor, or a UUIDv7 dependency is explicitly authorized.
+- Frontend wiring — `apps/web` remains mock/static
+- Redis, Celery, rate-limiting infrastructure, async SQLAlchemy
 
 ## Future module layout
 
-Per BACKEND-01's modular-monolith boundaries, future domain packages
-will sit alongside `app/api`, `app/core`, `app/shared`, and
-`app/persistence` — e.g. `app/auth/`, `app/users/`, `app/workspaces/`,
+`app/auth/`, `app/users/`, `app/workspaces/` (new in BACKEND-04) join
+`app/api`, `app/core`, `app/shared`, `app/persistence` alongside future
 `app/campaigns/`, `app/orchestration/`, `app/agents/`, `app/content/`,
 `app/measurement/`, etc. — each with its own `models.py`, `schemas.py`,
-`service.py`, and `router.py`, included into `app/api/v1/router.py` one
-line at a time. None of those packages exist yet; they are created only
-when their implementation stage is explicitly authorized.
+`repository.py`, `service.py`, and `router.py`, included into
+`app/api/v1/router.py` one line at a time.

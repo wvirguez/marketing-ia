@@ -15,11 +15,15 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # Import every module that defines a model, so its table registers on
-# `Base.metadata` before Alembic looks at it. BACKEND-03 has exactly one
-# such module — the explicitly non-domain persistence probe.
+# `Base.metadata` before Alembic looks at it. Each import is for its
+# side effect only (table registration); add one line here whenever a
+# future stage introduces a new model module.
+from app.auth import models as auth_models  # noqa: F401
 from app.core.config import get_settings
-from app.persistence import probe  # noqa: F401  (import for side effect: table registration)
+from app.persistence import probe  # noqa: F401  (BACKEND-03: explicitly non-domain persistence probe)
 from app.persistence.base import Base
+from app.users import models as user_models  # noqa: F401
+from app.workspaces import models as workspace_models  # noqa: F401
 
 config = context.config
 

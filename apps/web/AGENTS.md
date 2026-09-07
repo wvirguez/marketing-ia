@@ -40,14 +40,18 @@ and Settings & Workspace Profile. Approval of these interfaces does not mean
 real authentication or backend integration exists.
 
 The frontend MVP is complete. No further FRONTEND-NN stage is currently
-planned. Next authorized/planned step is backend work — see the root
-`AGENTS.md` `## Project status` section and `docs/backend/` for the BACKEND-01
-architecture and the BACKEND-02 proposal. Begin backend work only when
-explicitly requested; planned status does not authorize starting it.
+planned. Next authorized/planned step is BACKEND-04 — Authentication, Users
+& Workspace Tenancy — see the root `AGENTS.md` `## Project status` section
+and `docs/backend/` for the full backend architecture and phase proposal.
+Begin backend work only when explicitly requested; planned status does not
+authorize starting it.
 
-Pending: backend implementation (FastAPI, PostgreSQL, real authentication,
-and AI integrations). None of these exist in this repository yet; do not
-implement them before requested.
+Pending: authentication, User/Organization/Workspace/Membership persistence,
+the Campaign domain, and AI agents/orchestration. None of these exist in
+this repository yet; the FastAPI application foundation and the PostgreSQL
+persistence foundation do exist (see root `AGENTS.md`), but the frontend
+remains mock/static and is not wired to the API. Do not implement any of the
+pending items before requested.
 
 ## UI and architecture
 
