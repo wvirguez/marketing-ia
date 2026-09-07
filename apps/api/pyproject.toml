@@ -1,0 +1,27 @@
+[project]
+name = "impulso-api"
+version = "0.1.0"
+description = "Impulso backend API — FastAPI application foundation (BACKEND-02). No database, no authentication, no AI execution in this stage."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.30,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.3,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "httpx>=0.27,<1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
