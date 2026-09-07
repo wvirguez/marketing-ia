@@ -2,8 +2,12 @@
 
 Values are read from environment variables, and optionally from a local
 ``.env`` file (see ``.env.example``). No secrets are defined or defaulted
-here — this stage has no authentication, no database, and no third-party
-provider credentials to configure.
+here — this stage has no authentication and no third-party provider
+credentials to configure. ``DATABASE_URL``/``TEST_DATABASE_URL`` are read
+as plain strings with no default value: there is no "convenient" local
+default, because a wrong-but-working default is exactly how a test
+accidentally points at development data, or development accidentally
+points at production. See ``app.persistence`` for how these are used.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -28,6 +32,28 @@ class Settings(BaseSettings):
     APP_ENV: Environment = "development"
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = True
+
+    # No default. Development/test may run without a database configured
+    # at all (most of this API's own test suite does) — in that case the
+    # readiness endpoint reports "not ready" rather than the app failing
+    # to start. Production fails closed: see `_require_database_url_in_production`.
+    DATABASE_URL: str | None = None
+
+    # A completely separate setting from DATABASE_URL — tests must never
+    # silently fall back to the development database. See
+    # `app.persistence.testing.assert_safe_test_database_url` for the
+    # additional runtime guard applied before any destructive test touches
+    # whatever this points at.
+    TEST_DATABASE_URL: str | None = None
+
+    @model_validator(mode="after")
+    def _require_database_url_in_production(self) -> "Settings":
+        if self.APP_ENV == "production" and not self.DATABASE_URL:
+            raise ValueError(
+                "DATABASE_URL is required when APP_ENV=production. Refusing "
+                "to start with no configured database in production."
+            )
+        return self
 
     # `NoDecode` tells pydantic-settings' env source not to attempt its
     # default JSON-decoding for this list-typed field (which otherwise

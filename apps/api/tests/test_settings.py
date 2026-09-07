@@ -15,12 +15,31 @@ from app.core.config import Settings
 
 @pytest.mark.parametrize("env", ["development", "test", "production"])
 def test_accepts_each_supported_environment(env: str) -> None:
-    assert Settings(APP_ENV=env).APP_ENV == env
+    # production additionally requires DATABASE_URL — see
+    # test_production_requires_database_url below; that is a separate
+    # concern from "is this a recognized environment value."
+    settings = Settings(APP_ENV=env, DATABASE_URL="postgresql+psycopg://user@localhost/db")
+    assert settings.APP_ENV == env
 
 
 def test_rejects_unsupported_environment() -> None:
     with pytest.raises(ValidationError):
         Settings(APP_ENV="staging")
+
+
+def test_production_requires_database_url() -> None:
+    with pytest.raises(ValidationError):
+        Settings(APP_ENV="production", DATABASE_URL=None)
+
+
+def test_production_accepts_configured_database_url() -> None:
+    settings = Settings(APP_ENV="production", DATABASE_URL="postgresql+psycopg://user@localhost/db")
+    assert settings.DATABASE_URL == "postgresql+psycopg://user@localhost/db"
+
+
+def test_development_and_test_allow_missing_database_url() -> None:
+    assert Settings(APP_ENV="development", DATABASE_URL=None).DATABASE_URL is None
+    assert Settings(APP_ENV="test", DATABASE_URL=None).DATABASE_URL is None
 
 
 def test_accepts_explicit_origin_list_via_constructor() -> None:

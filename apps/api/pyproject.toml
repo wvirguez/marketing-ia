@@ -1,13 +1,16 @@
 [project]
 name = "impulso-api"
 version = "0.1.0"
-description = "Impulso backend API — FastAPI application foundation (BACKEND-02). No database, no authentication, no AI execution in this stage."
+description = "Impulso backend API — FastAPI + PostgreSQL persistence foundation (BACKEND-02/03). No authentication, no AI execution in this stage."
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115,<1.0",
     "uvicorn>=0.30,<1.0",
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.3,<3.0",
+    "sqlalchemy>=2,<3",
+    "psycopg[binary]>=3,<4",
+    "alembic>=1.13,<2",
 ]
 
 [project.optional-dependencies]
@@ -25,3 +28,6 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "postgres: requires a real, reachable, test-scoped PostgreSQL database (see tests/dbtest.py); skipped automatically when one is not configured.",
+]

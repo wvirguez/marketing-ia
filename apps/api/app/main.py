@@ -15,6 +15,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
+from app.persistence.session import configure_database
 
 
 def configure_app(app: FastAPI, settings: Settings) -> None:
@@ -55,6 +56,14 @@ def create_app() -> FastAPI:
     )
 
     configure_app(app, settings)
+
+    # Optional: most of this API's own test suite runs with no database
+    # configured at all, and that must keep working (see BACKEND-03 §19).
+    # `/api/v1/readiness` reports "not_ready" rather than the app failing
+    # to start when DATABASE_URL is unset outside production (production
+    # already fails closed at the Settings level — see core/config.py).
+    if settings.DATABASE_URL:
+        configure_database(settings.DATABASE_URL, echo=settings.DEBUG)
 
     app.include_router(root_router)
     app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
