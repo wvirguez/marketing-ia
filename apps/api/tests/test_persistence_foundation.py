@@ -78,13 +78,16 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     """Scope check: identity/tenancy tables (BACKEND-04), Campaign/
     Campaign Brief/Campaign Run (BACKEND-05), the orchestration
     foundation — RunStageExecution, Human Decision Request/Response,
-    Audit Event (BACKEND-06) — and the Research/Audience persistence
+    Audit Event (BACKEND-06) — the Research/Audience persistence
     contracts — Research Report/Source, Audience Profile, VOC Evidence
-    (BACKEND-07) — all exist, plus the BACKEND-03 infrastructure probe.
-    No Content/Agent Run/Handoff/Return/Gate Decision/Metric/Subscription
-    table (real agent execution and beyond) has been prematurely
-    introduced — BACKEND-07's persistence is deliberately inert (no AI
-    execution, no public write endpoint)."""
+    (BACKEND-07) — and the Strategy persistence contracts — Strategy,
+    Positioning, Hypothesis, Experiment (BACKEND-08) — all exist, plus
+    the BACKEND-03 infrastructure probe. No Content/Agent Run/Handoff/
+    Return/Gate Decision/Metric/Subscription/Strategic Decision/Strategic
+    Recommendation Candidate/Learning Candidate table has been
+    prematurely introduced — BACKEND-08's persistence is deliberately
+    inert (no AI execution, no public write endpoint, no approval/gate
+    concept)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -103,6 +106,10 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "research_sources",
         "audience_profiles",
         "voc_evidence",
+        "strategies",
+        "positionings",
+        "hypotheses",
+        "experiments",
     }
 
 

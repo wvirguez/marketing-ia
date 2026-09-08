@@ -79,6 +79,14 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     audience_profile_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("audience_profiles.id"), default=None, index=True
     )
+    # BACKEND-08 §17: same reasoning as research_report_id/audience_profile_id
+    # above — a strategy.recorded/strategy.hypothesis.recorded/
+    # strategy.hypothesis.status_changed/strategy.experiment.recorded event
+    # must identify its exact Strategy/Hypothesis/Experiment, never only be
+    # inferable from campaign_id/campaign_run_id/stage_execution_id.
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("strategies.id"), default=None, index=True)
+    hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hypotheses.id"), default=None, index=True)
+    experiment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("experiments.id"), default=None, index=True)
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

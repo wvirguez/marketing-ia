@@ -345,3 +345,103 @@ def test_backend_07_migration_round_trips_to_the_previous_revision(migrations_da
             assert "audience_profile_id" in audit_columns
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_08_REVISION = "4b9a72f05a4f"
+_BACKEND_08_TABLES = ("strategies", "positionings", "hypotheses", "experiments")
+
+
+def _strategy_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'strategies')")
+        ).scalar_one()
+
+
+def test_backend_08_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-08 §23: upgrade to head, downgrade to exactly the
+    pre-BACKEND-08 revision (4b9a72f05a4f, not base), upgrade to head
+    again — proving the strategy migration (including the new
+    audit_events FK columns and the two new candidate keys on strategies/
+    hypotheses) adds/removes cleanly without disturbing any BACKEND-04/05/
+    06/07 object."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _strategy_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_08_REVISION)
+        assert _strategy_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_08_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-08 downgrade"
+
+            # Every BACKEND-04/05/06/07 table must survive a BACKEND-08-only
+            # downgrade untouched.
+            for table in (
+                "users", "organizations", "workspaces", "memberships", "auth_sessions",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-08-only downgrade"
+
+            leftover_enum = connection.execute(
+                text("SELECT typname FROM pg_type WHERE typname = 'hypothesis_status'")
+            ).scalars().all()
+            assert leftover_enum == [], "downgrade must drop the BACKEND-08-owned hypothesis_status enum type"
+
+            # Every earlier stage's enum type must survive untouched.
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 10, "a BACKEND-08 downgrade must not remove any earlier stage's enum type"
+
+            # audit_events must be reverted to its exact pre-BACKEND-08 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "strategy_id" not in audit_columns
+            assert "hypothesis_id" not in audit_columns
+            assert "experiment_id" not in audit_columns
+
+            # The BACKEND-08-added candidate keys must be gone.
+            strategies_still_exists = connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'strategies')")
+            ).scalar_one()
+            assert strategies_still_exists is False
+
+        command.upgrade(config, "head")
+        assert _strategy_tables_exist(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "strategy_id" in audit_columns
+            assert "hypothesis_id" in audit_columns
+            assert "experiment_id" in audit_columns
+
+            unique_names_strategies = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'strategies'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_strategies_id_workspace_id" in unique_names_strategies
+
+            unique_names_hypotheses = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'hypotheses'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_hypotheses_id_workspace_id" in unique_names_hypotheses
+    finally:
+        engine.dispose()

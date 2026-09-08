@@ -26,6 +26,7 @@ from app.orchestration import models as orchestration_models  # noqa: F401
 from app.persistence import probe  # noqa: F401  (BACKEND-03: explicitly non-domain persistence probe)
 from app.persistence.base import Base
 from app.research import models as research_models  # noqa: F401
+from app.strategy import models as strategy_models  # noqa: F401
 from app.users import models as user_models  # noqa: F401
 from app.workspaces import models as workspace_models  # noqa: F401
 
