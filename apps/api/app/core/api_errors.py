@@ -71,3 +71,33 @@ class ForbiddenError(ApiError):
 class EmailAlreadyRegisteredError(ApiError):
     def __init__(self, message: str = "An account with this email already exists.") -> None:
         super().__init__(message, status_code=409, code="EMAIL_ALREADY_REGISTERED")
+
+
+class InvalidLifecycleTransitionError(ApiError):
+    """Reused for both an invalid CampaignRun transition and an invalid
+    RunStageExecution transition (BACKEND-06 §8/§11) — the caller
+    attempted a state change that is not a legal edge in the
+    centralized transition matrix (``app/orchestration/transitions.py``).
+    A deterministic 409, never a raw 500 or a silently-accepted write."""
+
+    def __init__(self, message: str = "This lifecycle transition is not allowed from the current state.") -> None:
+        super().__init__(message, status_code=409, code="INVALID_LIFECYCLE_TRANSITION")
+
+
+class OrchestrationNotInitializedError(ApiError):
+    """A run's business stages must be materialized (via the dedicated
+    ``initialize`` operation) before it can be started (BACKEND-06 §14/
+    §15) — deliberately two separate, explicit steps."""
+
+    def __init__(self, message: str = "This run has not been initialized yet.") -> None:
+        super().__init__(message, status_code=409, code="ORCHESTRATION_NOT_INITIALIZED")
+
+
+class DecisionAlreadyResolvedError(ApiError):
+    """A Human Decision Request may only ever receive one Human Decision
+    Response (BACKEND-06 §17) — a second response attempt, or a response
+    to an already-cancelled/expired request, is a deterministic conflict,
+    never a silent overwrite."""
+
+    def __init__(self, message: str = "This decision has already been resolved.") -> None:
+        super().__init__(message, status_code=409, code="DECISION_ALREADY_RESOLVED")

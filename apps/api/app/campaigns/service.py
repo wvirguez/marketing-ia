@@ -41,13 +41,33 @@ class CampaignAccessService:
     distinguish "wrong id" from "not yours" (BACKEND-05 §10)."""
 
     def __init__(self, session: Session) -> None:
+        self.session = session
         self.campaigns = CampaignRepository(session)
+        self.runs = CampaignRunRepository(session)
 
     def get_authorized_campaign(self, *, workspace_id: uuid.UUID, campaign_public_id: str) -> Campaign:
         campaign = self.campaigns.get_by_public_id(campaign_public_id)
         if campaign is None or campaign.workspace_id != workspace_id:
             raise ForbiddenError()
         return campaign
+
+    def get_authorized_run(
+        self, *, workspace_id: uuid.UUID, campaign_public_id: str, run_public_id: str, for_update: bool = False
+    ) -> tuple[Campaign, CampaignRun]:
+        """BACKEND-06: the same non-leaky tenant gate as
+        ``get_authorized_campaign``, extended one level down to a
+        specific run. A run that does not exist, or exists but belongs
+        to a different campaign than the one named in the URL (which, by
+        the database-level tenancy invariant in
+        ``app/campaigns/models.py``, also means a different workspace),
+        is indistinguishable from a campaign the caller cannot access at
+        all — always the same ``ForbiddenError``.
+        """
+        campaign = self.get_authorized_campaign(workspace_id=workspace_id, campaign_public_id=campaign_public_id)
+        run = self.runs.get_by_public_id(run_public_id, for_update=for_update)
+        if run is None or run.campaign_id != campaign.id:
+            raise ForbiddenError()
+        return campaign, run
 
 
 class CampaignService:
@@ -80,7 +100,7 @@ class CampaignService:
             budget=budget,
             channel=channel,
         )
-        run = self.runs.create(workspace_id=workspace_id, campaign_id=campaign.id, run_number=_INITIAL_RUN_NUMBER)
+        run = self.runs.create(campaign=campaign, run_number=_INITIAL_RUN_NUMBER)
         self.session.commit()
         return campaign, brief, run
 

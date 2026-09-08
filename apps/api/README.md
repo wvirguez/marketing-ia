@@ -1,16 +1,19 @@
 # Impulso API
 
-FastAPI + PostgreSQL + authentication/tenancy/campaign foundation for the
-Impulso backend — **BACKEND-02** (application skeleton), **BACKEND-03**
-(persistence foundation), **BACKEND-04** (identity, authentication,
-workspace tenancy), and **BACKEND-05** (campaign domain & persistence).
+FastAPI + PostgreSQL + authentication/tenancy/campaign/orchestration
+foundation for the Impulso backend — **BACKEND-02** (application
+skeleton), **BACKEND-03** (persistence foundation), **BACKEND-04**
+(identity, authentication, workspace tenancy), **BACKEND-05** (campaign
+domain & persistence), and **BACKEND-06** (orchestration foundation).
 
-> **AGENT/AI EXECUTION NOT IMPLEMENTED. FRONTEND NOT WIRED.**
-> BACKEND-05 adds a persisted Campaign domain — Campaign, Campaign
-> Brief, Campaign Run — with a REST API, but a Campaign Run is
-> intentionally **inert**: creating one never invokes an agent, calls an
-> AI provider, or produces any research/strategy/content output. No
-> `Content`, `Agent`, `Handoff`, or billing table or route exists.
+> **AI/AGENT EXECUTION NOT IMPLEMENTED. FRONTEND NOT WIRED.**
+> BACKEND-06 turns `CampaignRun` from inert persistence scaffolding into
+> a persisted, auditable orchestration *lifecycle* — business stages,
+> human-in-the-loop scaffolding, append-only traceability — but it is
+> still entirely inert: no route or service here ever calls an AI
+> provider, invokes an agent, starts a worker, or produces a generated
+> research/strategy/content output. No `Content`, `Agent Run`,
+> `Handoff`, `Return`, `Gate Decision`, or billing table exists.
 > `apps/web` has not been touched and does not call this API yet — see
 > `docs/backend/BACKEND-01-ARCHITECTURE.md` §13 for the proposed phase
 > sequence.
@@ -80,15 +83,23 @@ uvicorn app.main:app --reload
 - `POST /api/v1/campaigns`, `GET /api/v1/campaigns`,
   `GET /api/v1/campaigns/{id}`, `PATCH /api/v1/campaigns/{id}`,
   `POST /api/v1/campaigns/{id}/archive`,
-  `GET /api/v1/campaigns/{id}/runs` — **new**
+  `GET /api/v1/campaigns/{id}/runs` — unchanged since BACKEND-05
+- `POST /api/v1/campaigns/{id}/runs/{run_id}/initialize`,
+  `POST .../start`, `GET .../` (run detail), `GET .../progress`,
+  `GET .../stages`, `GET .../events`, `GET .../decisions`,
+  `POST .../decisions/{decision_id}/respond` — **new**
 - `GET /docs`, `GET /redoc`, `GET /openapi.json` — OpenAPI (enabled)
 
 If `DATABASE_URL` has migrations applied (`alembic upgrade head`), the
-full register → session → csrf → logout flow, and the full campaign
-create → list → get → patch → archive → list-runs flow, both work with
-real cookies — verified live with `curl` (see delivery notes) and in
-`tests/test_auth_session.py`/`test_auth_csrf.py`/`test_registration.py`/
-`tests/test_campaigns_crud.py`/`tests/test_campaigns_tenancy.py`.
+full register → session → csrf → logout flow, the full campaign
+create → list → get → patch → archive → list-runs flow, and the full
+orchestration initialize → start → progress → events → (decision
+respond) flow all work with real cookies — verified live with `curl`
+(see delivery notes) and in `tests/test_auth_session.py`/
+`test_auth_csrf.py`/`test_registration.py`/`test_campaigns_crud.py`/
+`test_campaigns_tenancy.py`/`test_orchestration_lifecycle.py`/
+`test_orchestration_tenancy.py`/`test_orchestration_hitl.py`/
+`test_orchestration_events.py`.
 
 ## Campaign domain (BACKEND-05)
 
@@ -146,6 +157,136 @@ pass `?include_archived=true` to see them. Nothing is ever deleted.
 `GET /api/v1/campaigns/{id}/runs` use bounded `limit`/`offset` pagination
 (default 20, max 100), newest-first for campaigns and run-number-ascending
 for runs.
+
+## Orchestration foundation (BACKEND-06)
+
+Turns `CampaignRun` from BACKEND-05's inert persistence scaffold into a
+persisted, auditable **lifecycle** — still entirely inert (no AI, no
+agents, no external side effects). ORCHESTRATION FOUNDATION != AI
+EXECUTION; RUN STARTED != AI EXECUTED; STAGE COMPLETED != CONTENT
+APPROVED — every one of these BACKEND-06's own boundaries is enforced
+by what the code structurally cannot do (there is no code path that
+calls an AI provider), not only by naming discipline.
+
+**Tenancy invariant hardening:** `CampaignRun.workspace_id` must equal
+its parent `Campaign.workspace_id`. Enforced at three layers: (1)
+`CampaignRunRepository.create` takes the `Campaign` object, not a raw
+`workspace_id` — there is no supported code path that could pass a
+mismatched value; (2) `CampaignAccessService.get_authorized_run`
+resolves a run only through its already-authorized campaign; (3) the
+database itself — `campaigns` carries a `UNIQUE (id, workspace_id)`
+candidate key, and `campaign_runs` references it with a **composite**
+foreign key `(campaign_id, workspace_id)`, so PostgreSQL rejects a
+divergent row even if constructed directly, bypassing every
+application-level guard. Proven in
+`tests/test_campaign_run_tenancy_invariant.py`.
+
+**Business stages, not agent identifiers:** `RunStageExecution` persists
+one row per business stage (`RESEARCH`, `AUDIENCE`, `STRATEGY`, `PLAN`,
+`CONTENT`, `CREATIVE`, `DISTRIBUTION`, `PAID_MEDIA`, `TRACKING`,
+`MEASUREMENT`, `LEARNING` — matching the module list in
+`docs/backend/BACKEND-01-ARCHITECTURE.md` §9 and the `ProgressProjector`
+mapping in §3) with a deterministic, persisted `ordinal` — never derived
+from insertion order. No `AGENT-0N` identifier appears anywhere in the
+default API surface.
+
+This is deliberately new ground relative to BACKEND-01's domain-model
+catalog, not a duplicate of anything already defined there: BACKEND-01's
+"Campaign Phase" is explicitly a *derived, display-only* value ("which
+one phase is active"), not stored, to avoid a second source of truth
+once it can be computed from Agent Run data (BACKEND-07+). No Agent Run
+exists yet — there is nothing to derive from. `RunStageExecution` is the
+persisted *workflow structure* itself; a future "current phase"
+projection reading the run's currently non-terminal stage from this
+table *is* that derivation, not a competing fact.
+
+**Run lifecycle:** `CampaignRunStatus` is unchanged from BACKEND-05 —
+BACKEND-06 adds no new value and no new edge, since BACKEND-01 state
+machine B already fully specifies it (`CREATED → RUNNING ⇄
+AWAITING_HUMAN_DECISION`, `RUNNING → COMPLETED`, any active state →
+`FAILED`/`CANCELLED`). **Stage lifecycle** (`StageExecutionStatus`) is
+new: `PENDING → READY → RUNNING → {WAITING_FOR_INPUT, BLOCKED,
+COMPLETED, FAILED, CANCELLED}` — terminal states
+(`COMPLETED`/`FAILED`/`SKIPPED`/`CANCELLED`) have no outgoing edges.
+Both matrices live in exactly one place,
+`app/orchestration/transitions.py`; no router or repository ever checks
+or applies a transition itself. An illegal transition is a deterministic
+`409 INVALID_LIFECYCLE_TRANSITION`, never a silent no-op or a raw 500.
+
+**No client-controlled completion:** there is no generic "set run
+status" endpoint and no route accepts a `status` field at all — a
+`PATCH` to a run returns `405` (the path simply has no such method).
+Every transition happens through a specific, named domain operation.
+
+**Initialize vs. start (BACKEND-06 §14/§15), two explicit steps:**
+- `POST .../initialize` — materializes all 11 `RunStageExecution` rows
+  (all `PENDING`). **Idempotent**: a second call returns the
+  already-materialized stages unchanged rather than erroring or
+  duplicating. Requires the run to be `CREATED`.
+- `POST .../start` — requires stages to already be materialized
+  (`409 ORCHESTRATION_NOT_INITIALIZED` otherwise); transitions the run
+  `CREATED → RUNNING` and promotes only stage #1 (`RESEARCH`)
+  `PENDING → READY` — never further. **Not idempotent** — a second call
+  is a deterministic `409`, since "starting" is a meaningful one-time
+  transition, unlike re-materializing the same stage set.
+
+**Human-in-the-loop foundation:** `HumanDecisionRequest`/
+`HumanDecisionResponse`, named exactly per
+`docs/backend/BACKEND-01-ARCHITECTURE.md` §4 (`OPEN → RESOLVED |
+EXPIRED | CANCELLED`; BACKEND-06 never itself sets `EXPIRED` — that
+policy is explicitly deferred by BACKEND-01 itself). **No public HTTP
+endpoint creates a decision request** — nothing in this stage's
+supported flows legitimately needs to raise one yet (no agent exists to
+escalate a question); `OrchestrationService.create_decision_request` is
+the controlled, service-only mechanism tests use to construct one, and
+the entry point a future runtime phase will call for real. Opening a
+request forces the run to `AWAITING_HUMAN_DECISION`; responding
+(`POST .../decisions/{id}/respond`, CSRF-required) resolves it and
+resumes the run to `RUNNING` — the entirety of "resume" this stage
+implements, since no Handoff exists yet to advance. One response per
+request, enforced by a unique DB index, not only a status check; a
+second response attempt is a deterministic `409
+DECISION_ALREADY_RESOLVED`. The request row is row-locked
+(`SELECT ... FOR UPDATE`) while responding, so two concurrent responses
+to the same request cannot both observe `OPEN` and both proceed —
+proven with two real threads/connections in
+`tests/test_orchestration_concurrency.py`.
+
+**Append-only traceability:** `AuditEvent` (`app/audit/`, its own
+top-level module per the BACKEND-01 §9 module-boundary proposal,
+implementing the entity BACKEND-01 already named and prefixed — `AUDT`).
+No `PATCH`/`DELETE` route exists for it, and the model itself carries no
+`updated_at` column at all, so there is no `onupdate` trigger a future
+change could ever accidentally rely on. Every lifecycle transition
+records exactly one event, in the *same* transaction as the state
+change — if the event's own `flush()` fails, nothing commits, proven in
+`tests/test_orchestration_events.py::test_failed_event_persistence_rolls_back_the_state_transition`.
+`actor_type` is always `USER` in this stage; `SYSTEM`/`AGENT` exist only
+for forward compatibility and are never emitted here.
+
+**Progress API:** `GET .../progress` is deliberately minimal —
+campaign/run public ids, run status, the current non-terminal stage,
+the ordered stage list, `waiting_for_input`, `open_decision_count`. No
+percentage (BACKEND-01 defines no formula, so none is fabricated), no
+internal ids, no chain-of-thought field exists anywhere in this schema
+(BACKEND-06 §27) — checked directly in
+`tests/test_orchestration_security.py`.
+
+**Public IDs:** `STG-` (Stage Execution — not BACKEND-01-reserved, chosen
+here), `HDR-` (Human Decision Request — the exact BACKEND-01-reserved
+prefix), `HDS-` (Human Decision Response — not BACKEND-01-reserved,
+chosen to parallel `HDR`), `AUDT-` (Audit Event — the exact
+BACKEND-01-reserved prefix). Same 12-character Crockford-base32 suffix
+convention as every other entity; no internal UUID ever leaves this
+module's response schemas.
+
+**Existing-run migration safety:** the BACKEND-06 migration adds three
+new tables and hardens two existing constraints — it does not touch any
+`campaign_runs` row's *data*. A `CampaignRun` created back in BACKEND-05
+remains `CREATED` with zero `RunStageExecution` rows after this
+migration; nothing is retroactively "initialized" or backfilled into
+any executed-looking state. Historical truth is preserved exactly:
+those runs were persisted, never executed, and still are.
 
 ## Authentication model
 
@@ -298,6 +439,23 @@ uniqueness constraints), `tests/test_campaigns_tenancy.py`
 `tests/test_migrations.py` that downgrades to exactly the pre-BACKEND-05
 revision (not `base`) and back — all `postgres`-marked.
 
+New in BACKEND-06: `tests/test_orchestration_lifecycle.py` (initialize/
+start, idempotency, transition matrix, terminal-state protection, no
+generic status endpoint), `tests/test_orchestration_tenancy.py`
+(cross-workspace denial across every orchestration route),
+`tests/test_orchestration_hitl.py` (decision open/respond, double-
+response rejection, cross-tenant denial, response-history preservation),
+`tests/test_orchestration_events.py` (event emission, ordering, tenant
+scoping, no mutation endpoint, atomicity-on-failure),
+`tests/test_orchestration_concurrency.py` (a real two-thread proof of
+the decision-response row lock), `tests/test_campaign_run_tenancy_invariant.py`
+(structural + database-level proof of the `CampaignRun.workspace_id ==
+Campaign.workspace_id` invariant), `tests/test_orchestration_security.py`
+(no raw UUIDs, no agent identifiers, no chain-of-thought field, no
+client-supplied tenancy field has authority), plus a dedicated migration
+round-trip test in `tests/test_migrations.py` that downgrades to exactly
+the pre-BACKEND-06 revision and back — all `postgres`-marked.
+
 ## Security limitations (explicit, not implicit)
 
 - **No rate limiting.** Login/register are documented future rate-limit
@@ -319,30 +477,53 @@ revision (not `base`) and back — all `postgres`-marked.
   `price`, `audience`, `budget`, `channel`) are free-text strings, not
   validated/normalized enums — matching the frontend's current form
   inputs; tightening them into real enums is a later concern.
+- Human Decision Request has no separate "Human Decision Option"
+  (structured multiple-choice) entity yet — `question`/`response_text`
+  are both free text. BACKEND-01 §4 describes structured options as a
+  future refinement for consequential decisions; deferred here to keep
+  BACKEND-06 minimal.
+- `Human Decision Response`'s public-ID prefix (`HDS`) is not among
+  BACKEND-01's confirmed prefixes (only `HDR`, Human Decision Request,
+  is reserved there) — chosen here to parallel `HDR`; likewise `STG`
+  (Stage Execution) is new, since that entity itself is new to
+  BACKEND-06. `AUDT` (Audit Event) does reuse BACKEND-01's own reserved
+  prefix.
+- The BACKEND-06 §6 tenancy-invariant composite FK is scoped exactly to
+  `CampaignRun`/`Campaign` (the pair the request explicitly named); it
+  is not extended to `RunStageExecution`/`HumanDecisionRequest` and
+  their parent `CampaignRun` — those instead use the lighter
+  "repository derives `workspace_id` from the parent object, never an
+  independent parameter" pattern. A future stage could add the same
+  composite-FK treatment there if warranted.
 
 ## Explicitly deferred (not in this stage)
 
-- `Content`, `Agent`, `Handoff`, `Return`, `Gate Decision`, `Subscription`,
-  or any other orchestration/billing table
-- `AGENT-00`…`AGENT-10`, `AOL-00`, or any orchestration/governance
-  runtime — a Campaign Run persisted by BACKEND-05 is inert; nothing
-  ever moves it past `CREATED`
-- Any AI provider integration (OpenRouter, OpenAI, Anthropic, etc.)
+- `Content`, `Agent Run`, `Handoff`, `Return`, `Gate Decision`, `Stop
+  Condition`, `Subscription`, or any other real-execution/billing table
+- `AGENT-00`…`AGENT-10` runtime, real AGENT-00 sequencing logic, and any
+  AI provider integration (OpenRouter, OpenAI, Anthropic, etc.) — a
+  `CampaignRun`/`RunStageExecution` persisted by BACKEND-06 is inert;
+  nothing here ever produces a generated output
 - Any external integration (Meta, Google Ads, Stripe, etc.)
 - Campaign Version (immutable strategy/plan snapshots), Research
   Report, Audience Profile, Strategy, Content Plan, and every other
-  BACKEND-01-catalogued entity downstream of orchestration
-- Campaign status transitions beyond the single `SUBMITTED` state this
-  stage ever persists — no route moves a Campaign to
-  `ORCHESTRATING`/`ACTIVE`/`COMPLETED`/etc.
+  BACKEND-01-catalogued entity downstream of real agent execution
+- Campaign status transitions beyond `SUBMITTED` — BACKEND-06 adds
+  orchestration/stage lifecycle machinery but still never moves a
+  `Campaign` itself past `SUBMITTED`
+- `Human Decision Option` (structured multiple-choice decisions) — see
+  Known reservations above
+- Asynchronous execution of any kind — Celery/RQ/Dramatiq/Redis/Kafka/
+  RabbitMQ/background workers/schedulers. Every BACKEND-06 lifecycle
+  operation is a synchronous, in-request database transaction.
 - Frontend wiring — `apps/web` remains mock/static
-- Redis, Celery, rate-limiting infrastructure, async SQLAlchemy
 
 ## Future module layout
 
-`app/auth/`, `app/users/`, `app/workspaces/` (BACKEND-04) and
-`app/campaigns/` (BACKEND-05) join `app/api`, `app/core`, `app/shared`,
-`app/persistence` alongside future `app/orchestration/`, `app/agents/`,
-`app/content/`, `app/measurement/`, etc. — each with its own
-`models.py`, `schemas.py`, `repository.py`, `service.py`, and
-`router.py`, included into `app/api/v1/router.py` one line at a time.
+`app/auth/`, `app/users/`, `app/workspaces/` (BACKEND-04),
+`app/campaigns/` (BACKEND-05), and `app/orchestration/`/`app/audit/`
+(BACKEND-06) join `app/api`, `app/core`, `app/shared`, `app/persistence`
+alongside future `app/agents/`, `app/content/`, `app/measurement/`, etc.
+— each with its own `models.py`, `schemas.py`, `repository.py`,
+`service.py`, and `router.py`, included into `app/api/v1/router.py` one
+line at a time.

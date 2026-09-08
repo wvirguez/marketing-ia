@@ -95,17 +95,32 @@ class CampaignRunRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, *, workspace_id: uuid.UUID, campaign_id: uuid.UUID, run_number: int) -> CampaignRun:
+    def create(self, *, campaign: Campaign, run_number: int) -> CampaignRun:
+        """Takes the parent ``Campaign`` object, not a raw
+        ``workspace_id`` parameter — BACKEND-06 §6's tenancy invariant
+        (``CampaignRun.workspace_id`` must equal ``Campaign.workspace_id``)
+        is enforced here structurally: there is no independent
+        ``workspace_id`` input a caller could pass inconsistently, since
+        it is always derived from the campaign being run. The database's
+        own composite foreign key (see ``app/campaigns/models.py``)
+        enforces the same invariant independently, as defense in depth.
+        """
         run = CampaignRun(
             public_id=generate_public_id("RUN"),
-            workspace_id=workspace_id,
-            campaign_id=campaign_id,
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.id,
             run_number=run_number,
             status=CampaignRunStatus.CREATED,
         )
         self.session.add(run)
         self.session.flush()
         return run
+
+    def get_by_public_id(self, public_id: str, *, for_update: bool = False) -> CampaignRun | None:
+        query = select(CampaignRun).where(CampaignRun.public_id == public_id)
+        if for_update:
+            query = query.with_for_update()
+        return self.session.execute(query).scalar_one_or_none()
 
     def list_for_campaign(self, *, campaign_id: uuid.UUID, limit: int, offset: int) -> tuple[list[CampaignRun], int]:
         total = self.session.execute(

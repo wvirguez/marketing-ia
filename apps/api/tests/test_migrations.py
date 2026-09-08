@@ -166,3 +166,96 @@ def test_backend_05_migration_round_trips_to_the_previous_revision(migrations_da
         assert _campaign_tables_exist(engine) is True
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_06_REVISION = "0977f6691593"
+_BACKEND_06_ENUM_TYPES = ("business_stage", "stage_execution_status", "audit_actor_type", "decision_request_status")
+_BACKEND_06_TABLES = ("run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events")
+
+
+def _orchestration_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'run_stage_executions')"
+            )
+        ).scalar_one()
+
+
+def test_backend_06_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-06 §34: upgrade to head, downgrade to exactly the
+    pre-BACKEND-06 revision (0977f6691593, not base), upgrade to head
+    again — proving the orchestration-foundation migration (including
+    the composite-FK tenancy hardening on the existing campaign_runs/
+    campaigns tables) adds/removes cleanly without disturbing any
+    BACKEND-04/05 table."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _orchestration_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_06_REVISION)
+        assert _orchestration_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_06_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-06 downgrade"
+
+            # BACKEND-04/05 tables must survive a BACKEND-06-only downgrade untouched.
+            for table in ("users", "organizations", "workspaces", "memberships", "auth_sessions", "campaigns", "campaign_briefs", "campaign_runs"):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-06-only downgrade"
+
+            leftover_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname = ANY(:names)"
+                ),
+                {"names": list(_BACKEND_06_ENUM_TYPES)},
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop every BACKEND-06-owned enum type"
+
+            # BACKEND-04/05-owned enum types must survive untouched.
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', 'user_status')"
+                )
+            ).scalars().all()
+            assert set(surviving_enums) == {
+                "campaign_status",
+                "campaign_run_status",
+                "membership_role",
+                "membership_status",
+                "user_status",
+            }, "a BACKEND-06 downgrade must not remove any earlier stage's enum type"
+
+            # The BACKEND-06-specific tenancy hardening must also be
+            # cleanly reverted: the original single-column FK restored,
+            # the new composite unique constraint gone.
+            fk_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'campaign_runs'::regclass AND contype = 'f'")
+            ).scalars().all()
+            assert "fk_campaign_runs_campaign_id_campaigns" in fk_names
+            assert "fk_campaign_runs_campaign_workspace" not in fk_names
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'campaigns'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_campaigns_id_workspace_id" not in unique_names
+
+        command.upgrade(config, "head")
+        assert _orchestration_tables_exist(engine) is True
+        with engine.connect() as connection:
+            fk_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'campaign_runs'::regclass AND contype = 'f'")
+            ).scalars().all()
+            assert "fk_campaign_runs_campaign_workspace" in fk_names
+            assert "fk_campaign_runs_campaign_id_campaigns" not in fk_names
+    finally:
+        engine.dispose()

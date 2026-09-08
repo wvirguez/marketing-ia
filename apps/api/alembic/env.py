@@ -18,9 +18,11 @@ from alembic import context
 # `Base.metadata` before Alembic looks at it. Each import is for its
 # side effect only (table registration); add one line here whenever a
 # future stage introduces a new model module.
+from app.audit import models as audit_models  # noqa: F401
 from app.auth import models as auth_models  # noqa: F401
 from app.campaigns import models as campaign_models  # noqa: F401
 from app.core.config import get_settings
+from app.orchestration import models as orchestration_models  # noqa: F401
 from app.persistence import probe  # noqa: F401  (BACKEND-03: explicitly non-domain persistence probe)
 from app.persistence.base import Base
 from app.users import models as user_models  # noqa: F401

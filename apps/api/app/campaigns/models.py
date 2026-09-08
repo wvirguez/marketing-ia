@@ -22,7 +22,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -65,6 +65,17 @@ class CampaignRunStatus(str, enum.Enum):
 
 class Campaign(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "campaigns"
+    __table_args__ = (
+        # A candidate key purely so `CampaignRun` can declare a composite
+        # FK on (campaign_id, workspace_id) below — BACKEND-06 §6's
+        # tenancy invariant ("CampaignRun.workspace_id MUST equal
+        # Campaign.workspace_id") enforced at the database level, not
+        # only in application code. `id` alone is already globally
+        # unique, so this constraint adds no real-world ambiguity; it
+        # exists only to give Postgres a matching unique target for the
+        # composite foreign key.
+        UniqueConstraint("id", "workspace_id", name="uq_campaigns_id_workspace_id"),
+    )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
@@ -114,11 +125,28 @@ class CampaignRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "campaign_runs"
     __table_args__ = (
         Index("uq_campaign_runs_campaign_run_number", "campaign_id", "run_number", unique=True),
+        # BACKEND-06 §6 tenancy invariant, enforced at the database
+        # layer: a CampaignRun's `workspace_id` must equal its parent
+        # Campaign's `workspace_id`. A composite FK referencing
+        # `campaigns (id, workspace_id)` makes it physically impossible
+        # to insert/update a row where the two diverge — Postgres itself
+        # rejects it, independent of and in addition to the
+        # application-layer enforcement in
+        # `app/campaigns/repository.py::CampaignRunRepository.create`
+        # (which derives `workspace_id` from the `Campaign` object
+        # rather than accepting it as an independent parameter at all).
+        # `workspace_id` also keeps its own direct FK to `workspaces.id`
+        # below (unrelated relationship, still required on its own).
+        ForeignKeyConstraint(
+            ["campaign_id", "workspace_id"],
+            ["campaigns.id", "campaigns.workspace_id"],
+            name="fk_campaign_runs_campaign_workspace",
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(index=True)
     run_number: Mapped[int] = mapped_column()
     status: Mapped[CampaignRunStatus] = mapped_column(
         Enum(CampaignRunStatus, name="campaign_run_status", native_enum=True),
