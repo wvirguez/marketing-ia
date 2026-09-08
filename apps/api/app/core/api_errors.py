@@ -101,3 +101,31 @@ class DecisionAlreadyResolvedError(ApiError):
 
     def __init__(self, message: str = "This decision has already been resolved.") -> None:
         super().__init__(message, status_code=409, code="DECISION_ALREADY_RESOLVED")
+
+
+class ProvenanceMismatchError(ApiError):
+    """BACKEND-07 §10: reused for every "this doesn't line up" provenance
+    failure when recording a ResearchReport/AudienceProfile — the given
+    CampaignRun does not belong to the given Campaign, does not belong to
+    the given Workspace, the given RunStageExecution does not belong to
+    the given CampaignRun, or the RunStageExecution's own ``stage`` is not
+    the one expected (RESEARCH/AUDIENCE). A plain or composite foreign
+    key alone cannot prove all of these; the service layer checks each
+    explicitly and raises this one deterministic error for any failure,
+    never revealing which specific check failed to a caller that has no
+    business knowing (mirrors ``ForbiddenError``'s own non-leaky
+    precedent, applied to provenance rather than tenancy)."""
+
+    def __init__(self, message: str = "The supplied run/stage provenance is inconsistent.") -> None:
+        super().__init__(message, status_code=409, code="PROVENANCE_MISMATCH")
+
+
+class VersionConflictError(ApiError):
+    """BACKEND-07 §11: two concurrent writers raced to create the same
+    ``(campaign_id, version)`` for a ResearchReport or AudienceProfile —
+    the database's own unique constraint is authoritative; this error is
+    the mapped, deterministic surface for the resulting ``IntegrityError``,
+    never a raw 500."""
+
+    def __init__(self, message: str = "This version already exists for this campaign.") -> None:
+        super().__init__(message, status_code=409, code="VERSION_CONFLICT")

@@ -67,6 +67,18 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     decision_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("human_decision_requests.id"), default=None, index=True
     )
+    # BACKEND-07 §13: same reasoning as decision_request_id above — a
+    # research.report.recorded/audience.profile.recorded event must
+    # identify its exact ResearchReport/AudienceProfile, never only be
+    # inferable from campaign_id/campaign_run_id/stage_execution_id
+    # (which two different report versions for the same campaign/run
+    # would share).
+    research_report_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("research_reports.id"), default=None, index=True
+    )
+    audience_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("audience_profiles.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

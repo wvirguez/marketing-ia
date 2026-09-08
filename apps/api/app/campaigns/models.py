@@ -142,6 +142,14 @@ class CampaignRun(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             ["campaigns.id", "campaigns.workspace_id"],
             name="fk_campaign_runs_campaign_workspace",
         ),
+        # BACKEND-07 §9 (explicitly authorized, additive-only): a
+        # candidate key purely so the `research` module's
+        # ResearchReport/AudienceProfile tables can declare a composite
+        # FK on (campaign_run_id, workspace_id), the exact same pattern
+        # `Campaign.uq_campaigns_id_workspace_id` already provides for
+        # CampaignRun itself. `id` alone is already globally unique, so
+        # this adds no real-world ambiguity.
+        UniqueConstraint("id", "workspace_id", name="uq_campaign_runs_id_workspace_id"),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)

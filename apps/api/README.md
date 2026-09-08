@@ -1,20 +1,21 @@
 # Impulso API
 
-FastAPI + PostgreSQL + authentication/tenancy/campaign/orchestration
-foundation for the Impulso backend — **BACKEND-02** (application
+FastAPI + PostgreSQL + authentication/tenancy/campaign/orchestration/
+research foundation for the Impulso backend — **BACKEND-02** (application
 skeleton), **BACKEND-03** (persistence foundation), **BACKEND-04**
 (identity, authentication, workspace tenancy), **BACKEND-05** (campaign
-domain & persistence), and **BACKEND-06** (orchestration foundation).
+domain & persistence), **BACKEND-06** (orchestration foundation), and
+**BACKEND-07** (Research + Audience persistence/contracts).
 
 > **AI/AGENT EXECUTION NOT IMPLEMENTED. FRONTEND NOT WIRED.**
-> BACKEND-06 turns `CampaignRun` from inert persistence scaffolding into
-> a persisted, auditable orchestration *lifecycle* — business stages,
-> human-in-the-loop scaffolding, append-only traceability — but it is
-> still entirely inert: no route or service here ever calls an AI
-> provider, invokes an agent, starts a worker, or produces a generated
-> research/strategy/content output. No `Content`, `Agent Run`,
-> `Handoff`, `Return`, `Gate Decision`, or billing table exists.
-> `apps/web` has not been touched and does not call this API yet — see
+> BACKEND-07 adds persisted storage for exactly the four entities
+> BACKEND-01 canonically assigns to the `research` bounded context —
+> Research Report, Research Source, Audience Profile, VOC Evidence —
+> with a GET-only read API. It is entirely inert: there is no public
+> write endpoint, no AI provider call, no agent execution anywhere in
+> this module. No `Content`, `Agent Run`, `Handoff`, `Return`, `Gate
+> Decision`, `Strategy`, or billing table exists. `apps/web` has not
+> been touched and does not call this API yet — see
 > `docs/backend/BACKEND-01-ARCHITECTURE.md` §13 for the proposed phase
 > sequence.
 
@@ -87,19 +88,22 @@ uvicorn app.main:app --reload
 - `POST /api/v1/campaigns/{id}/runs/{run_id}/initialize`,
   `POST .../start`, `GET .../` (run detail), `GET .../progress`,
   `GET .../stages`, `GET .../events`, `GET .../decisions`,
-  `POST .../decisions/{decision_id}/respond` — **new**
+  `POST .../decisions/{decision_id}/respond` — unchanged since BACKEND-06
+- `GET /api/v1/campaigns/{id}/research`, `GET /api/v1/campaigns/{id}/audience`
+  — **new**, GET-only
 - `GET /docs`, `GET /redoc`, `GET /openapi.json` — OpenAPI (enabled)
 
 If `DATABASE_URL` has migrations applied (`alembic upgrade head`), the
 full register → session → csrf → logout flow, the full campaign
-create → list → get → patch → archive → list-runs flow, and the full
+create → list → get → patch → archive → list-runs flow, the full
 orchestration initialize → start → progress → events → (decision
-respond) flow all work with real cookies — verified live with `curl`
-(see delivery notes) and in `tests/test_auth_session.py`/
-`test_auth_csrf.py`/`test_registration.py`/`test_campaigns_crud.py`/
-`test_campaigns_tenancy.py`/`test_orchestration_lifecycle.py`/
-`test_orchestration_tenancy.py`/`test_orchestration_hitl.py`/
-`test_orchestration_events.py`.
+respond) flow, and the research/audience read endpoints all work with
+real cookies — verified live with `curl` (see delivery notes) and in
+`tests/test_auth_session.py`/`test_auth_csrf.py`/`test_registration.py`/
+`test_campaigns_crud.py`/`test_campaigns_tenancy.py`/
+`test_orchestration_lifecycle.py`/`test_orchestration_tenancy.py`/
+`test_orchestration_hitl.py`/`test_orchestration_events.py`/
+`test_research_domain.py`/`test_research_audit.py`/`test_research_api.py`.
 
 ## Campaign domain (BACKEND-05)
 
@@ -288,6 +292,87 @@ migration; nothing is retroactively "initialized" or backfilled into
 any executed-looking state. Historical truth is preserved exactly:
 those runs were persisted, never executed, and still are.
 
+## Research / Audience persistence (BACKEND-07)
+
+Persists exactly the four entities BACKEND-01 canonically assigns to the
+`research` bounded context (`docs/backend/BACKEND-01-ARCHITECTURE.md`
+§1): **Research Report**, **Research Source**, **Audience Profile**,
+**VOC Evidence** — no more, no less. There is no separate "Finding" or
+"Audience Insight" table: BACKEND-01's own entity catalog treats a
+Report's `summary` as the finding itself, and VOC Evidence belongs
+directly to Audience Profile (the ER diagram draws no edge to Research
+Source at all).
+
+**Ownership:** both Report and Profile are Campaign-owned (composite FK
+`(campaign_id, workspace_id) → campaigns(id, workspace_id)`, reusing the
+candidate key BACKEND-06 already added to `Campaign`) — matching
+BACKEND-01's ER diagram exactly, where both hang directly off Campaign,
+not off CampaignRun. `campaign_run_id` (composite FK against a new
+candidate key added to `CampaignRun` in this stage) and
+`stage_execution_id` are carried as **required provenance** — which run
+and which stage-execution instance produced this version — never as the
+ownership relationship. A new `CampaignRun` therefore never overwrites
+an earlier run's evidence: two runs on the same Campaign each get their
+own Report/Profile rows.
+
+**Provenance is proven, not assumed:** a foreign key alone cannot prove
+a `CampaignRun` actually belongs to the stated `Campaign`, or that a
+`RunStageExecution` is the right one. `app/research/service.py`
+explicitly checks all four: `campaign_run.campaign_id == campaign.id`,
+`campaign_run.workspace_id == campaign.workspace_id`,
+`stage_execution.campaign_run_id == campaign_run.id`, and
+`stage_execution.stage == RESEARCH`/`AUDIENCE` as appropriate — any
+mismatch raises the same `PROVENANCE_MISMATCH` error, never revealing
+which specific check failed.
+
+**Immutable, versioned, no status field:** neither `ResearchReport` nor
+`AudienceProfile` ever uses `TimestampMixin` — only `created_at` exists,
+no `updated_at`, so there is no `onupdate` trigger to even accidentally
+rely on. A "new version" is a brand-new row with an incremented
+`version` integer (mirroring `CampaignBrief`'s own precedent); the
+`(campaign_id, version)` unique constraint is the sole, authoritative
+concurrency guard — the service computes the next version optimistically
+and lets the database reject a race, mapping the resulting
+`IntegrityError` to a deterministic `VERSION_CONFLICT`. **No
+`status`/`ACTIVE`/`SUPERSEDED`/`supersedes_id` field exists anywhere** —
+"current" is simply `MAX(version)` for the Campaign; old versions are
+never edited or deleted.
+
+**No public write endpoint.** BACKEND-01's own API map defines
+`GET /campaigns/{id}/research` and `GET /campaigns/{id}/audience` as
+GET-only — there is no `POST`/`PATCH`/`DELETE` anywhere in this module.
+Writes happen only through `ResearchService.record_report`/
+`record_audience_profile`, called directly by tests today and by a
+future orchestration/agent runtime once one exists — the same
+service-layer-only shape BACKEND-06's `create_decision_request` already
+established. Persisting a Report/Profile never mutates
+`CampaignRun.status`, `RunStageExecution.status`, or any
+`HumanDecisionRequest`/`Response` — `OUTPUT PERSISTED != STAGE
+COMPLETED`.
+
+**VOC integrity:** `verbatim_quote` and `paraphrase` are separate
+columns — a paraphrase never overwrites the original wording. A
+database check constraint (`verbatim_quote IS NOT NULL OR paraphrase IS
+NOT NULL`) rejects a row recording neither; the repository normalizes
+blank/whitespace-only strings to `NULL` before insert, so the constraint
+cannot be bypassed with semantically-empty content. VOC Evidence carries
+no foreign key to Research Source (BACKEND-01's ER diagram draws no such
+edge) — only a plain `source_locator` string.
+
+**Audit attribution:** `AuditEvent` gained two new nullable FKs,
+`research_report_id`/`audience_profile_id`, so a
+`research.report.recorded`/`audience.profile.recorded` event can be
+traced to the *exact* Report/Profile it is about — the same fix
+BACKEND-06R applied for decisions, applied here from the start. One
+event per aggregate write (Report + all its Sources; Profile + all its
+VOC items), in the same transaction as the aggregate — if the event
+write fails, or any child row fails, nothing commits.
+
+**Known, explicitly-flagged design choices, not BACKEND-01-canonical:**
+the `SRCE`/`VOC` public-ID prefixes (BACKEND-01 only reserves `RPT`/`AUD`);
+the `SourceType` enum vocabulary (`ARTICLE`/`REPORT`/`FORUM`/`SOCIAL`/
+`SURVEY`/`OTHER`) is descriptive-only, never a reliability/truth signal.
+
 ## Authentication model
 
 **Opaque server-side sessions, not JWT.** Browser flow:
@@ -456,6 +541,17 @@ client-supplied tenancy field has authority), plus a dedicated migration
 round-trip test in `tests/test_migrations.py` that downgrades to exactly
 the pre-BACKEND-06 revision and back — all `postgres`-marked.
 
+New in BACKEND-07: `tests/test_research_domain.py` (persistence,
+provenance — valid and invalid — versioning, historical isolation across
+runs, VOC verbatim/paraphrase integrity, evidence-integrity/no-forbidden-
+field assertions), `tests/test_research_audit.py` (exact Report/Profile
+attribution, distinguishable events across versions, aggregate rollback
+on event or child failure), `tests/test_research_api.py` (GET-only route
+surface, combined response shape, empty-output behavior, tenancy,
+security), plus a dedicated migration round-trip test in
+`tests/test_migrations.py` that downgrades to exactly the pre-BACKEND-07
+revision and back — all `postgres`-marked.
+
 ## Security limitations (explicit, not implicit)
 
 - **No rate limiting.** Login/register are documented future rate-limit
@@ -495,35 +591,50 @@ the pre-BACKEND-06 revision and back — all `postgres`-marked.
   "repository derives `workspace_id` from the parent object, never an
   independent parameter" pattern. A future stage could add the same
   composite-FK treatment there if warranted.
+- `ResearchSource`/`VOCEvidence`'s public-ID prefixes (`SRCE`/`VOC`) are
+  not among BACKEND-01's confirmed prefixes (only `RPT`/`AUD` are
+  reserved there) — explicitly authorized as new, non-canonical
+  prefixes for this stage.
+- No PII detection/scrubbing exists for `VOCEvidence.verbatim_quote` —
+  storing a real customer's exact words risks incidentally capturing an
+  identifying detail if the source itself wasn't anonymized. BACKEND-01
+  gives no retention/anonymization policy for this; reserved, not solved.
+- No discrete "Finding" entity exists separate from
+  `ResearchReport.summary` — if a future stage needs independently
+  citable, independently approvable findings, that is a real schema
+  change (a new table + migration), not a JSON-field patch.
 
 ## Explicitly deferred (not in this stage)
 
 - `Content`, `Agent Run`, `Handoff`, `Return`, `Gate Decision`, `Stop
   Condition`, `Subscription`, or any other real-execution/billing table
 - `AGENT-00`…`AGENT-10` runtime, real AGENT-00 sequencing logic, and any
-  AI provider integration (OpenRouter, OpenAI, Anthropic, etc.) — a
-  `CampaignRun`/`RunStageExecution` persisted by BACKEND-06 is inert;
-  nothing here ever produces a generated output
+  AI provider integration (OpenRouter, OpenAI, Anthropic, etc.) — nothing
+  in `app/research/` (or `app/orchestration/`) ever produces a generated
+  output
 - Any external integration (Meta, Google Ads, Stripe, etc.)
-- Campaign Version (immutable strategy/plan snapshots), Research
-  Report, Audience Profile, Strategy, Content Plan, and every other
-  BACKEND-01-catalogued entity downstream of real agent execution
-- Campaign status transitions beyond `SUBMITTED` — BACKEND-06 adds
-  orchestration/stage lifecycle machinery but still never moves a
-  `Campaign` itself past `SUBMITTED`
+- Strategy, Positioning, Hypothesis, Experiment, Content Plan, and every
+  other BACKEND-01-catalogued entity downstream of real agent execution
+  or Strategy — `AudienceProfile`/`ResearchReport` never imply a
+  strategic decision, approved target, or positioning
+- Campaign status transitions beyond `SUBMITTED` — BACKEND-06/07 add
+  orchestration/stage lifecycle and evidence-persistence machinery but
+  still never move a `Campaign` itself past `SUBMITTED`
 - `Human Decision Option` (structured multiple-choice decisions) — see
   Known reservations above
 - Asynchronous execution of any kind — Celery/RQ/Dramatiq/Redis/Kafka/
-  RabbitMQ/background workers/schedulers. Every BACKEND-06 lifecycle
-  operation is a synchronous, in-request database transaction.
-- Frontend wiring — `apps/web` remains mock/static
+  RabbitMQ/background workers/schedulers. Every BACKEND-06/07 operation
+  is a synchronous, in-request/in-test database transaction.
+- Frontend wiring — `apps/web` remains mock/static; its "Investigación"/
+  "Audiencia" tabs render fixed demo arrays with no shape resembling
+  `ResearchReport`/`AudienceProfile` yet
 
 ## Future module layout
 
 `app/auth/`, `app/users/`, `app/workspaces/` (BACKEND-04),
-`app/campaigns/` (BACKEND-05), and `app/orchestration/`/`app/audit/`
-(BACKEND-06) join `app/api`, `app/core`, `app/shared`, `app/persistence`
-alongside future `app/agents/`, `app/content/`, `app/measurement/`, etc.
-— each with its own `models.py`, `schemas.py`, `repository.py`,
-`service.py`, and `router.py`, included into `app/api/v1/router.py` one
-line at a time.
+`app/campaigns/` (BACKEND-05), `app/orchestration/`/`app/audit/`
+(BACKEND-06), and `app/research/` (BACKEND-07) join `app/api`, `app/core`,
+`app/shared`, `app/persistence` alongside future `app/agents/`,
+`app/strategy/`, `app/content/`, `app/measurement/`, etc. — each with
+its own `models.py`, `schemas.py`, `repository.py`, `service.py`, and
+`router.py`, included into `app/api/v1/router.py` one line at a time.

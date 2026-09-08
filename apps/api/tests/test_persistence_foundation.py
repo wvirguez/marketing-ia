@@ -76,13 +76,15 @@ def test_alembic_config_loads_and_has_exactly_one_head() -> None:
 
 def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     """Scope check: identity/tenancy tables (BACKEND-04), Campaign/
-    Campaign Brief/Campaign Run (BACKEND-05), and the orchestration
+    Campaign Brief/Campaign Run (BACKEND-05), the orchestration
     foundation — RunStageExecution, Human Decision Request/Response,
-    Audit Event (BACKEND-06) — all exist, plus the BACKEND-03
-    infrastructure probe. No Content/Agent Run/Handoff/Return/Gate
-    Decision/Metric/Subscription table (real agent execution and beyond)
-    has been prematurely introduced — BACKEND-06's orchestration
-    foundation is deliberately inert (no AI execution)."""
+    Audit Event (BACKEND-06) — and the Research/Audience persistence
+    contracts — Research Report/Source, Audience Profile, VOC Evidence
+    (BACKEND-07) — all exist, plus the BACKEND-03 infrastructure probe.
+    No Content/Agent Run/Handoff/Return/Gate Decision/Metric/Subscription
+    table (real agent execution and beyond) has been prematurely
+    introduced — BACKEND-07's persistence is deliberately inert (no AI
+    execution, no public write endpoint)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -97,6 +99,10 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "human_decision_requests",
         "human_decision_responses",
         "audit_events",
+        "research_reports",
+        "research_sources",
+        "audience_profiles",
+        "voc_evidence",
     }
 
 
