@@ -121,3 +121,48 @@ def test_migration_round_trips_downgrade_and_upgrade(migrations_database_url: st
     finally:
         engine.dispose()
     assert probe_exists_again is True
+
+
+_PRE_BACKEND_05_REVISION = "ce93e0b40957"
+
+
+def _campaign_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'campaigns')"
+            )
+        ).scalar_one()
+
+
+def test_backend_05_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-05 §22: upgrade to head, downgrade to exactly the
+    pre-BACKEND-05 revision (not all the way to base), upgrade to head
+    again — proving the campaign-domain migration adds/removes cleanly
+    without disturbing BACKEND-04's identity/tenancy tables."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _campaign_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_05_REVISION)
+        assert _campaign_tables_exist(engine) is False
+        with engine.connect() as connection:
+            # BACKEND-04 tables must survive a BACKEND-05 downgrade untouched.
+            for table in ("users", "organizations", "workspaces", "memberships", "auth_sessions"):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-05-only downgrade"
+            leftover_enums = connection.execute(
+                text("SELECT typname FROM pg_type WHERE typname LIKE 'campaign%'")
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop the campaign_status/campaign_run_status enum types"
+
+        command.upgrade(config, "head")
+        assert _campaign_tables_exist(engine) is True
+    finally:
+        engine.dispose()

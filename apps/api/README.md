@@ -1,14 +1,17 @@
 # Impulso API
 
-FastAPI + PostgreSQL + authentication/tenancy foundation for the
+FastAPI + PostgreSQL + authentication/tenancy/campaign foundation for the
 Impulso backend — **BACKEND-02** (application skeleton), **BACKEND-03**
-(persistence foundation), and **BACKEND-04** (identity, authentication,
-workspace tenancy).
+(persistence foundation), **BACKEND-04** (identity, authentication,
+workspace tenancy), and **BACKEND-05** (campaign domain & persistence).
 
-> **CAMPAIGNS NOT IMPLEMENTED. AI AGENTS NOT IMPLEMENTED. FRONTEND NOT WIRED.**
-> This stage adds real identity/auth/tenancy only. No `Campaign`,
-> `Content`, `Agent`, or billing table or route exists. `apps/web`
-> has not been touched and does not call this API yet — see
+> **AGENT/AI EXECUTION NOT IMPLEMENTED. FRONTEND NOT WIRED.**
+> BACKEND-05 adds a persisted Campaign domain — Campaign, Campaign
+> Brief, Campaign Run — with a REST API, but a Campaign Run is
+> intentionally **inert**: creating one never invokes an agent, calls an
+> AI provider, or produces any research/strategy/content output. No
+> `Content`, `Agent`, `Handoff`, or billing table or route exists.
+> `apps/web` has not been touched and does not call this API yet — see
 > `docs/backend/BACKEND-01-ARCHITECTURE.md` §13 for the proposed phase
 > sequence.
 
@@ -72,14 +75,77 @@ uvicorn app.main:app --reload
 - `GET /api/v1/readiness` — unchanged since BACKEND-03
 - `POST /api/v1/auth/register`, `POST /api/v1/auth/login`,
   `POST /api/v1/auth/logout`, `GET /api/v1/auth/session`,
-  `GET /api/v1/auth/csrf` — **new**
-- `GET /api/v1/users/me`, `GET /api/v1/workspaces/current` — **new**
+  `GET /api/v1/auth/csrf` — unchanged since BACKEND-04
+- `GET /api/v1/users/me`, `GET /api/v1/workspaces/current` — unchanged since BACKEND-04
+- `POST /api/v1/campaigns`, `GET /api/v1/campaigns`,
+  `GET /api/v1/campaigns/{id}`, `PATCH /api/v1/campaigns/{id}`,
+  `POST /api/v1/campaigns/{id}/archive`,
+  `GET /api/v1/campaigns/{id}/runs` — **new**
 - `GET /docs`, `GET /redoc`, `GET /openapi.json` — OpenAPI (enabled)
 
 If `DATABASE_URL` has migrations applied (`alembic upgrade head`), the
-full register → session → csrf → logout flow works with real cookies —
-verified live with `curl` (see delivery notes) and in
-`tests/test_auth_session.py`/`test_auth_csrf.py`/`test_registration.py`.
+full register → session → csrf → logout flow, and the full campaign
+create → list → get → patch → archive → list-runs flow, both work with
+real cookies — verified live with `curl` (see delivery notes) and in
+`tests/test_auth_session.py`/`test_auth_csrf.py`/`test_registration.py`/
+`tests/test_campaigns_crud.py`/`tests/test_campaigns_tenancy.py`.
+
+## Campaign domain (BACKEND-05)
+
+Three tables: **Campaign** (the durable business entity, directly
+Workspace-owned), **Campaign Brief** (an immutable, versioned capture of
+the original prompt + optional structured context — product, price,
+audience, budget, channel — belonging to a Campaign; tenant-scoped only
+transitively, through its Campaign, per the BACKEND-01 domain model),
+and **Campaign Run** (one orchestration attempt against a Campaign,
+directly Workspace-owned like `Membership`).
+
+**Campaign ≠ Campaign Run.** Creating a Campaign Run in this stage is
+*inert*: it persists exactly one row with `status=CREATED` and does
+nothing else — no agent is invoked, no AI provider is called, no
+research/strategy/content is produced, no external side effect of any
+kind occurs. `PERSISTED RUN != EXECUTED ORCHESTRATION`. The orchestration
+runtime that would ever move a run past `CREATED` does not exist yet
+(a later, separately authorized stage — see
+`docs/backend/BACKEND-01-ARCHITECTURE.md` §13).
+
+**Atomic creation:** `POST /api/v1/campaigns` creates Campaign +
+Campaign Brief v1 + Campaign Run #1 in one transaction, committed once
+at the end (`app/campaigns/service.py::CampaignService.create_campaign`)
+— identical transaction-ownership pattern to
+`AuthService.register` (BACKEND-04). If anything fails before that
+single `commit()`, nothing is persisted; proven directly (no HTTP) in
+`tests/test_campaigns_crud.py::test_campaign_creation_failure_mid_transaction_leaves_no_orphan_rows`.
+
+**Public IDs:** `CMP-`, `CBR-`, `RUN-`, same 12-character Crockford-base32
+suffix convention as every other entity. Internal UUIDs are never
+returned.
+
+**Tenancy:** every campaign route depends on `get_current_workspace`
+(never a client-supplied `workspace_id`) and, for a specific campaign,
+`CampaignAccessService.get_authorized_campaign`
+(`app/campaigns/service.py`) — the Campaign-domain counterpart of
+BACKEND-04's `WorkspaceAccessService`, returning the same `FORBIDDEN`
+error whether a campaign id does not exist at all or belongs to a
+different workspace.
+
+**Status:** `Campaign.status` mirrors state machine A
+(`docs/backend/BACKEND-01-ARCHITECTURE.md` §2A) in full, but BACKEND-05
+only ever persists `SUBMITTED` (brief captured, orchestration not
+started) — no route in this stage transitions a Campaign to any other
+status. `PATCH` only accepts `name`; status transitions are an
+orchestration-runtime concern. Archiving is a separate, non-destructive,
+idempotent action (`POST /{id}/archive`) that sets a nullable
+`archived_at` timestamp — the same "soft state" convention already used
+by `AuthSession.revoked_at` — rather than moving `status` to `ARCHIVED`
+(which the state machine only reaches via `COMPLETED`, unreachable here).
+Archived campaigns are excluded from `GET /api/v1/campaigns` by default;
+pass `?include_archived=true` to see them. Nothing is ever deleted.
+
+**Listing:** both `GET /api/v1/campaigns` and
+`GET /api/v1/campaigns/{id}/runs` use bounded `limit`/`offset` pagination
+(default 20, max 100), newest-first for campaigns and run-number-ascending
+for runs.
 
 ## Authentication model
 
@@ -225,6 +291,13 @@ New in BACKEND-04: `tests/test_auth_passwords.py` (hashing, no DB),
 `tests/test_registration.py`, `tests/test_auth_session.py`,
 `tests/test_auth_csrf.py`, `tests/test_tenancy.py` (all `postgres`-marked).
 
+New in BACKEND-05: `tests/test_campaigns_crud.py` (creation + atomicity,
+public ids, listing/pagination, retrieval, patch, archive, run listing,
+uniqueness constraints), `tests/test_campaigns_tenancy.py`
+(cross-workspace denial), plus a dedicated migration round-trip test in
+`tests/test_migrations.py` that downgrades to exactly the pre-BACKEND-05
+revision (not `base`) and back — all `postgres`-marked.
+
 ## Security limitations (explicit, not implicit)
 
 - **No rate limiting.** Login/register are documented future rate-limit
@@ -239,26 +312,37 @@ New in BACKEND-04: `tests/test_auth_passwords.py` (hashing, no DB),
 - UUIDv7 vs. UUIDv4: BACKEND-01 specifies UUIDv7 for internal primary
   keys; `UUIDPrimaryKeyMixin` still generates UUIDv4 (no stdlib UUIDv7
   before Python 3.14, no UUIDv7 package approved yet) — unchanged,
-  reported gap from BACKEND-03.
+  reported gap from BACKEND-03, still present in BACKEND-05's new tables.
 - No Row-Level Security, no production pool tuning, no secret-manager
   integration — see `docs/backend/BACKEND-01-ARCHITECTURE.md` §6.
+- Campaign Brief's optional structured context fields (`product_type`,
+  `price`, `audience`, `budget`, `channel`) are free-text strings, not
+  validated/normalized enums — matching the frontend's current form
+  inputs; tightening them into real enums is a later concern.
 
 ## Explicitly deferred (not in this stage)
 
-- `Campaign`, `Content`, `Agent`, `Subscription`, or any other
-  business/billing table
-- `AGENT-00`…`AGENT-10`, `AOL-00`, Handoffs, Returns, Gates, or any
-  orchestration/governance runtime
+- `Content`, `Agent`, `Handoff`, `Return`, `Gate Decision`, `Subscription`,
+  or any other orchestration/billing table
+- `AGENT-00`…`AGENT-10`, `AOL-00`, or any orchestration/governance
+  runtime — a Campaign Run persisted by BACKEND-05 is inert; nothing
+  ever moves it past `CREATED`
 - Any AI provider integration (OpenRouter, OpenAI, Anthropic, etc.)
 - Any external integration (Meta, Google Ads, Stripe, etc.)
+- Campaign Version (immutable strategy/plan snapshots), Research
+  Report, Audience Profile, Strategy, Content Plan, and every other
+  BACKEND-01-catalogued entity downstream of orchestration
+- Campaign status transitions beyond the single `SUBMITTED` state this
+  stage ever persists — no route moves a Campaign to
+  `ORCHESTRATING`/`ACTIVE`/`COMPLETED`/etc.
 - Frontend wiring — `apps/web` remains mock/static
 - Redis, Celery, rate-limiting infrastructure, async SQLAlchemy
 
 ## Future module layout
 
-`app/auth/`, `app/users/`, `app/workspaces/` (new in BACKEND-04) join
-`app/api`, `app/core`, `app/shared`, `app/persistence` alongside future
-`app/campaigns/`, `app/orchestration/`, `app/agents/`, `app/content/`,
-`app/measurement/`, etc. — each with its own `models.py`, `schemas.py`,
-`repository.py`, `service.py`, and `router.py`, included into
-`app/api/v1/router.py` one line at a time.
+`app/auth/`, `app/users/`, `app/workspaces/` (BACKEND-04) and
+`app/campaigns/` (BACKEND-05) join `app/api`, `app/core`, `app/shared`,
+`app/persistence` alongside future `app/orchestration/`, `app/agents/`,
+`app/content/`, `app/measurement/`, etc. — each with its own
+`models.py`, `schemas.py`, `repository.py`, `service.py`, and
+`router.py`, included into `app/api/v1/router.py` one line at a time.

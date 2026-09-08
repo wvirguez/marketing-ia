@@ -74,11 +74,12 @@ def test_alembic_config_loads_and_has_exactly_one_head() -> None:
     assert len(heads) == 1
 
 
-def test_no_business_domain_tables_exist_yet() -> None:
-    """Scope check: identity/tenancy tables exist as of BACKEND-04, plus
-    the BACKEND-03 infrastructure probe — but no Campaign/Content/Agent/
-    Metric/Subscription business-domain table has been prematurely
-    introduced."""
+def test_no_orchestration_or_content_domain_tables_exist_yet() -> None:
+    """Scope check: identity/tenancy tables (BACKEND-04) plus the
+    Campaign/Campaign Brief/Campaign Run tables (BACKEND-05) exist, plus
+    the BACKEND-03 infrastructure probe — but no Content/Agent/Handoff/
+    Metric/Subscription table (orchestration runtime and beyond) has
+    been prematurely introduced."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -86,6 +87,9 @@ def test_no_business_domain_tables_exist_yet() -> None:
         "workspaces",
         "memberships",
         "auth_sessions",
+        "campaigns",
+        "campaign_briefs",
+        "campaign_runs",
     }
 
 

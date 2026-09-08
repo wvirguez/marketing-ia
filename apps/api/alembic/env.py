@@ -19,6 +19,7 @@ from alembic import context
 # side effect only (table registration); add one line here whenever a
 # future stage introduces a new model module.
 from app.auth import models as auth_models  # noqa: F401
+from app.campaigns import models as campaign_models  # noqa: F401
 from app.core.config import get_settings
 from app.persistence import probe  # noqa: F401  (BACKEND-03: explicitly non-domain persistence probe)
 from app.persistence.base import Base

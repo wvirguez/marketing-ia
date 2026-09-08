@@ -7,7 +7,7 @@ from app.main import app
 
 # Registers shared fixtures for every test module, without importing
 # DB-only names into modules that don't need them.
-pytest_plugins = ["tests.dbtest", "tests.authtest"]
+pytest_plugins = ["tests.dbtest", "tests.authtest", "tests.campaignstest"]
 
 
 @pytest.fixture()
