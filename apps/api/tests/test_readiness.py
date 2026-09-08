@@ -57,7 +57,9 @@ def test_readiness_not_ready_when_database_unreachable_and_leaks_nothing() -> No
 
 @pytest.mark.postgres
 def test_readiness_ready_when_database_available(postgres_engine: Engine) -> None:
-    configure_database(str(postgres_engine.url))
+    configure_database(
+        postgres_engine.url.render_as_string(hide_password=False)
+    )
     try:
         client = _isolated_client()
         response = client.get("/api/v1/readiness")

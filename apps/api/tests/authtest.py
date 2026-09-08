@@ -32,7 +32,10 @@ def auth_client(postgres_engine: Engine) -> Iterator[TestClient]:
     across requests (httpx's default) — exactly what a register -> login
     -> session -> logout flow needs to look like real browser behavior."""
     settings = get_settings()
-    configure_database(str(postgres_engine.url), echo=False)
+    configure_database(
+         postgres_engine.url.render_as_string(hide_password=False),
+         echo=False,
+     )
     try:
         app = _build_auth_app(settings)
         with TestClient(app, raise_server_exceptions=False) as client:

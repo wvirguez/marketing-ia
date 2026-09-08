@@ -66,7 +66,9 @@ def test_rolled_back_data_does_not_persist(db_session) -> None:
 
 
 def test_get_db_yields_a_new_session_each_call(postgres_engine: Engine) -> None:
-    configure_database(str(postgres_engine.url))
+    configure_database(
+        postgres_engine.url.render_as_string(hide_password=False)
+    )
     try:
         first_generator = get_db()
         first_session = next(first_generator)
@@ -82,7 +84,9 @@ def test_get_db_yields_a_new_session_each_call(postgres_engine: Engine) -> None:
 
 
 def test_get_db_rolls_back_and_closes_when_the_request_raises(postgres_engine: Engine) -> None:
-    configure_database(str(postgres_engine.url))
+    configure_database(
+        postgres_engine.url.render_as_string(hide_password=False)
+    )
     try:
         generator = get_db()
         session = next(generator)
