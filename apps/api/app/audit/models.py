@@ -87,6 +87,15 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     strategy_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("strategies.id"), default=None, index=True)
     hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hypotheses.id"), default=None, index=True)
     experiment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("experiments.id"), default=None, index=True)
+    # BACKEND-09 §14: same reasoning as strategy_id/hypothesis_id/
+    # experiment_id above — a planning.plan.recorded/planning.plan_item.
+    # recorded event must identify its exact ContentPlan/PlanItem, never
+    # only be inferable from campaign_id/campaign_run_id/stage_execution_id
+    # (which two different plan versions for the same campaign/run would
+    # share) or from sequence/ordering (which never uniquely identifies a
+    # row across concurrent writes).
+    content_plan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("content_plans.id"), default=None, index=True)
+    plan_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plan_items.id"), default=None, index=True)
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

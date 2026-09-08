@@ -373,6 +373,90 @@ the `SRCE`/`VOC` public-ID prefixes (BACKEND-01 only reserves `RPT`/`AUD`);
 the `SourceType` enum vocabulary (`ARTICLE`/`REPORT`/`FORUM`/`SOCIAL`/
 `SURVEY`/`OTHER`) is descriptive-only, never a reliability/truth signal.
 
+## Planning persistence (BACKEND-09)
+
+Persists exactly the two entities BACKEND-01 canonically assigns to the
+`planning` bounded context (`docs/backend/BACKEND-01-ARCHITECTURE.md` §1):
+**Content Plan**, **Plan Item** — no more, no less. Content Brief, Content
+Piece, Content Version, Content Approval, Creative Brief, and Asset all
+belong to other bounded contexts (`content`/`assets`) and are not modeled
+here. PLAN ITEM != CONTENT BRIEF. PLAN ITEM != CONTENT PIECE. PLANNING !=
+CONTENT PRODUCTION.
+
+**Ownership:** `ContentPlan` is Campaign-owned (composite FK
+`(campaign_id, workspace_id) → campaigns(id, workspace_id)`), matching
+`Strategy`'s own precedent exactly — the ER diagram hangs Content Plan
+directly off Campaign, a sibling of Strategy, not a child of it.
+`campaign_run_id`/`stage_execution_id` are carried as **required
+provenance** only. `PlanItem` belongs to `ContentPlan` via a plain FK and
+carries **no `workspace_id` of its own** — BACKEND-01 annotates its tenant
+column "Workspace (**via Plan**)", the same qualified, via-parent pattern
+already used by `Positioning`/`ResearchSource`; tenancy is always resolved
+by traversal through the parent Content Plan, never trusted from client
+input.
+
+**Provenance is proven, not assumed** — the same four explicit checks
+`app/strategy/service.py` established: `campaign_run.campaign_id ==
+campaign.id`, `campaign_run.workspace_id == campaign.workspace_id`,
+`stage_execution.campaign_run_id == campaign_run.id`, and
+`stage_execution.stage == PLAN` (the `BusinessStage.PLAN` enum value
+already existed since BACKEND-06 — no new enum value was needed). Any
+mismatch raises the same non-leaky `ProvenanceMismatchError`.
+
+**Immutable, versioned Content Plan; write-once Plan Items:** `ContentPlan`
+follows the Strategy/ResearchReport precedent exactly — no `status`,
+`approved`, or `ready_for_production` field; "current" is `MAX(version)`
+for the Campaign, and the `(campaign_id, version)` unique constraint is the
+sole concurrency guard, mapped to a deterministic `VersionConflictError` on
+conflict. `PlanItem` is **not** independently versioned. BACKEND-01
+describes it as "Mutable? Yes (until briefed)" but names no mutation
+fields, no lifecycle vocabulary, and the triggering state ("briefed") is
+reached only by a Content Brief existing — out of scope for this bounded
+context. Inventing a status/lifecycle column to represent an undefined
+state would fabricate semantics BACKEND-01 never specified (the same
+discipline already applied to `Experiment.status` in BACKEND-08).
+**Plan Item canonical mutability is acknowledged but not implemented**:
+this stage persists Plan Items with their initial values only — no
+`PATCH`/`PUT`, no `update_plan_item`/`transition_plan_item`/
+`mark_briefed`/`lock_plan_item` method exists anywhere in this module.
+
+**No structural Strategy reference.** BACKEND-01 defines no FK from
+Content Plan to Strategy/Positioning/Hypothesis/Experiment — the ER
+diagram draws Content Plan as Strategy's direct sibling under Campaign,
+not its child. This means a Content Plan cannot be mechanically traced to
+the exact Strategy version that informed it. This is a documented,
+carried-forward architectural gap, not repaired here by inventing a
+relationship BACKEND-01 never specified. STRATEGY PERSISTED != READY FOR
+PLANNING.
+
+**No public write endpoint.** BACKEND-01's own API map defines
+`GET /campaigns/{id}/plan` as GET-only. Writes happen only through
+`PlanningService.record_plan`, called directly by tests today and by a
+future orchestration/agent runtime once one exists. `record_plan` is a
+single atomic transaction — Content Plan + all initial Plan Items + one
+`AuditEvent` per created entity — and never mutates `CampaignRun.status`,
+`RunStageExecution.status`, or any `HumanDecisionRequest`/`Response`.
+`OUTPUT PERSISTED != STAGE COMPLETED`. `PLAN PERSISTED != PLAN APPROVED`.
+`PLAN ITEM PERSISTED != PRODUCTION AUTHORIZED`.
+
+**Audit attribution:** `AuditEvent` gained two new nullable FKs,
+`content_plan_id`/`plan_item_id`, so a `planning.plan.recorded`/
+`planning.plan_item.recorded` event can be traced to the *exact* Content
+Plan/Plan Item it is about, the same fix BACKEND-07/08 already applied for
+their own child entities — a Plan Item's identity is never inferred from
+`sequence`, event ordering, or event metadata text.
+
+**Scheduling semantics:** `PlanItem.sequence` (an integer ordinal) and
+`PlanItem.scheduled_date` (a nullable `DATE`, no time-of-day, no
+timezone, no recurrence) are planning-internal target values only — they
+never imply external scheduling, publication, or distribution
+authorization. Deliberately not named `publish_at`.
+
+**Known, explicitly-flagged design choices, not BACKEND-01-canonical:**
+`PlanItem.format`/`PlanItem.objective` are plain bounded strings, not
+native enums — BACKEND-01 names no vocabulary for either, the same
+discipline already applied to `Experiment.status`.
+
 ## Authentication model
 
 **Opaque server-side sessions, not JWT.** Browser flow:
@@ -551,6 +635,19 @@ surface, combined response shape, empty-output behavior, tenancy,
 security), plus a dedicated migration round-trip test in
 `tests/test_migrations.py` that downgrades to exactly the pre-BACKEND-07
 revision and back — all `postgres`-marked.
+
+New in BACKEND-09: `tests/test_planning_domain.py` (persistence,
+provenance — valid and invalid — versioning, via-parent Plan Item
+tenancy, no-forbidden-field/no-forbidden-table governance assertions, no
+Plan Item mutation method), `tests/test_planning_audit.py` (exact Content
+Plan/Plan Item attribution — never inferred from sequence or event
+ordering — distinguishable events across versions, aggregate rollback on
+event or child failure, no partial audit set survives a mid-loop
+failure), `tests/test_planning_api.py` (GET-only route surface, combined
+response shape, empty-output behavior, tenancy, security), plus a
+dedicated migration round-trip test in `tests/test_migrations.py` that
+downgrades to exactly the pre-BACKEND-09 revision and back — all
+`postgres`-marked.
 
 ## Security limitations (explicit, not implicit)
 

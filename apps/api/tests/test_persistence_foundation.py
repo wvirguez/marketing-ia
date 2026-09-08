@@ -80,14 +80,15 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     foundation — RunStageExecution, Human Decision Request/Response,
     Audit Event (BACKEND-06) — the Research/Audience persistence
     contracts — Research Report/Source, Audience Profile, VOC Evidence
-    (BACKEND-07) — and the Strategy persistence contracts — Strategy,
-    Positioning, Hypothesis, Experiment (BACKEND-08) — all exist, plus
-    the BACKEND-03 infrastructure probe. No Content/Agent Run/Handoff/
-    Return/Gate Decision/Metric/Subscription/Strategic Decision/Strategic
-    Recommendation Candidate/Learning Candidate table has been
-    prematurely introduced — BACKEND-08's persistence is deliberately
-    inert (no AI execution, no public write endpoint, no approval/gate
-    concept)."""
+    (BACKEND-07) — the Strategy persistence contracts — Strategy,
+    Positioning, Hypothesis, Experiment (BACKEND-08) — and the Planning
+    persistence contracts — Content Plan, Plan Item (BACKEND-09) — all
+    exist, plus the BACKEND-03 infrastructure probe. No Content
+    Brief/Content Piece/Agent Run/Handoff/Return/Gate Decision/Metric/
+    Subscription/Strategic Decision/Strategic Recommendation Candidate/
+    Learning Candidate table has been prematurely introduced —
+    BACKEND-09's persistence is deliberately inert (no AI execution, no
+    public write endpoint, no approval/readiness concept)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -110,6 +111,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "positionings",
         "hypotheses",
         "experiments",
+        "content_plans",
+        "plan_items",
     }
 
 

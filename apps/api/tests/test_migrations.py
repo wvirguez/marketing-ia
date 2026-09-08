@@ -445,3 +445,95 @@ def test_backend_08_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_hypotheses_id_workspace_id" in unique_names_hypotheses
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_09_REVISION = "5e50463be153"
+_BACKEND_09_TABLES = ("content_plans", "plan_items")
+
+
+def _planning_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'content_plans')")
+        ).scalar_one()
+
+
+def test_backend_09_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-09 §22: upgrade to head, downgrade to exactly the
+    pre-BACKEND-09 revision (5e50463be153, not base), upgrade to head
+    again — proving the planning migration (content_plans/plan_items plus
+    the new audit_events FK columns) adds/removes cleanly without
+    disturbing any BACKEND-04/05/06/07/08 object, and introduces no
+    unnecessary native enum type."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _planning_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_09_REVISION)
+        assert _planning_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_09_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-09 downgrade"
+
+            # Every BACKEND-04/05/06/07/08 table must survive a
+            # BACKEND-09-only downgrade untouched.
+            for table in (
+                "users", "organizations", "workspaces", "memberships", "auth_sessions",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-09-only downgrade"
+
+            # Every earlier stage's enum type must survive untouched, and
+            # BACKEND-09 must not have introduced a new one at all (no
+            # canonical vocabulary exists for `format`/`objective`).
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 11, "a BACKEND-09 downgrade must not remove any earlier stage's enum type"
+
+            # audit_events must be reverted to its exact pre-BACKEND-09 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "content_plan_id" not in audit_columns
+            assert "plan_item_id" not in audit_columns
+
+        command.upgrade(config, "head")
+        assert _planning_tables_exist(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "content_plan_id" in audit_columns
+            assert "plan_item_id" in audit_columns
+
+            # The corrected FK contract: plan_item_id -> plan_items.id,
+            # never content_plans.id.
+            fk_rows = connection.execute(
+                text(
+                    "SELECT conname, confrelid::regclass::text FROM pg_constraint "
+                    "WHERE conrelid = 'audit_events'::regclass AND contype = 'f' "
+                    "AND conname LIKE '%plan_item_id%'"
+                )
+            ).all()
+            assert len(fk_rows) == 1
+            assert fk_rows[0][1] == "plan_items"
+    finally:
+        engine.dispose()
