@@ -457,6 +457,102 @@ authorization. Deliberately not named `publish_at`.
 native enums — BACKEND-01 names no vocabulary for either, the same
 discipline already applied to `Experiment.status`.
 
+## Content persistence (BACKEND-10)
+
+Persists exactly the four entities the BACKEND-10 Governance Freeze
+authorizes: **Content Brief**, **Content Piece**, **Content Version**,
+**Content Approval**. Content Revision Request, Creative Brief, Asset,
+Asset Version, Distribution, Paid Media, and any Experiment/Strategy
+linkage are explicitly deferred — nothing in `app/content/` implements,
+references, or invents any of them.
+
+**Content Brief provenance is derived via Planning ancestry, not its own
+run/stage columns.** BACKEND-01's own text — "the creative brief AGENT-04/03
+hands to AGENT-05" — makes AGENT-04/03 the producer and AGENT-05 the
+consumer, so `BusinessStage.CONTENT` consumes the brief rather than
+producing it; `ContentBrief` carries no `campaign_id`/`campaign_run_id`/
+`stage_execution_id` of its own. Its tenant-safety composite FK is
+anchored at `ContentPlan` (`(content_plan_id, workspace_id) ->
+content_plans(id, workspace_id)`) — not at `PlanItem`, which has no
+`workspace_id` and must not gain one. `PlanItem` remains the sole semantic
+parent; `content_plan_id` exists on `ContentBrief` only as a tenant-safety
+anchor, service-verified against `plan_item.content_plan_id` at creation.
+This required one small, additive, explicitly-authorized change to
+`ContentPlan` itself: a new candidate key, `UniqueConstraint(id,
+workspace_id)`, purely so `ContentBrief` could declare its composite FK —
+the same pattern BACKEND-08 already used for `Strategy`/`Hypothesis`.
+`PlanItem`'s own fields, tenancy, and "mutable until briefed, not
+implemented" reservation are all completely unchanged.
+
+**Plan Item -> Content Brief is `1 : 0..1`, `UNIQUE(plan_item_id)`
+enforced — a BACKEND-10 governance schema decision, not a BACKEND-01
+mandate.** BACKEND-01 itself never states this cardinality in prose; only
+an ER-diagram inference exists. This is documented here plainly as an
+engineering default chosen for safety and reversibility, not represented
+as canonical. No re-brief mechanism (`supersedes_id`/`brief_version`/
+`replacement_brief_id`) exists.
+
+**Content Piece** carries the complete, canonical, *named* state-machine-D
+vocabulary from `docs/backend/BACKEND-01-ARCHITECTURE.md` §2D verbatim
+(`DRAFT` through `ARCHIVED`) as a native enum — unlike `Experiment.status`,
+BACKEND-01 explicitly names every value here. Enum membership is not
+transition authority: `app/content/transitions.py` knows the *complete*
+legal graph (including edges BACKEND-10 exposes no method for), while
+`app/content/service.py` exposes methods only for the bookkeeping chain
+(`DRAFT/REVISION_REQUESTED -> IN_PRODUCTION -> PRODUCED ->
+READY_FOR_REVIEW`), the narrow `READY_FOR_REVIEW | APPROVED -> ARCHIVED`
+edge, and the governance-gated `READY_FOR_REVIEW -> APPROVED` edge — which
+exists **only** through the Approval-decision coupling below, never as a
+freestanding method. No method anywhere enters `READY_FOR_DISTRIBUTION`/
+`DISTRIBUTED` — those enum values exist (completing the canonical
+vocabulary) but their runtime triggers are deferred to a future
+`distribution` bounded context.
+
+**Content Version has no ordinal/version column at all** — BACKEND-01's
+own explicit field list for this entity ("id, content_piece_id,
+created_at, created_by (agent or user)") omits one entirely. "Current"/
+"latest" is derived deterministically by `ORDER BY created_at DESC, id
+DESC`. Because Postgres's `now()` returns *transaction* start time (which
+would make two Versions created in the same transaction indistinguishable
+by timestamp), `ContentVersion.created_at`'s server default uses
+`clock_timestamp()` instead — the real per-statement wall-clock time —
+so this ordering is genuinely deterministic even for rapid-succession
+inserts, without reintroducing an ordinal column.
+
+**Content Approval targets an exact Content Version, never a Piece
+directly**, using the complete, canonical, named state-machine-E
+vocabulary (`REQUESTED`/`UNDER_REVIEW`/`APPROVED`/`CHANGES_REQUESTED`/
+`REJECTED`/`EXPIRED`). PERSISTING AN APPROVAL DECISION != HAVING AUTHORITY
+TO MAKE THAT DECISION: `record_authorized_approval_decision` never itself
+determines whether the caller was allowed to approve — it persists a
+decision already authorized elsewhere (a human reviewer, per BACKEND-01's
+own explicit human-in-the-loop MVP path), the same trust boundary
+`HumanDecisionResponse`/`StrategyService.transition_hypothesis` already
+establish. WORKSPACE ROLE != CONTENT APPROVAL AUTHORITY — nothing in this
+module calls `require_role` or checks any role/permission as a substitute
+for content-governance authority.
+
+Only the `APPROVED` decision is coupled, atomically, with a Content Piece
+transition (`READY_FOR_REVIEW -> APPROVED`) — the architecture doc's own
+explicit transaction-boundary rule ("`APPROVED` must never be set without
+a corresponding governance record"). `CHANGES_REQUESTED` and `REJECTED`
+persist the Approval decision only and never touch `ContentPiece.status`:
+the `CHANGES_REQUESTED -> REVISION_REQUESTED` coupling some readers might
+expect is a real, carried-forward reservation (inferred from the state
+machine's shape, never directly proven the way `APPROVED`'s coupling is),
+and `REJECTED` has no canonical Content Piece mapping at all. No automatic
+`EXPIRED` mechanism exists (no scheduler/async infrastructure of any
+kind).
+
+**No public write endpoint exists anywhere in this module.** BACKEND-01's
+own API map marks `GET /campaigns/{id}/content` and `GET
+/campaigns/{id}/content/{id}` GET-only; the canonical `POST
+.../approvals` route is **deferred**, not implemented — BACKEND-01 itself
+defers "who may approve," and this stage does not silently choose "any
+workspace member" or "OWNER/ADMIN" as a substitute answer. Every write in
+this module is service-layer-only, called directly by tests today and by
+a future, separately-authorized runtime later.
+
 ## Authentication model
 
 **Opaque server-side sessions, not JWT.** Browser flow:
@@ -647,6 +743,25 @@ failure), `tests/test_planning_api.py` (GET-only route surface, combined
 response shape, empty-output behavior, tenancy, security), plus a
 dedicated migration round-trip test in `tests/test_migrations.py` that
 downgrades to exactly the pre-BACKEND-09 revision and back — all
+`postgres`-marked.
+
+New in BACKEND-10: `tests/test_content_domain.py` (Brief/Piece/Version/
+Approval persistence, Brief ancestry provenance — valid and invalid —
+duplicate-Brief rejection, tenancy at every level including the two
+ancestor-anchored composite FKs, the complete Content Piece/Approval
+transition graphs independent of service exposure, bookkeeping-transition
+legality, the `APPROVED` coupling and its `READY_FOR_REVIEW`
+precondition, `CHANGES_REQUESTED`/`REJECTED` non-coupling, no-forbidden-
+field/no-forbidden-method/no-forbidden-table governance assertions),
+`tests/test_content_audit.py` (exact Brief/Piece/Version/Approval
+attribution — two Pieces created close together never confused — the
+`APPROVED` transaction's dual attribution, aggregate rollback on event or
+child failure, the coupled Approval+Piece transaction's all-or-nothing
+rollback), `tests/test_content_api.py` (GET-only route surface for both
+routes, no Content Brief route, no Approval route, combined Piece+latest-
+Version response shape, empty-output behavior, tenancy, security), plus a
+dedicated migration round-trip test in `tests/test_migrations.py` that
+downgrades to exactly the pre-BACKEND-10 revision and back — all
 `postgres`-marked.
 
 ## Security limitations (explicit, not implicit)

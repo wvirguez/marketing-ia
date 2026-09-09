@@ -92,6 +92,14 @@ class ContentPlan(Base, UUIDPrimaryKeyMixin):
             ["campaign_runs.id", "campaign_runs.workspace_id"],
             name="fk_content_plans_campaign_run_workspace",
         ),
+        # BACKEND-10 (explicitly authorized, additive-only — see
+        # app/content/models.py's own module docstring): a candidate key
+        # purely so ContentBrief can declare a composite tenant-safety FK
+        # on (content_plan_id, workspace_id). This does not change
+        # ContentPlan's ownership, tenancy, versioning, or any other
+        # BACKEND-09 semantic — it is the same additive-candidate-key
+        # pattern BACKEND-08 already used for Strategy/Hypothesis.
+        UniqueConstraint("id", "workspace_id", name="uq_content_plans_id_workspace_id"),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)

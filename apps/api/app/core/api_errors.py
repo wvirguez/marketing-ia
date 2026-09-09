@@ -129,3 +129,13 @@ class VersionConflictError(ApiError):
 
     def __init__(self, message: str = "This version already exists for this campaign.") -> None:
         super().__init__(message, status_code=409, code="VERSION_CONFLICT")
+
+
+class PlanItemAlreadyBriefedError(ApiError):
+    """BACKEND-10 §9 (Phase 1B §G): a Plan Item may have at most one
+    Content Brief — a BACKEND-10 governance schema decision
+    (``uq_content_briefs_plan_item_id``), not a BACKEND-01 mandate. The
+    mapped, deterministic surface for the resulting ``IntegrityError``."""
+
+    def __init__(self, message: str = "This Plan Item already has a Content Brief.") -> None:
+        super().__init__(message, status_code=409, code="PLAN_ITEM_ALREADY_BRIEFED")

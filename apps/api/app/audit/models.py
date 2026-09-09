@@ -96,6 +96,21 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     # row across concurrent writes).
     content_plan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("content_plans.id"), default=None, index=True)
     plan_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plan_items.id"), default=None, index=True)
+    # BACKEND-10 §32: same reasoning as content_plan_id/plan_item_id
+    # above — a content.brief.recorded/content.piece.recorded/content.
+    # version.recorded/content.piece.status_changed/content.approval.*
+    # event must identify its exact Content Brief/Piece/Version/Approval,
+    # never only be inferable from an "assume the latest row" positional
+    # guess. No content_revision_request_id exists — that entity is
+    # deferred (BACKEND-10 §36).
+    content_brief_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("content_briefs.id"), default=None, index=True)
+    content_piece_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("content_pieces.id"), default=None, index=True)
+    content_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_versions.id"), default=None, index=True
+    )
+    content_approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_approvals.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

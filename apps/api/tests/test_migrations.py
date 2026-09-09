@@ -537,3 +537,110 @@ def test_backend_09_migration_round_trips_to_the_previous_revision(migrations_da
             assert fk_rows[0][1] == "plan_items"
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_10_REVISION = "5a6a04e3776d"
+_BACKEND_10_TABLES = ("content_briefs", "content_pieces", "content_versions", "content_approvals")
+
+
+def _content_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'content_briefs')")
+        ).scalar_one()
+
+
+def test_backend_10_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-10 §52: upgrade to head, downgrade to exactly the
+    pre-BACKEND-10 revision (5a6a04e3776d, not base), upgrade to head
+    again — proving the content migration (content_briefs/content_pieces/
+    content_versions/content_approvals, the two new native enums, the new
+    audit_events FK columns, and the additive ContentPlan candidate key)
+    adds/removes cleanly without disturbing any BACKEND-04..09 object."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _content_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_10_REVISION)
+        assert _content_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_10_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-10 downgrade"
+
+            # Every BACKEND-04..09 table must survive a BACKEND-10-only
+            # downgrade untouched.
+            for table in (
+                "users", "organizations", "workspaces", "memberships", "auth_sessions",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-10-only downgrade"
+
+            # Every earlier stage's enum type must survive untouched, and
+            # both BACKEND-10-owned enums must be gone.
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 11, "a BACKEND-10 downgrade must not remove any earlier stage's enum type"
+
+            leftover_enums = connection.execute(
+                text("SELECT typname FROM pg_type WHERE typname IN ('content_piece_status', 'content_approval_status')")
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop both BACKEND-10-owned enum types"
+
+            # audit_events must be reverted to its exact pre-BACKEND-10 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("content_brief_id", "content_piece_id", "content_version_id", "content_approval_id"):
+                assert column not in audit_columns
+
+            # The BACKEND-10-added ContentPlan candidate key must be gone.
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'content_plans'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_content_plans_id_workspace_id" not in unique_names
+
+        command.upgrade(config, "head")
+        assert _content_tables_exist(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("content_brief_id", "content_piece_id", "content_version_id", "content_approval_id"):
+                assert column in audit_columns
+
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'content_plans'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_content_plans_id_workspace_id" in unique_names
+
+            # The tenant-safety FK contract: content_briefs.content_plan_id
+            # (composite, through content_plans), never a direct
+            # campaign_id/campaign_run_id/stage_execution_id column.
+            brief_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'content_briefs'")
+            ).scalars().all()
+            for forbidden in ("campaign_id", "campaign_run_id", "stage_execution_id", "workspace_id_2"):
+                assert forbidden not in brief_columns
+            assert "workspace_id" in brief_columns
+            assert "content_plan_id" in brief_columns
+    finally:
+        engine.dispose()
