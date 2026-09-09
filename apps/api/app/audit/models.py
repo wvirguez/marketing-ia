@@ -111,6 +111,22 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     content_approval_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("content_approvals.id"), default=None, index=True
     )
+    # BACKEND-11 §16: same reasoning as content_brief_id/content_piece_id
+    # above — a measurement.metric_entry.recorded/measurement.observation.
+    # recorded/measurement.signal.recorded/measurement.analysis_result.
+    # recorded event must identify its exact row. MetricValue and the
+    # three pure association tables do not receive independent AuditEvent
+    # FKs — they are supporting/relational rows, not domain entities.
+    metric_entry_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("metric_entries.id"), default=None, index=True)
+    performance_observation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("performance_observations.id"), default=None, index=True
+    )
+    performance_signal_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("performance_signals.id"), default=None, index=True
+    )
+    analysis_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("analysis_results.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

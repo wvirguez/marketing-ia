@@ -24,6 +24,7 @@ from app.campaigns import models as campaign_models  # noqa: F401
 from app.core.config import get_settings
 from app.orchestration import models as orchestration_models  # noqa: F401
 from app.content import models as content_models  # noqa: F401
+from app.measurement import models as measurement_models  # noqa: F401
 from app.persistence import probe  # noqa: F401  (BACKEND-03: explicitly non-domain persistence probe)
 from app.persistence.base import Base
 from app.planning import models as planning_models  # noqa: F401

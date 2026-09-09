@@ -14,6 +14,7 @@ from app.api.v1 import health, readiness
 from app.auth.router import router as auth_router
 from app.campaigns.router import router as campaigns_router
 from app.content.router import router as content_router
+from app.measurement.router import router as measurement_router
 from app.orchestration.router import router as orchestration_router
 from app.planning.router import router as planning_router
 from app.research.router import router as research_router
@@ -44,3 +45,6 @@ api_v1_router.include_router(planning_router)
 # Same reasoning again — own prefix already includes /campaigns/{id}, see
 # app/content/router.py's module docstring.
 api_v1_router.include_router(content_router)
+# Same reasoning again — own prefix already includes /campaigns/{id}, see
+# app/measurement/router.py's module docstring.
+api_v1_router.include_router(measurement_router)
