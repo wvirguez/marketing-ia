@@ -24,7 +24,7 @@ class AuditEventRepository:
     def record(
         self,
         *,
-        workspace_id: uuid.UUID,
+        workspace_id: uuid.UUID | None,
         event_type: str,
         actor_type: ActorType,
         campaign_id: uuid.UUID | None = None,

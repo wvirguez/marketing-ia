@@ -47,7 +47,15 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "audit_events"
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    # BACKEND-12 Governance Freeze Repair: nullable — a genuinely
+    # workspace-independent event (e.g. "user.preferences.updated", which
+    # has no workspace context at all per BACKEND-01's own User
+    # Preferences catalog entry) must never fabricate a workspace_id to
+    # satisfy this column. Every workspace-scoped event (every one
+    # written before BACKEND-12) still always supplies a real value here
+    # — this repair only widens what the column *permits*, it does not
+    # change what any existing write path *populates*.
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("workspaces.id"), default=None, index=True)
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("campaigns.id"), default=None, index=True)
     campaign_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("campaign_runs.id"), default=None, index=True

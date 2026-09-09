@@ -84,24 +84,30 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     Positioning, Hypothesis, Experiment (BACKEND-08) — the Planning
     persistence contracts — Content Plan, Plan Item (BACKEND-09) — the
     Content persistence contracts — Content Brief, Content Piece,
-    Content Version, Content Approval (BACKEND-10) — and the Measurement
+    Content Version, Content Approval (BACKEND-10) — the Measurement
     persistence contracts — Metric Entry, Metric Value, Performance
     Observation, Performance Signal, Analysis Result, and their three
-    pure association tables (BACKEND-11) — all exist, plus the BACKEND-03
-    infrastructure probe. No Content Revision Request/Creative Brief/
-    Asset/Distribution/Paid Media/Measurement Cycle/Performance Snapshot/
-    Learning Candidate/Strategic Recommendation Candidate/Agent Run/
-    Handoff/Return/Gate Decision/Subscription table has been prematurely
-    introduced — BACKEND-11's persistence is deliberately inert (no AI
-    execution, no approval authorization runtime, no orchestration
-    mutation)."""
+    pure association tables (BACKEND-11) — and the Settings persistence
+    contracts — UserPreference, AIPreference, NotificationPreference
+    (BACKEND-12) — all exist, plus the BACKEND-03 infrastructure probe.
+    No Content Revision Request/Creative Brief/Asset/Distribution/Paid
+    Media/Measurement Cycle/Performance Snapshot/Learning Candidate/
+    Strategic Recommendation Candidate/Agent Run/Handoff/Return/Gate
+    Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
+    Subscription table has been prematurely introduced — BACKEND-12's
+    persistence is deliberately limited to Profile/Workspace/AI
+    Preferences/Notifications; Integrations and Billing remain out of
+    scope (Governance Freeze §B)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
+        "user_preferences",
         "organizations",
         "workspaces",
         "memberships",
         "auth_sessions",
+        "ai_preferences",
+        "notification_preferences",
         "campaigns",
         "campaign_briefs",
         "campaign_runs",

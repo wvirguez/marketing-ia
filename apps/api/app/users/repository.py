@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.ids import generate_public_id
-from app.users.models import User, UserStatus
+from app.users.models import User, UserPreference, UserStatus
 
 
 class UserRepository:
@@ -40,3 +40,19 @@ class UserRepository:
         self.session.add(user)
         self.session.flush()
         return user
+
+
+class UserPreferenceRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_user_id(self, user_id: uuid.UUID) -> UserPreference | None:
+        return self.session.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        ).scalar_one_or_none()
+
+    def create(self, *, user_id: uuid.UUID) -> UserPreference:
+        preference = UserPreference(user_id=user_id)
+        self.session.add(preference)
+        self.session.flush()
+        return preference

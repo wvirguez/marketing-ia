@@ -744,3 +744,118 @@ def test_backend_11_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_metric_entries_id_workspace_id" in unique_constraints
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_12_REVISION = "654d662d78e7"
+_BACKEND_12_TABLES = ("user_preferences", "ai_preferences", "notification_preferences")
+
+
+def _settings_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'user_preferences')")
+        ).scalar_one()
+
+
+def _audit_events_workspace_id_is_nullable(engine) -> bool:
+    with engine.connect() as connection:
+        is_nullable = connection.execute(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'audit_events' AND column_name = 'workspace_id'"
+            )
+        ).scalar_one()
+        return is_nullable == "YES"
+
+
+def test_backend_12_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-12: upgrade to head, downgrade to exactly the
+    pre-BACKEND-12 revision (654d662d78e7, not base), upgrade to head
+    again — proving the Settings migration (three new singleton tables
+    plus the ``audit_events.workspace_id`` nullability repair) adds/
+    removes cleanly without disturbing any BACKEND-04..11 object.
+
+    Known, documented, non-destructive limitation (Phase 2 §27): this
+    round-trip never inserts a user-global (``workspace_id IS NULL``)
+    AuditEvent row, so restoring ``NOT NULL`` on downgrade always
+    succeeds here. A real database that had already recorded a
+    ``user.profile.updated``/``user.preferences.updated`` event could not
+    cleanly downgrade past this revision without first removing those
+    rows — this migration deliberately does not add destructive cleanup
+    to paper over that, per explicit instruction."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _settings_tables_exist(engine) is True
+        assert _audit_events_workspace_id_is_nullable(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_12_REVISION)
+        assert _settings_tables_exist(engine) is False
+        assert _audit_events_workspace_id_is_nullable(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_12_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-12 downgrade"
+
+            # Every BACKEND-04..11 table, including Measurement's own,
+            # must survive a BACKEND-12-only downgrade untouched.
+            for table in (
+                "users", "organizations", "workspaces", "memberships", "auth_sessions",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+                "content_briefs", "content_pieces", "content_versions", "content_approvals",
+                *_BACKEND_11_TABLES,
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-12-only downgrade"
+
+            # Every earlier stage's enum type must survive untouched — this
+            # migration introduces no new enum type at all (no native enum
+            # for tone/depth/creativity, no notification-type enum).
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status', "
+                    "'content_piece_status', 'content_approval_status', 'metric_source')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 14, "a BACKEND-12 downgrade must not remove any earlier stage's enum type"
+
+        command.upgrade(config, "head")
+        assert _settings_tables_exist(engine) is True
+        assert _audit_events_workspace_id_is_nullable(engine) is True
+        with engine.connect() as connection:
+            # user_preferences.user_id and ai_preferences.workspace_id are
+            # each declared `unique=True, index=True` on the model — a
+            # unique INDEX, not a separate named UniqueConstraint (unlike
+            # notification_preferences' composite key below, which is an
+            # explicit UniqueConstraint in __table_args__).
+            def _is_unique_index(table: str, index: str) -> bool:
+                row = connection.execute(
+                    text("SELECT indexdef FROM pg_indexes WHERE tablename = :t AND indexname = :i"),
+                    {"t": table, "i": index},
+                ).scalar_one_or_none()
+                return row is not None and "UNIQUE" in row
+
+            assert _is_unique_index("user_preferences", "ix_user_preferences_user_id")
+            assert _is_unique_index("ai_preferences", "ix_ai_preferences_workspace_id")
+            notification_constraints = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'notification_preferences'::regclass "
+                    "AND contype = 'u'"
+                )
+            ).scalars().all()
+            assert "uq_notification_preferences_workspace_id_user_id" in notification_constraints
+    finally:
+        engine.dispose()

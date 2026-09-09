@@ -11,6 +11,7 @@ from app.auth.service import AuthService
 from app.core.config import Settings, get_settings
 from app.persistence.session import get_db
 from app.users.models import User
+from app.users.repository import UserPreferenceRepository
 from app.users.schemas import user_to_public
 from app.workspaces.models import Membership, Workspace
 from app.workspaces.schemas import membership_to_public, workspace_to_public
@@ -36,7 +37,9 @@ async def register(
     )
     set_session_cookie(response, token=context.session_token, settings=settings)
     return SessionContext(
-        user=user_to_public(context.user),
+        # A brand-new registration can never already have a UserPreference
+        # row (BACKEND-12: created lazily, only on a Settings PATCH).
+        user=user_to_public(context.user, preference=None),
         workspace=workspace_to_public(context.workspace),
         membership=membership_to_public(context.membership),
     )
@@ -56,8 +59,9 @@ async def login(
         user_agent=request.headers.get("user-agent"),
     )
     set_session_cookie(response, token=context.session_token, settings=settings)
+    preference = UserPreferenceRepository(db).get_by_user_id(context.user.id)
     return SessionContext(
-        user=user_to_public(context.user),
+        user=user_to_public(context.user, preference=preference),
         workspace=workspace_to_public(context.workspace),
         membership=membership_to_public(context.membership),
     )
@@ -80,9 +84,11 @@ async def current_session(
     user: User = Depends(get_current_user),
     membership: Membership = Depends(get_current_membership),
     workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
 ) -> SessionContext:
+    preference = UserPreferenceRepository(db).get_by_user_id(user.id)
     return SessionContext(
-        user=user_to_public(user),
+        user=user_to_public(user, preference=preference),
         workspace=workspace_to_public(workspace),
         membership=membership_to_public(membership),
     )

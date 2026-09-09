@@ -12,7 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.ids import generate_public_id
-from app.workspaces.models import Membership, MembershipRole, MembershipStatus, Organization, Workspace
+from app.workspaces.models import (
+    AIPreference,
+    Membership,
+    MembershipRole,
+    MembershipStatus,
+    NotificationPreference,
+    Organization,
+    Workspace,
+)
 from app.workspaces.slugs import generate_workspace_slug
 
 
@@ -88,3 +96,37 @@ class MembershipRepository:
             .order_by(Membership.created_at.asc())
             .limit(1)
         ).scalar_one_or_none()
+
+
+class AIPreferenceRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_workspace_id(self, workspace_id: uuid.UUID) -> AIPreference | None:
+        return self.session.execute(
+            select(AIPreference).where(AIPreference.workspace_id == workspace_id)
+        ).scalar_one_or_none()
+
+    def create(self, *, workspace_id: uuid.UUID) -> AIPreference:
+        preference = AIPreference(workspace_id=workspace_id)
+        self.session.add(preference)
+        self.session.flush()
+        return preference
+
+
+class NotificationPreferenceRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_workspace_and_user(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> NotificationPreference | None:
+        return self.session.execute(
+            select(NotificationPreference).where(
+                NotificationPreference.workspace_id == workspace_id, NotificationPreference.user_id == user_id
+            )
+        ).scalar_one_or_none()
+
+    def create(self, *, workspace_id: uuid.UUID, user_id: uuid.UUID) -> NotificationPreference:
+        preference = NotificationPreference(workspace_id=workspace_id, user_id=user_id, toggles={})
+        self.session.add(preference)
+        self.session.flush()
+        return preference
