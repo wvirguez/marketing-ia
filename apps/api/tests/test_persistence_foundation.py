@@ -87,17 +87,19 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     Content Version, Content Approval (BACKEND-10) — the Measurement
     persistence contracts — Metric Entry, Metric Value, Performance
     Observation, Performance Signal, Analysis Result, and their three
-    pure association tables (BACKEND-11) — and the Settings persistence
+    pure association tables (BACKEND-11) — the Settings persistence
     contracts — UserPreference, AIPreference, NotificationPreference
-    (BACKEND-12) — all exist, plus the BACKEND-03 infrastructure probe.
-    No Content Revision Request/Creative Brief/Asset/Distribution/Paid
+    (BACKEND-12) — and the Assets persistence contracts — CreativeBrief,
+    Asset, AssetVersion (BACKEND-13) — all exist, plus the BACKEND-03
+    infrastructure probe. No Content Revision Request/Distribution/Paid
     Media/Measurement Cycle/Performance Snapshot/Learning Candidate/
     Strategic Recommendation Candidate/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
-    Subscription table has been prematurely introduced — BACKEND-12's
-    persistence is deliberately limited to Profile/Workspace/AI
-    Preferences/Notifications; Integrations and Billing remain out of
-    scope (Governance Freeze §B)."""
+    Subscription/CreativeBriefVersion table has been prematurely
+    introduced — BACKEND-13's persistence is deliberately limited to
+    CreativeBrief/Asset/AssetVersion; object storage, uploads, AI
+    generation, and ContentVersion linkage remain out of scope
+    (Governance Freeze)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -137,6 +139,9 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "observation_metric_entries",
         "signal_observations",
         "analysis_result_signals",
+        "creative_briefs",
+        "assets",
+        "asset_versions",
     }
 
 

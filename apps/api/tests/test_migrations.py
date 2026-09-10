@@ -859,3 +859,125 @@ def test_backend_12_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_notification_preferences_workspace_id_user_id" in notification_constraints
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_13_REVISION = "e1df89898ff2"
+_BACKEND_13_TABLES = ("creative_briefs", "assets", "asset_versions")
+
+
+def _assets_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'creative_briefs')")
+        ).scalar_one()
+
+
+def _content_pieces_candidate_key_exists(engine) -> bool:
+    with engine.connect() as connection:
+        names = connection.execute(
+            text("SELECT conname FROM pg_constraint WHERE conrelid = 'content_pieces'::regclass AND contype = 'u'")
+        ).scalars().all()
+        return "uq_content_pieces_id_workspace_id" in names
+
+
+def test_backend_13_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-13 Phase 2 §28/§33: upgrade to head, downgrade to exactly
+    the pre-BACKEND-13 revision (e1df89898ff2, not base), upgrade to head
+    again — proving the Assets migration (the authorized content_pieces
+    candidate-key prerequisite repair, three new tables, and the new
+    audit_events FK columns) adds/removes cleanly, in the required
+    dependency order, without disturbing any BACKEND-04..12 object."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _assets_tables_exist(engine) is True
+        assert _content_pieces_candidate_key_exists(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_13_REVISION)
+        assert _assets_tables_exist(engine) is False
+        assert _content_pieces_candidate_key_exists(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_13_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-13 downgrade"
+
+            # Every BACKEND-04..12 table must survive a BACKEND-13-only
+            # downgrade untouched.
+            for table in (
+                "users", "user_preferences", "organizations", "workspaces", "memberships", "auth_sessions",
+                "ai_preferences", "notification_preferences",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+                "content_briefs", "content_pieces", "content_versions", "content_approvals",
+                *_BACKEND_11_TABLES,
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-13-only downgrade"
+
+            # audit_events must be reverted to its exact pre-BACKEND-13 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("creative_brief_id", "asset_id", "asset_version_id"):
+                assert column not in audit_columns
+
+            # No native enum type is introduced by BACKEND-13 at all (no
+            # canonical kind/status vocabulary is named anywhere).
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status', "
+                    "'content_piece_status', 'content_approval_status', 'metric_source')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 14, "a BACKEND-13 downgrade must not remove any earlier stage's enum type"
+
+        command.upgrade(config, "head")
+        assert _assets_tables_exist(engine) is True
+        assert _content_pieces_candidate_key_exists(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("creative_brief_id", "asset_id", "asset_version_id"):
+                assert column in audit_columns
+
+            # The tenant-safety FK contract: creative_briefs.content_piece_id
+            # (composite, through content_pieces), never a direct
+            # campaign_id/campaign_run_id/stage_execution_id column.
+            brief_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'creative_briefs'")
+            ).scalars().all()
+            for forbidden in ("campaign_id", "campaign_run_id", "stage_execution_id", "public_id"):
+                assert forbidden not in brief_columns
+            assert "workspace_id" in brief_columns
+            assert "content_piece_id" in brief_columns
+
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'creative_briefs'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_creative_briefs_content_piece_id" in unique_names
+            assert "uq_creative_briefs_id_workspace_id" in unique_names
+
+            # Phase 2R §7: no UNIQUE(id, workspace_id) on assets — no FK
+            # anywhere actually targets that composite (AssetVersion has
+            # no workspace_id at all; AuditEvent.asset_id is a plain
+            # single-column FK), so the candidate key was removed as
+            # speculative rather than kept "just in case".
+            asset_unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'assets'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_assets_id_workspace_id" not in asset_unique_names
+    finally:
+        engine.dispose()

@@ -18,6 +18,7 @@ pytest_plugins = [
     "tests.contenttest",
     "tests.measurementtest",
     "tests.settingstest",
+    "tests.assetstest",
 ]
 
 

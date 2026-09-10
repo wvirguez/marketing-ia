@@ -139,3 +139,23 @@ class PlanItemAlreadyBriefedError(ApiError):
 
     def __init__(self, message: str = "This Plan Item already has a Content Brief.") -> None:
         super().__init__(message, status_code=409, code="PLAN_ITEM_ALREADY_BRIEFED")
+
+
+class CreativeBriefAlreadyExistsError(ApiError):
+    """BACKEND-13 Governance Freeze: a Content Piece may have at most one
+    Creative Brief (``uq_creative_briefs_content_piece_id``) — immutable,
+    non-replaceable, 0..1 cardinality. The mapped, deterministic surface
+    for the resulting ``IntegrityError``, the same pattern
+    ``PlanItemAlreadyBriefedError`` already establishes for Content Brief."""
+
+    def __init__(self, message: str = "This Content Piece already has a Creative Brief.") -> None:
+        super().__init__(message, status_code=409, code="CREATIVE_BRIEF_ALREADY_EXISTS")
+
+
+class AssetArchivedError(ApiError):
+    """BACKEND-13 §13: an archived Asset may not receive a new
+    AssetVersion — archiving removes it from active normal use, and no
+    frozen contract permits versioning past that point."""
+
+    def __init__(self, message: str = "This Asset is archived and cannot receive a new version.") -> None:
+        super().__init__(message, status_code=409, code="ASSET_ARCHIVED")

@@ -135,6 +135,19 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     analysis_result_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("analysis_results.id"), default=None, index=True
     )
+    # BACKEND-13 §18: same reasoning as content_brief_id/content_piece_id
+    # above — an assets.creative_brief.recorded/assets.asset.recorded/
+    # assets.asset_version.recorded/assets.asset.archived event must
+    # identify its exact row, never only be inferable from
+    # content_piece_id/content_brief_id (which the CreativeBrief already
+    # is 0..1 for, but Asset/AssetVersion are 1:N).
+    creative_brief_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("creative_briefs.id"), default=None, index=True
+    )
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"), default=None, index=True)
+    asset_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("asset_versions.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

@@ -18,6 +18,7 @@ from alembic import context
 # `Base.metadata` before Alembic looks at it. Each import is for its
 # side effect only (table registration); add one line here whenever a
 # future stage introduces a new model module.
+from app.assets import models as assets_models  # noqa: F401
 from app.audit import models as audit_models  # noqa: F401
 from app.auth import models as auth_models  # noqa: F401
 from app.campaigns import models as campaign_models  # noqa: F401

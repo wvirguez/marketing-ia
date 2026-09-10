@@ -341,18 +341,20 @@ def test_no_forbidden_fields_exist_on_plan_item() -> None:
         assert not any(term in c for c in columns), f"unexpected field containing {term!r} on PlanItem"
 
 
-def test_no_content_revision_request_creative_or_distribution_table_was_introduced() -> None:
+def test_no_content_revision_request_or_distribution_table_was_introduced() -> None:
     """BACKEND-09 itself must not own any of these (Content Brief/Piece/
-    Version/Approval are legitimately introduced later, by BACKEND-10's
-    own `content` module — see tests/test_content_domain.py for that
-    module's own boundary tests; the ones still checked here remain out
-    of scope for every stage so far)."""
+    Version/Approval were legitimately introduced later by BACKEND-10's
+    own `content` module, and CreativeBrief/Asset/AssetVersion by
+    BACKEND-13's own `assets` module — see tests/test_content_domain.py
+    and tests/test_assets_domain.py for those modules' own boundary
+    tests; the ones still checked here remain out of scope for every
+    stage so far)."""
     from app.persistence.base import metadata
 
     table_names = set(metadata.tables.keys())
     for forbidden_table in (
-        "content_revision_requests", "creative_briefs",
-        "assets", "distribution_plans", "distribution_readiness", "paid_media_plans", "paid_scopes",
+        "content_revision_requests",
+        "distribution_plans", "distribution_readiness", "paid_media_plans", "paid_scopes",
     ):
         assert forbidden_table not in table_names
 

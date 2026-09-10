@@ -173,6 +173,18 @@ class ContentPiece(Base, UUIDPrimaryKeyMixin):
             ["content_briefs.id", "content_briefs.workspace_id"],
             name="fk_content_pieces_content_brief_workspace",
         ),
+        # BACKEND-13 PREREQUISITE REPAIR (Phase 1D, explicitly authorized,
+        # additive-only): a candidate key purely so CreativeBrief can
+        # declare a composite, tenant-safe FK on (content_piece_id,
+        # workspace_id) — the same pattern uq_content_briefs_id_workspace_id
+        # already established for this exact table one level up. Logically
+        # redundant (id is already the PK, so (id, workspace_id) can never
+        # collide) but structurally required: PostgreSQL will not accept a
+        # composite FK whose referenced columns have no matching UNIQUE
+        # constraint or index, even when a subset of them is already a PK
+        # (verified empirically in Phase 1D). No other ContentPiece
+        # behavior changes.
+        UniqueConstraint("id", "workspace_id", name="uq_content_pieces_id_workspace_id"),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)

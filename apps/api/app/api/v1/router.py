@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1 import health, readiness
+from app.assets.router import router as assets_router
 from app.auth.router import router as auth_router
 from app.campaigns.router import router as campaigns_router
 from app.content.router import router as content_router
@@ -48,3 +49,6 @@ api_v1_router.include_router(content_router)
 # Same reasoning again — own prefix already includes /campaigns/{id}, see
 # app/measurement/router.py's module docstring.
 api_v1_router.include_router(measurement_router)
+# Same reasoning again — own prefix already includes
+# /campaigns/{id}/content/{id}, see app/assets/router.py's module docstring.
+api_v1_router.include_router(assets_router)

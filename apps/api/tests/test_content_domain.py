@@ -341,14 +341,14 @@ def test_content_service_exposes_no_decision_making_or_deferred_methods() -> Non
         assert not hasattr(ContentService, method), f"unexpected method {method!r} on ContentService"
 
 
-def test_no_content_revision_request_or_asset_or_distribution_table_was_introduced() -> None:
+def test_no_content_revision_request_or_distribution_table_was_introduced() -> None:
+    """BACKEND-13 has since authorized creative_briefs/assets/asset_versions
+    (see tests/test_assets_domain.py) — this guard now covers only the
+    tables that remain out of scope for every stage through BACKEND-13."""
     from app.persistence.base import metadata
 
     table_names = set(metadata.tables.keys())
-    for forbidden_table in (
-        "content_revision_requests", "creative_briefs", "assets", "asset_versions",
-        "distribution_plans", "paid_media_plans",
-    ):
+    for forbidden_table in ("content_revision_requests", "distribution_plans", "paid_media_plans"):
         assert forbidden_table not in table_names
 
 
