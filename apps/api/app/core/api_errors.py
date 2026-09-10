@@ -184,3 +184,33 @@ class RecommendationAlreadyDecidedError(ApiError):
 
     def __init__(self, message: str = "This Strategic Recommendation Candidate has already been decided.") -> None:
         super().__init__(message, status_code=409, code="RECOMMENDATION_ALREADY_DECIDED")
+
+
+class TrackingPlanAlreadyExistsError(ApiError):
+    """BACKEND-15 Governance Freeze TRK-D01/TRK-D33: Campaign 1 -> 0..1
+    TrackingPlan — a Campaign that already has a Tracking Plan may not
+    have a second one recorded. A genuinely new shape (every other
+    "belongs to Campaign" entity so far is either 0..N-versioned or has
+    no cardinality ceiling at all), not force-fit into an existing error
+    class."""
+
+    def __init__(self, message: str = "This Campaign already has a Tracking Plan.") -> None:
+        super().__init__(message, status_code=409, code="TRACKING_PLAN_ALREADY_EXISTS")
+
+
+class TrackingRequirementMutationForbiddenError(ApiError):
+    """BACKEND-15 Governance Freeze-R: record_tracking_requirement/
+    update_tracking_requirement_status are forbidden while the parent
+    TrackingPlan is in a state that would make the mutation invalidate an
+    existing or terminal assertion (CONFIGURED, VERIFICATION_PENDING
+    forbid new requirements; CERTIFIED forbids both). A plain DB FK
+    cannot enforce a parent-status-value invariant, so this is the
+    mapped, deterministic surface for that explicit service-layer check.
+    Distinct from InvalidLifecycleTransitionError (reserved for literal
+    TrackingPlan state-graph edge violations on the Plan itself, not a
+    Requirement mutation) and from ForbiddenError (reserved for
+    authorization/resource-scope failures, not business-rule
+    conflicts)."""
+
+    def __init__(self, message: str = "This operation is not permitted while the Tracking Plan is in its current state.") -> None:
+        super().__init__(message, status_code=409, code="TRACKING_REQUIREMENT_MUTATION_FORBIDDEN")

@@ -90,17 +90,19 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     pure association tables (BACKEND-11) — the Settings persistence
     contracts — UserPreference, AIPreference, NotificationPreference
     (BACKEND-12) — the Assets persistence contracts — CreativeBrief,
-    Asset, AssetVersion (BACKEND-13) — and the Learning persistence
+    Asset, AssetVersion (BACKEND-13) — the Learning persistence
     contracts — LearningCandidate, StrategicRecommendationCandidate
-    (BACKEND-14) — all exist, plus the BACKEND-03 infrastructure probe.
-    No Content Revision Request/Distribution/Paid Media/Measurement
-    Cycle/Performance Snapshot/Strategic Decision/Agent Run/Handoff/
-    Return/Gate Decision/IntegrationDefinition/WorkspaceIntegration/
-    SubscriptionPlan/Subscription/CreativeBriefVersion/CampaignVersion
-    table has been prematurely introduced — BACKEND-14's persistence is
-    deliberately limited to LearningCandidate/StrategicRecommendation
-    Candidate; CampaignVersion creation, automatic Strategy mutation, and
-    Strategic Decision persistence remain out of scope (Governance
+    (BACKEND-14) — and the Tracking persistence contracts —
+    TrackingPlan, TrackingRequirement (BACKEND-15) — all exist, plus the
+    BACKEND-03 infrastructure probe. No Content Revision Request/
+    Distribution/Paid Media/Measurement Cycle/Performance Snapshot/
+    Strategic Decision/Agent Run/Handoff/Return/Gate Decision/
+    IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
+    Subscription/CreativeBriefVersion/CampaignVersion/TrackingStatus/
+    TrackingReadiness/Channel table has been prematurely introduced —
+    BACKEND-15's persistence is deliberately limited to TrackingPlan/
+    TrackingRequirement; TrackingPlan.status is the sole readiness
+    source of truth, never a second persisted rollup (Governance
     Freeze)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
@@ -146,6 +148,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "asset_versions",
         "learning_candidates",
         "strategic_recommendation_candidates",
+        "tracking_plans",
+        "tracking_requirements",
     }
 
 

@@ -32,6 +32,7 @@ from app.persistence.base import Base
 from app.planning import models as planning_models  # noqa: F401
 from app.research import models as research_models  # noqa: F401
 from app.strategy import models as strategy_models  # noqa: F401
+from app.tracking import models as tracking_models  # noqa: F401
 from app.users import models as user_models  # noqa: F401
 from app.workspaces import models as workspace_models  # noqa: F401
 

@@ -21,6 +21,7 @@ from app.orchestration.router import router as orchestration_router
 from app.planning.router import router as planning_router
 from app.research.router import router as research_router
 from app.strategy.router import router as strategy_router
+from app.tracking.router import router as tracking_router
 from app.users.router import router as users_router
 from app.workspaces.router import router as workspaces_router
 
@@ -56,3 +57,6 @@ api_v1_router.include_router(assets_router)
 # Same reasoning again — own prefix already includes /campaigns/{id}, see
 # app/learning/router.py's module docstring.
 api_v1_router.include_router(learning_router)
+# Same reasoning again — own prefix already includes /campaigns/{id}, see
+# app/tracking/router.py's module docstring.
+api_v1_router.include_router(tracking_router)

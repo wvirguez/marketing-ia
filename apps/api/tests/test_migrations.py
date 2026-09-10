@@ -1108,3 +1108,126 @@ def test_backend_14_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_strategic_recommendation_candidates_id_workspace_id" not in src_unique_names
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_15_REVISION = "448a7fa7936d"
+_BACKEND_15_TABLES = ("tracking_plans", "tracking_requirements")
+
+
+def _tracking_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'tracking_plans')")
+        ).scalar_one()
+
+
+def test_backend_15_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-15 Phase 2: upgrade to head, downgrade to exactly the
+    pre-BACKEND-15 revision (448a7fa7936d, not base), upgrade to head
+    again — proving the Tracking migration (two new tables, one new
+    native enum, and the new audit_events FK columns) adds/removes
+    cleanly without disturbing any BACKEND-04..14 object, and requires no
+    closed-domain schema change (campaigns already carried its own
+    candidate key)."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _tracking_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_15_REVISION)
+        assert _tracking_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_15_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-15 downgrade"
+
+            # Every BACKEND-04..14 table must survive a BACKEND-15-only
+            # downgrade untouched.
+            for table in (
+                "users", "user_preferences", "organizations", "workspaces", "memberships", "auth_sessions",
+                "ai_preferences", "notification_preferences",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+                "content_briefs", "content_pieces", "content_versions", "content_approvals",
+                *_BACKEND_11_TABLES,
+                "creative_briefs", "assets", "asset_versions",
+                *_BACKEND_14_TABLES,
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-15-only downgrade"
+
+            # audit_events must be reverted to its exact pre-BACKEND-15 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("tracking_plan_id", "tracking_requirement_id"):
+                assert column not in audit_columns
+
+            # The BACKEND-15-owned enum type must be gone; every earlier
+            # stage's enum type must survive untouched.
+            leftover_enums = connection.execute(
+                text("SELECT typname FROM pg_type WHERE typname = 'tracking_readiness_status'")
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop the BACKEND-15-owned enum type"
+
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status', "
+                    "'content_piece_status', 'content_approval_status', 'metric_source', "
+                    "'learning_candidate_status', 'strategic_recommendation_decision')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 16, "a BACKEND-15 downgrade must not remove any earlier stage's enum type"
+
+            # No closed-domain repair was needed for BACKEND-15 — confirm
+            # campaigns' own candidate key, already added by BACKEND-05,
+            # is untouched.
+            campaign_unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'campaigns'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_campaigns_id_workspace_id" in campaign_unique_names
+
+        command.upgrade(config, "head")
+        assert _tracking_tables_exist(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("tracking_plan_id", "tracking_requirement_id"):
+                assert column in audit_columns
+
+            # The tenant-safety FK contract: tracking_plans.campaign_id
+            # (composite, through campaigns), never a direct
+            # workspace-only shortcut; tracking_requirements has no
+            # workspace_id/campaign_id of its own (TRK-D19).
+            plan_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'tracking_plans'")
+            ).scalars().all()
+            assert "workspace_id" in plan_columns
+            assert "campaign_id" in plan_columns
+
+            requirement_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'tracking_requirements'")
+            ).scalars().all()
+            for forbidden in ("workspace_id", "campaign_id"):
+                assert forbidden not in requirement_columns
+
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'tracking_plans'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_tracking_plans_campaign_workspace" in unique_names
+            assert "uq_tracking_plans_id_workspace_id" not in unique_names
+    finally:
+        engine.dispose()

@@ -166,6 +166,23 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # BACKEND-15 §21: same reasoning as learning_candidate_id/
+    # strategic_recommendation_candidate_id above — a
+    # tracking.plan.recorded/tracking.plan.status_changed/
+    # tracking.requirement.recorded/tracking.requirement.status_changed
+    # event must identify its exact row(s). Both nullable, single-column,
+    # matching every other AuditEvent subject FK exactly — no composite
+    # audit FK, no AuditEvent-specific candidate key (Governance Freeze §22).
+    # Both auto-derived FK/index names fit within PostgreSQL's 63-character
+    # limit (verified empirically: 47/61/32/39 chars) — no explicit
+    # shortening needed, unlike BACKEND-14's own strategic_recommendation_
+    # candidate_id column.
+    tracking_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracking_plans.id"), default=None, index=True
+    )
+    tracking_requirement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracking_requirements.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)
