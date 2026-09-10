@@ -148,6 +148,24 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     asset_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("asset_versions.id"), default=None, index=True
     )
+    # BACKEND-14 §18: same reasoning as creative_brief_id/asset_id above —
+    # a learning.candidate.recorded/learning.candidate.status_changed/
+    # learning.recommendation.recorded/learning.recommendation.decided
+    # event must identify its exact row. Both nullable, single-column,
+    # matching every other AuditEvent subject FK exactly — no composite
+    # audit FK, no AuditEvent-specific candidate key (Governance Freeze §25).
+    learning_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("learning_candidates.id"), default=None, index=True
+    )
+    # Explicit, shortened FK name: the naming convention's own derived
+    # name ("fk_audit_events_strategic_recommendation_candidate_id_
+    # strategic_recommendation_candidates") exceeds PostgreSQL's
+    # 63-character identifier limit (verified empirically: 89 chars).
+    strategic_recommendation_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategic_recommendation_candidates.id", name="fk_audit_events_strategic_recommendation_candidate_id_src"),
+        default=None,
+        index=True,
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

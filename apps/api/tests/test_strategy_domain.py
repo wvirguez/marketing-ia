@@ -493,13 +493,16 @@ def test_no_version_content_or_media_placeholder_field_exists_on_experiment() ->
         assert not any(term in c for c in columns), f"unexpected field containing {term!r} on Experiment"
 
 
-def test_no_strategic_decision_recommendation_candidate_or_approval_table_was_introduced() -> None:
+def test_no_strategic_decision_or_approval_table_was_introduced() -> None:
+    """BACKEND-14 has since authorized learning_candidates/
+    strategic_recommendation_candidates (see tests/test_learning_domain.py)
+    — this guard now covers only the tables that remain out of scope for
+    every stage through BACKEND-14."""
     from app.persistence.base import metadata
 
     table_names = set(metadata.tables.keys())
     for forbidden_table in (
-        "strategic_decisions", "strategic_recommendation_candidates", "strategy_approvals",
-        "gate_decisions", "target_maturities", "positioning_maturities", "learning_candidates",
+        "strategic_decisions", "strategy_approvals", "gate_decisions", "target_maturities", "positioning_maturities",
     ):
         assert forbidden_table not in table_names
 
@@ -507,19 +510,27 @@ def test_no_strategic_decision_recommendation_candidate_or_approval_table_was_in
 def test_confirmed_hypothesis_does_not_create_a_learning_row(strategy_campaign, db_session) -> None:
     """HYPOTHESIS CONFIRMED != VALIDATED LEARNING (BACKEND-08 §10/§20) —
     confirming a Hypothesis must never create, reference, or imply any row
-    outside the strategy module's own four tables."""
+    outside the strategy module's own four tables. BACKEND-14 has since
+    introduced learning_candidates, so this is now a row-count check
+    rather than a table-existence check."""
+    from sqlalchemy import func, select
+
+    from app.learning.models import LearningCandidate
+
     campaign, run, stages = strategy_campaign
     service = StrategyService(db_session)
     _strategy, _pos, hypotheses, _exps = service.record_strategy(
         campaign=campaign, campaign_run=run, stage_execution=stages[BusinessStage.STRATEGY],
         summary="Summary.", positioning_statement="Statement.", hypotheses=[default_hypothesis()],
     )
+    candidates_before = db_session.execute(select(func.count()).select_from(LearningCandidate)).scalar_one()
+
     service.transition_hypothesis(
         campaign=campaign, hypothesis_public_id=hypotheses[0].public_id, target_status=HypothesisStatus.CONFIRMED,
     )
-    from app.persistence.base import metadata
 
-    assert "learning_candidates" not in metadata.tables.keys()
+    candidates_after = db_session.execute(select(func.count()).select_from(LearningCandidate)).scalar_one()
+    assert candidates_after == candidates_before
 
 
 # --- stage-lifecycle non-mutation -----------------------------------------

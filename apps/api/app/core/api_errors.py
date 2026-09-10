@@ -159,3 +159,28 @@ class AssetArchivedError(ApiError):
 
     def __init__(self, message: str = "This Asset is archived and cannot receive a new version.") -> None:
         super().__init__(message, status_code=409, code="ASSET_ARCHIVED")
+
+
+class LearningCandidateNotValidatedError(ApiError):
+    """BACKEND-14 Governance Freeze §N: a Strategic Recommendation
+    Candidate may be recorded only from a VALIDATED Learning Candidate —
+    the canonical edge is explicitly ``VALIDATED -> (may produce)
+    STRATEGIC_RECOMMENDATION_CANDIDATE``. A plain DB FK cannot enforce a
+    status-value invariant on its parent, so this is the mapped,
+    deterministic surface for that explicit service-layer check."""
+
+    def __init__(self, message: str = "A Strategic Recommendation Candidate requires a VALIDATED Learning Candidate.") -> None:
+        super().__init__(message, status_code=409, code="LEARNING_CANDIDATE_NOT_VALIDATED")
+
+
+class RecommendationAlreadyDecidedError(ApiError):
+    """BACKEND-14 Governance Freeze §M/§15: a Strategic Recommendation
+    Candidate's decision is one-shot — NULL may move to ACCEPTED or
+    REJECTED exactly once, never reversed, never decided twice. The
+    mapped, deterministic surface for a second decision attempt, the same
+    "second attempt is a deterministic conflict, never a silent
+    overwrite" pattern ``DecisionAlreadyResolvedError``/ContentApproval's
+    own "immutable once resolved" precedent already establish."""
+
+    def __init__(self, message: str = "This Strategic Recommendation Candidate has already been decided.") -> None:
+        super().__init__(message, status_code=409, code="RECOMMENDATION_ALREADY_DECIDED")

@@ -981,3 +981,130 @@ def test_backend_13_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_assets_id_workspace_id" not in asset_unique_names
     finally:
         engine.dispose()
+
+
+_PRE_BACKEND_14_REVISION = "8e43d97d836c"
+_BACKEND_14_TABLES = ("learning_candidates", "strategic_recommendation_candidates")
+
+
+def _learning_tables_exist(engine) -> bool:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'learning_candidates')")
+        ).scalar_one()
+
+
+def test_backend_14_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """BACKEND-14 Phase 2 §22: upgrade to head, downgrade to exactly the
+    pre-BACKEND-14 revision (8e43d97d836c, not base), upgrade to head
+    again — proving the Learning migration (two new tables, two new
+    native enums, and the new audit_events FK columns) adds/removes
+    cleanly without disturbing any BACKEND-04..13 object, and requires no
+    closed-domain schema change (analysis_results already carried its own
+    candidate key)."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    try:
+        command.upgrade(config, "head")
+        assert _learning_tables_exist(engine) is True
+
+        command.downgrade(config, _PRE_BACKEND_14_REVISION)
+        assert _learning_tables_exist(engine) is False
+        with engine.connect() as connection:
+            for table in _BACKEND_14_TABLES:
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive a BACKEND-14 downgrade"
+
+            # Every BACKEND-04..13 table must survive a BACKEND-14-only
+            # downgrade untouched.
+            for table in (
+                "users", "user_preferences", "organizations", "workspaces", "memberships", "auth_sessions",
+                "ai_preferences", "notification_preferences",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+                "content_briefs", "content_pieces", "content_versions", "content_approvals",
+                *_BACKEND_11_TABLES,
+                "creative_briefs", "assets", "asset_versions",
+            ):
+                exists = connection.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table}')")
+                ).scalar_one()
+                assert exists is True, f"{table} must survive a BACKEND-14-only downgrade"
+
+            # audit_events must be reverted to its exact pre-BACKEND-14 shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("learning_candidate_id", "strategic_recommendation_candidate_id"):
+                assert column not in audit_columns
+
+            # Both BACKEND-14-owned enum types must be gone; every earlier
+            # stage's enum type must survive untouched.
+            leftover_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('learning_candidate_status', 'strategic_recommendation_decision')"
+                )
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop both BACKEND-14-owned enum types"
+
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status', "
+                    "'content_piece_status', 'content_approval_status', 'metric_source')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 14, "a BACKEND-14 downgrade must not remove any earlier stage's enum type"
+
+            # No closed-domain repair was needed for BACKEND-14 — confirm
+            # analysis_results' own candidate key, already added by
+            # BACKEND-11, is untouched.
+            analysis_result_unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'analysis_results'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_analysis_results_id_workspace_id" in analysis_result_unique_names
+
+        command.upgrade(config, "head")
+        assert _learning_tables_exist(engine) is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            for column in ("learning_candidate_id", "strategic_recommendation_candidate_id"):
+                assert column in audit_columns
+
+            # The tenant-safety FK contract: learning_candidates.analysis_result_id
+            # (composite, through analysis_results), never a direct
+            # campaign_id/campaign_run_id/experiment_id column.
+            candidate_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'learning_candidates'")
+            ).scalars().all()
+            for forbidden in ("campaign_id", "campaign_run_id", "experiment_id", "content_piece_id", "public_id_2"):
+                assert forbidden not in candidate_columns
+            assert "workspace_id" in candidate_columns
+            assert "analysis_result_id" in candidate_columns
+
+            unique_names = connection.execute(
+                text("SELECT conname FROM pg_constraint WHERE conrelid = 'learning_candidates'::regclass AND contype = 'u'")
+            ).scalars().all()
+            assert "uq_learning_candidates_id_workspace_id" in unique_names
+
+            # No speculative candidate key on strategic_recommendation_candidates.
+            src_unique_names = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = "
+                    "'strategic_recommendation_candidates'::regclass AND contype = 'u'"
+                )
+            ).scalars().all()
+            assert "uq_strategic_recommendation_candidates_id_workspace_id" not in src_unique_names
+    finally:
+        engine.dispose()

@@ -54,12 +54,6 @@ def test_only_get_exists_for_analysis(campaign_run_client: dict) -> None:
     assert fixtures["client"].delete(path).status_code == 405
 
 
-def test_no_learning_or_settings_route_exists(campaign_run_client: dict) -> None:
-    fixtures = campaign_run_client
-    response = fixtures["client"].get(f"/api/v1/campaigns/{fixtures['campaign_id']}/learning")
-    assert response.status_code == 404
-
-
 # --- POST /metrics ---------------------------------------------------------
 
 

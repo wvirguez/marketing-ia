@@ -23,6 +23,7 @@ from app.audit import models as audit_models  # noqa: F401
 from app.auth import models as auth_models  # noqa: F401
 from app.campaigns import models as campaign_models  # noqa: F401
 from app.core.config import get_settings
+from app.learning import models as learning_models  # noqa: F401
 from app.orchestration import models as orchestration_models  # noqa: F401
 from app.content import models as content_models  # noqa: F401
 from app.measurement import models as measurement_models  # noqa: F401

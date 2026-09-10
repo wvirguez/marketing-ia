@@ -15,6 +15,7 @@ from app.assets.router import router as assets_router
 from app.auth.router import router as auth_router
 from app.campaigns.router import router as campaigns_router
 from app.content.router import router as content_router
+from app.learning.router import router as learning_router
 from app.measurement.router import router as measurement_router
 from app.orchestration.router import router as orchestration_router
 from app.planning.router import router as planning_router
@@ -52,3 +53,6 @@ api_v1_router.include_router(measurement_router)
 # Same reasoning again — own prefix already includes
 # /campaigns/{id}/content/{id}, see app/assets/router.py's module docstring.
 api_v1_router.include_router(assets_router)
+# Same reasoning again — own prefix already includes /campaigns/{id}, see
+# app/learning/router.py's module docstring.
+api_v1_router.include_router(learning_router)

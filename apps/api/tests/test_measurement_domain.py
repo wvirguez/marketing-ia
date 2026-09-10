@@ -363,14 +363,15 @@ def test_association_table_has_no_public_id_or_status() -> None:
 # --- governance: no forbidden entities/tables ------------------------------
 
 
-def test_no_measurement_cycle_snapshot_or_learning_table_was_introduced() -> None:
+def test_no_measurement_cycle_snapshot_or_approval_table_was_introduced() -> None:
+    """BACKEND-14 has since authorized learning_candidates/
+    strategic_recommendation_candidates (see tests/test_learning_domain.py)
+    — this guard now covers only the tables that remain out of scope for
+    every stage through BACKEND-14."""
     from app.persistence.base import metadata
 
     table_names = set(metadata.tables.keys())
-    for forbidden_table in (
-        "measurement_cycles", "performance_snapshots", "learning_candidates",
-        "strategic_recommendation_candidates", "metric_approvals", "analysis_approvals",
-    ):
+    for forbidden_table in ("measurement_cycles", "performance_snapshots", "metric_approvals", "analysis_approvals"):
         assert forbidden_table not in table_names
 
 
