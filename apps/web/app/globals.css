@@ -127,6 +127,7 @@ h1 { font-size: clamp(23px, 2.2vw, 32px); letter-spacing: -.9px; font-weight: 72
 h2 { font-size: 15px; font-weight: 700; letter-spacing: -.25px; }
 .period { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--muted); }
 .stats-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
+.stats-grid.single-stat { grid-template-columns: minmax(0,260px); }
 .stat-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 17px 18px; box-shadow: var(--shadow-panel); }
 .stat-top { display: flex; align-items: center; justify-content: space-between; gap: 5px; font-size: 11px; color: var(--muted); }
 .icon-tile { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; }
@@ -148,6 +149,7 @@ h2 { font-size: 15px; font-weight: 700; letter-spacing: -.25px; }
 .text-button { display: flex; align-items: center; gap: 5px; white-space: nowrap; background: transparent; color: #0867d5; font-size: 10px; padding: 8px 0; }
 .campaign-list { padding: 0 22px; }
 .campaign-row { padding: 16px 0; border-top: 1px solid var(--border); }
+a.campaign-row { display: block; color: inherit; text-decoration: none; }
 .campaign-main { display: flex; align-items: center; gap: 11px; }
 .campaign-main > div { min-width: 0; }
 .campaign-avatar { width: 36px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; font-size: 11px; font-weight: 650; }
@@ -573,7 +575,6 @@ time { color: var(--muted); font-size: 8px; white-space: nowrap; }
 .campaign-directory-view { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: #eaf1fa; margin-left: auto; }
 .campaign-directory-view button { min-height: 40px; padding: 8px 15px; border-radius: 9px; color: #465c79; }
 .campaign-directory-view button[aria-pressed="true"] { background: white; color: #075fc6; box-shadow: 0 2px 6px #183b6410; font-weight: 650; }
-.campaign-directory-feedback.is-visible { padding: 16px 20px; border: 1px solid #a9cff6; border-radius: 12px; background: #edf6ff; color: #16497c; margin-bottom: 20px; font-size: 14px; line-height: 1.7; }
 .campaign-directory-results { display: grid; gap: 16px; padding: 0; list-style: none; }
 .campaign-directory-card { padding: 24px; min-width: 0; }
 .campaign-directory-title { display: flex; align-items: flex-start; gap: 14px; }
@@ -586,8 +587,8 @@ time { color: var(--muted); font-size: 8px; white-space: nowrap; }
 .campaign-directory-details dd { margin: 0; font-size: 13px; line-height: 1.6; }
 .campaign-directory-badge { display: inline-block; border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 650; }
 .campaign-directory-badge.draft { background: #edf0f5; color: #4c5b70; }
-.campaign-directory-badge.preparing { background: #fff2d6; color: #785200; }
-.campaign-directory-badge.active { background: #def6e9; color: #146440; }
+.campaign-directory-badge.preparing, .campaign-directory-badge.warning { background: #fff2d6; color: #785200; }
+.campaign-directory-badge.active, .campaign-directory-badge.success { background: #def6e9; color: #146440; }
 .campaign-directory-badge.paused { background: #ffebe2; color: #934018; }
 .campaign-directory-badge.complete { background: #e5efff; color: #2159a0; }
 .campaign-directory-progress { display: flex; align-items: center; gap: 9px; }
@@ -604,7 +605,6 @@ time { color: var(--muted); font-size: 8px; white-space: nowrap; }
 @media (max-width: 1100px) { .campaign-directory-tools { grid-template-columns: minmax(0, 1fr); } .campaign-directory-details { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 767px) { .campaign-directory-results.view-grid { grid-template-columns: minmax(0, 1fr); } .campaign-directory-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } .campaign-directory-card { padding: 20px; } .campaign-directory-title h2 { font-size: 16px; } .campaign-directory-tools input, .campaign-directory-tools select { font-size: 16px; } }
 @media (max-width: 540px) { .campaign-directory-filters { grid-template-columns: minmax(0, 1fr); } .campaign-directory-tools { padding: 20px; } .campaign-directory-actions { flex-direction: column; } .campaign-directory-actions > .button { width: 100%; } .campaign-directory-actions > details { width: 100%; } }
-.campaign-directory-actions .campaign-directory-feedback { flex-basis: 100%; margin-bottom: 0; }
 
 /* FRONTEND-09: settings and workspace profile */
 .settings-page { max-width: 1200px; }

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useRef, useState, type ReactNode } from "react";
-import { campaignList } from "@/lib/campaign-list-data";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { PreviewButton } from "@/components/ui/preview-button";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -61,7 +60,7 @@ export function AppShell({ children, section = "dashboard", context, breadcrumbs
       <p className="nav-caption">WORKSPACE</p>
       <nav aria-label="Navegación principal"><ul className="nav-list">{navigation.map(({ label, icon }, index) => {
         const active = (index === 0 && section === "dashboard") || (index === 1 && section === "campaigns");
-        return <li key={label}>{index < 2 ? <Link href={index === 0 ? "/" : "/campaigns"} aria-current={active ? "page" : undefined} className={`nav-item${active ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name={icon} />{label}{active ? <span className="active-dot" /> : index === 1 && <span className="nav-count">{campaignList.length}</span>}</Link> : <PreviewButton className="nav-item"><Icon name={icon} />{label}</PreviewButton>}</li>;
+        return <li key={label}>{index < 2 ? <Link href={index === 0 ? "/" : "/campaigns"} aria-current={active ? "page" : undefined} className={`nav-item${active ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name={icon} />{label}{active && <span className="active-dot" />}</Link> : <PreviewButton className="nav-item"><Icon name={icon} />{label}</PreviewButton>}</li>;
       })}</ul></nav>
       <div className="sidebar-bottom"><div className="plan-card"><span className="plan-label"><Icon name="spark" size={16} /> Tu próxima gran idea</span><p>De la inspiración al impacto, en un solo lugar.</p><span className="plan-badge">Plan Studio · Demo</span></div><Link href="/settings" aria-current={section === "settings" ? "page" : undefined} className={`nav-item${section === "settings" ? " active" : ""}`} onClick={() => setOpen(false)}><Icon name="settings" />Configuración</Link><div className="user-profile"><span className="avatar">{userInitials}</span><div><strong>{userName}</strong><span>Plan Studio · Demo</span></div><button type="button" className="icon-button" aria-label="Cerrar sesión" title="Cerrar sesión" aria-busy={loggingOut} disabled={loggingOut} onClick={handleLogout}><Icon name="logout" size={17} /></button></div>{logoutError && <p className="logout-error" role="alert">{logoutError} <button type="button" className="auth-text-button" onClick={handleLogout}>Reintentar</button></p>}</div>
     </aside>
