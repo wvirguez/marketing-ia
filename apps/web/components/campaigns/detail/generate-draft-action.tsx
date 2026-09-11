@@ -6,51 +6,69 @@
 // anything about orchestration beyond "here are this campaign's runs."
 //
 // CampaignRun.status === "RUNNING" is NEVER treated as "currently
-// executing" (MVP-04's synchronous Research->Plan bootstrap leaves the
-// run RUNNING forever afterward, successful or partially failed, because
-// CONTENT onward stays PENDING). The only true in-flight signal here is
+// executing" (the synchronous Research->Content bootstrap leaves the run
+// RUNNING forever afterward, successful or partially failed, because
+// CREATIVE onward stays PENDING). The only true in-flight signal here is
 // the local `submitting` flag around this component's own
-// initialize->start request chain.
+// initialize->start request chain. MVP-06B: `getDraftPresentationState`
+// (lib/campaigns/draft-progress.ts) is the truthful "did the bootstrap
+// actually finish" signal this component and `CampaignRuns` both use —
+// never inferred from `current_stage`/`run_status` alone.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { getCampaignRunProgress, initializeCampaignRun, startCampaignRun } from "@/lib/api/orchestration";
+import {
+  businessStageLabel,
+  firstFailedBootstrapStage,
+  getDraftPresentationState,
+  type DraftPresentationState,
+} from "@/lib/campaigns/draft-progress";
 import { campaignRunStatusLabel } from "@/lib/campaigns/status";
 import type { CampaignRunPublic } from "@/types/campaign";
 import type { RunProgressPublic } from "@/types/orchestration";
 
 const MICROCOPY =
-  "Esto generará un borrador inicial de Investigación, Audiencia, Estrategia y Planificación a partir de los datos de tu campaña. No incluye investigación externa ni ha sido validado.";
+  "Esto generará un borrador inicial de Investigación, Audiencia, Estrategia, Planificación y Contenido a partir de los datos de tu campaña. No incluye investigación externa ni ha sido validado.";
 
 const IN_FLIGHT_COPY = "Generando tu borrador inicial… esto puede tardar unos segundos.";
 
 const SUCCESS_COPY = "Borrador inicial generado.";
 
-const FAILURE_COPY =
+// MVP-06B §16: generic, truthful fallback — used only if a `FAILED`
+// presentation state is somehow reached without a resolvable bootstrap
+// stage (defensive; should not occur given `getDraftPresentationState`'s
+// own contract).
+const GENERIC_FAILURE_COPY =
   "No se pudo completar el borrador inicial. Parte del proceso pudo haberse guardado, pero esta ejecución no puede reintentarse desde esta versión.";
+
+// MVP-06B §15/§17: names the failed BUSINESS stage (never an agent
+// identifier), states plainly that earlier completed stages *may* still
+// be available (never "nothing was saved," never a false guarantee that
+// everything before it definitely persisted — CONTENT's own per-PlanItem
+// atomicity means even the failed stage itself may have partial rows),
+// and that this run cannot currently be retried.
+function buildFailureCopy(progress: RunProgressPublic): string {
+  const failedStage = firstFailedBootstrapStage(progress);
+  if (!failedStage) return GENERIC_FAILURE_COPY;
+  return (
+    `No se pudo completar el borrador inicial: la etapa de ${businessStageLabel(failedStage.stage)} presentó un ` +
+    "problema. Las etapas anteriores que sí se completaron pueden seguir disponibles en sus secciones. Esta " +
+    "ejecución no puede reintentarse desde esta versión."
+  );
+}
 
 type ProgressState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; progress: RunProgressPublic };
 
-function hasFailedStage(progress: RunProgressPublic): boolean {
-  return progress.stages.some((stage) => stage.status === "FAILED");
-}
-
-// Truthful "did the MVP-04 bootstrap actually finish" signal — never
-// inferred from `current_stage` alone (it skips over a FAILED stage to
-// report the next PENDING one, which would misreport a partial failure
-// as if PLAN had run).
-function planCompleted(progress: RunProgressPublic): boolean {
-  return progress.stages.some((stage) => stage.stage === "PLAN" && stage.status === "COMPLETED");
-}
-
 export function GenerateDraftAction({
   campaignId,
   runs,
   onGenerated,
+  onDraftPresentationChange,
 }: {
   campaignId: string;
   runs: CampaignRunPublic[];
@@ -61,6 +79,12 @@ export function GenerateDraftAction({
    * tabs are opened they re-fetch instead of showing a stale
    * pre-generation empty state forever. */
   onGenerated?: () => void;
+  /** MVP-06B: reports this component's own derived bootstrap presentation
+   * state for its sole run, so `CampaignRuns` (a sibling under the same
+   * Overview tab) can present that same run without contradicting this
+   * component's own success/failure copy — `null` whenever no reliable
+   * derived state is available (loading/error/unsupported run count). */
+  onDraftPresentationChange?: (info: { runId: string; state: DraftPresentationState } | null) => void;
 }) {
   const [state, setState] = useState<ProgressState>({ status: "loading" });
   const [submitting, setSubmitting] = useState(false);
@@ -93,6 +117,17 @@ export function GenerateDraftAction({
       active = false;
     };
   }, [campaignId, soleRun]);
+
+  // MVP-06B: reports the derived presentation state upward whenever it
+  // changes — a pure function of `state`/`soleRun`, never a new fetch.
+  useEffect(() => {
+    if (!onDraftPresentationChange) return;
+    if (state.status === "ready" && soleRun) {
+      onDraftPresentationChange({ runId: soleRun.id, state: getDraftPresentationState(state.progress) });
+    } else {
+      onDraftPresentationChange(null);
+    }
+  }, [state, soleRun, onDraftPresentationChange]);
 
   async function refreshProgress(runId: string): Promise<RunProgressPublic> {
     const progress = await getCampaignRunProgress(campaignId, runId);
@@ -169,8 +204,9 @@ export function GenerateDraftAction({
 
   const { progress } = state;
   const stillCreated = progress.run_status === "CREATED";
-  const failed = hasFailedStage(progress);
-  const completed = planCompleted(progress);
+  const presentation = getDraftPresentationState(progress);
+  const failed = presentation === "FAILED";
+  const completed = presentation === "DRAFT_GENERATED";
 
   return (
     <section className="panel">
@@ -194,7 +230,7 @@ export function GenerateDraftAction({
           </div>
         </>
       ) : failed ? (
-        <p role="alert">{FAILURE_COPY}</p>
+        <p role="alert">{buildFailureCopy(progress)}</p>
       ) : completed ? (
         <p className="muted small-text">{SUCCESS_COPY}</p>
       ) : (

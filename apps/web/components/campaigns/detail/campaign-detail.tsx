@@ -6,6 +6,7 @@ import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { campaignStatusLabel, campaignStatusTone, formatCampaignDate } from "@/lib/campaigns/status";
 import type { CampaignPublic, CampaignRunPublic } from "@/types/campaign";
+import type { DraftPresentationState } from "@/lib/campaigns/draft-progress";
 import { AudiencePanel } from "./audience-panel";
 import { CampaignRuns } from "./campaign-runs";
 import { ContentPanel } from "./content-panel";
@@ -46,6 +47,14 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
   // pre-generation (or stale) output must be re-fetched next time their
   // tab is opened.
   const [draftVersion, setDraftVersion] = useState(0);
+  // MVP-06B: GenerateDraftAction's own derived bootstrap presentation for
+  // its sole run, threaded to CampaignRuns (a sibling under the same
+  // Overview tab) so the two never show contradictory copy for the same
+  // run — CampaignDetail itself never computes or interprets this value.
+  const [draftPresentation, setDraftPresentation] = useState<{
+    runId: string;
+    state: DraftPresentationState;
+  } | null>(null);
   const buttons = useRef<Partial<Record<string, HTMLButtonElement | null>>>({});
 
   useEffect(() => {
@@ -118,8 +127,9 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
             campaignId={campaignId}
             runs={runs}
             onGenerated={() => setDraftVersion((version) => version + 1)}
+            onDraftPresentationChange={setDraftPresentation}
           />
-          <CampaignRuns runs={runs} total={runsTotal} />
+          <CampaignRuns runs={runs} total={runsTotal} draftPresentation={draftPresentation} />
         </>
       )}
       {tab.id === "research" && (
