@@ -24,13 +24,16 @@ from sqlalchemy.orm import Session
 from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign, CampaignRun, CampaignRunStatus
+from app.campaigns.repository import CampaignBriefRepository
 from app.core.api_errors import (
     DecisionAlreadyResolvedError,
     ForbiddenError,
     InvalidLifecycleTransitionError,
     OrchestrationNotInitializedError,
 )
+from app.orchestration import bootstrap as bootstrap_content
 from app.orchestration.models import (
+    BusinessStage,
     DecisionRequestStatus,
     HumanDecisionRequest,
     HumanDecisionResponse,
@@ -43,6 +46,9 @@ from app.orchestration.repository import (
     RunStageExecutionRepository,
 )
 from app.orchestration.transitions import is_legal_run_transition, is_legal_stage_transition
+from app.planning.service import PlanningService
+from app.research.service import ResearchService
+from app.strategy.service import StrategyService
 
 EVENT_ORCHESTRATION_INITIALIZED = "orchestration.initialized"
 EVENT_RUN_TRANSITIONED = "orchestration.run.transitioned"
@@ -51,6 +57,16 @@ EVENT_DECISION_OPENED = "orchestration.decision.opened"
 EVENT_DECISION_RESOLVED = "orchestration.decision.resolved"
 
 _FIRST_STAGE_ORDINAL = 1
+
+# MVP-04: the only business stages a deterministic bootstrap is authorized
+# to populate. CONTENT and every later stage are explicitly out of scope
+# and must remain PENDING — see docs/backend (MVP-04 Phase 1 gate).
+_BOOTSTRAP_STAGE_ORDER: tuple[BusinessStage, ...] = (
+    BusinessStage.RESEARCH,
+    BusinessStage.AUDIENCE,
+    BusinessStage.STRATEGY,
+    BusinessStage.PLAN,
+)
 
 
 class OrchestrationService:
@@ -193,6 +209,208 @@ class OrchestrationService:
 
         self.session.commit()
         return run
+
+    # --- MVP-04: deterministic content bootstrap --------------------------
+
+    def run_deterministic_bootstrap(
+        self, *, campaign: Campaign, run: CampaignRun, actor_user_id: uuid.UUID | None, request_id: str | None
+    ) -> None:
+        """Populates RESEARCH -> AUDIENCE -> STRATEGY -> PLAN with a
+        deterministic, Campaign-Brief-derived synthesis, immediately after
+        ``start_run`` promotes stage #1 to READY. CONTENT and every later
+        business stage are explicitly out of scope and are never touched —
+        this method never promotes CONTENT past PENDING.
+
+        SYSTEM activity only: every domain write below passes
+        ``actor_user_id=None`` unconditionally, regardless of the real
+        ``actor_user_id`` this method itself received, so each domain
+        service resolves ``ActorType.SYSTEM`` (never ``AGENT`` — no
+        specialist agent exists or ran; never ``USER`` — the authenticated
+        user did not author this content). The orchestration-level stage
+        transitions this method performs (via ``_transition_stage``) keep
+        their existing, unmodified ``ActorType.USER`` attribution and the
+        real ``actor_user_id`` — unchanged BACKEND-06 behavior, since "the
+        user's request caused this stage to move" remains literally true;
+        only "who produced this content" is SYSTEM.
+
+        Never creates a Handoff/Return/Gate Decision/Agent Run — those
+        tables do not exist in this codebase and none is added here.
+        """
+        brief = CampaignBriefRepository(self.session).get_latest_for_campaign(campaign.id)
+        if brief is None:  # pragma: no cover - create_campaign always creates one atomically
+            raise RuntimeError("Campaign has no CampaignBrief; cannot run the deterministic bootstrap.")
+
+        stages_by_stage = {s.stage: s for s in self.stages.list_for_run(campaign_run_id=run.id)}
+        stage_sequence = [stages_by_stage[stage] for stage in _BOOTSTRAP_STAGE_ORDER]
+
+        research_service = ResearchService(self.session)
+        strategy_service = StrategyService(self.session)
+        planning_service = PlanningService(self.session)
+
+        research_stage, audience_stage, strategy_stage, plan_stage = stage_sequence
+
+        self._run_bootstrap_stage(
+            campaign=campaign,
+            stage_execution=research_stage,
+            next_stage_execution=audience_stage,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            domain_writer=lambda: research_service.record_report(
+                campaign=campaign,
+                campaign_run=run,
+                stage_execution=research_stage,
+                summary=bootstrap_content.build_research_summary(campaign_name=campaign.name, brief=brief),
+                sources=[],
+            ),
+        )
+
+        self._run_bootstrap_stage(
+            campaign=campaign,
+            stage_execution=audience_stage,
+            next_stage_execution=strategy_stage,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            domain_writer=lambda: research_service.record_audience_profile(
+                campaign=campaign,
+                campaign_run=run,
+                stage_execution=audience_stage,
+                summary=bootstrap_content.build_audience_summary(campaign_name=campaign.name, brief=brief),
+                voc_items=[],
+            ),
+        )
+
+        strategy_content = bootstrap_content.build_strategy_content(campaign_name=campaign.name, brief=brief)
+        self._run_bootstrap_stage(
+            campaign=campaign,
+            stage_execution=strategy_stage,
+            next_stage_execution=plan_stage,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            domain_writer=lambda: strategy_service.record_strategy(
+                campaign=campaign,
+                campaign_run=run,
+                stage_execution=strategy_stage,
+                summary=strategy_content["summary"],
+                positioning_statement=strategy_content["positioning_statement"],
+                hypotheses=strategy_content["hypotheses"],
+            ),
+        )
+
+        def _write_plan():
+            # MVP-04R: Planning must consume the actual persisted Strategy
+            # produced by the STRATEGY stage above — re-read it from
+            # persistence (the same read StrategyService's own GET-only
+            # public surface uses) rather than assuming an in-memory value
+            # survived from the STRATEGY step. If no persisted Strategy/
+            # Positioning exists for this Campaign, Planning must NOT fall
+            # back to synthesizing from CampaignBrief alone: this stage
+            # writer raises, so the existing failure handling in
+            # ``_run_bootstrap_stage`` marks PLAN FAILED and creates no
+            # ContentPlan (§8/§10 of the MVP-04R repair).
+            strategy, positioning, _hypotheses, _experiments = strategy_service.get_strategy_output(
+                campaign=campaign
+            )
+            if strategy is None or positioning is None:
+                raise RuntimeError(
+                    "Campaign has no persisted Strategy/Positioning; Planning cannot "
+                    "bootstrap without the STRATEGY stage's actual output."
+                )
+            plan_content = bootstrap_content.build_plan_content(
+                campaign_name=campaign.name, brief=brief, strategy_positioning=positioning
+            )
+            return planning_service.record_plan(
+                campaign=campaign,
+                campaign_run=run,
+                stage_execution=plan_stage,
+                summary=plan_content["summary"],
+                items=plan_content["items"],
+            )
+
+        self._run_bootstrap_stage(
+            campaign=campaign,
+            stage_execution=plan_stage,
+            # No next stage: CONTENT is explicitly out of MVP-04's scope
+            # and must remain PENDING.
+            next_stage_execution=None,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            domain_writer=_write_plan,
+        )
+
+    def _run_bootstrap_stage(
+        self,
+        *,
+        campaign: Campaign,
+        stage_execution: RunStageExecution,
+        next_stage_execution: RunStageExecution | None,
+        actor_user_id: uuid.UUID | None,
+        request_id: str | None,
+        domain_writer,
+    ) -> None:
+        """One committed unit per domain/stage (never one giant bootstrap
+        transaction): stage -> RUNNING is committed on its own, the domain
+        write commits itself (each ``record_*`` method already owns its
+        own transaction), then stage -> COMPLETED + the next authorized
+        stage -> READY commit together. A failure at any point rolls back
+        only the in-flight attempt, marks the failing stage FAILED in its
+        own commit, and re-raises — prior, already-committed stages are
+        never touched. Idempotency guard: a stage already COMPLETED is
+        never re-run."""
+        if stage_execution.status is StageExecutionStatus.COMPLETED:
+            return
+
+        try:
+            if stage_execution.status is StageExecutionStatus.PENDING:
+                self._transition_stage(
+                    stage_execution=stage_execution,
+                    target=StageExecutionStatus.READY,
+                    campaign_id=campaign.id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                )
+                self.session.commit()
+
+            if stage_execution.status is StageExecutionStatus.READY:
+                self._transition_stage(
+                    stage_execution=stage_execution,
+                    target=StageExecutionStatus.RUNNING,
+                    campaign_id=campaign.id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                )
+                self.session.commit()
+
+            domain_writer()
+
+            self._transition_stage(
+                stage_execution=stage_execution,
+                target=StageExecutionStatus.COMPLETED,
+                campaign_id=campaign.id,
+                actor_user_id=actor_user_id,
+                request_id=request_id,
+            )
+            if next_stage_execution is not None:
+                self._transition_stage(
+                    stage_execution=next_stage_execution,
+                    target=StageExecutionStatus.READY,
+                    campaign_id=campaign.id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                )
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            self.session.refresh(stage_execution)
+            if stage_execution.status is StageExecutionStatus.RUNNING:
+                self._transition_stage(
+                    stage_execution=stage_execution,
+                    target=StageExecutionStatus.FAILED,
+                    campaign_id=campaign.id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                )
+                self.session.commit()
+            raise
 
     # --- reads -------------------------------------------------------------
 

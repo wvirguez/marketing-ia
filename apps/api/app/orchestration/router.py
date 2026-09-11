@@ -84,7 +84,15 @@ async def start_run(
     db: Session = Depends(get_db),
 ) -> CampaignRunPublic:
     campaign, run = _authorized_run(campaign_public_id, run_public_id, workspace, db, for_update=True)
-    run = OrchestrationService(db).start_run(
+    service = OrchestrationService(db)
+    run = service.start_run(
+        campaign=campaign, run=run, actor_user_id=user.id, request_id=request.state.request_id
+    )
+    # MVP-04: deterministic Research/Audience/Strategy/Plan bootstrap.
+    # Response contract is unchanged — still CampaignRunPublic; the run's
+    # own fields are unaffected by the bootstrap (it never mutates
+    # CampaignRun.status beyond what start_run already set).
+    service.run_deterministic_bootstrap(
         campaign=campaign, run=run, actor_user_id=user.id, request_id=request.state.request_id
     )
     return campaign_run_to_public(run, campaign_public_id=campaign.public_id)

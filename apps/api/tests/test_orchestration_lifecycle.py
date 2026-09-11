@@ -68,16 +68,24 @@ def test_start_transitions_run_to_running(campaign_run_client: dict) -> None:
     assert body["status"] == "RUNNING"
 
 
-def test_start_promotes_only_the_first_stage_to_ready(campaign_run_client: dict) -> None:
+def test_start_runs_the_mvp04_deterministic_bootstrap_through_plan(campaign_run_client: dict) -> None:
+    """MVP-04: starting a run now also synchronously executes the
+    deterministic Research/Audience/Strategy/Plan bootstrap (an
+    authorized, deliberate extension of BACKEND-06's own `start_run` —
+    see the MVP-04 Phase 1 architecture gate). CONTENT and every later
+    business stage remain untouched at PENDING; nothing beyond PLAN is
+    ever promoted."""
     initialize_run(campaign_run_client)
     start_run(campaign_run_client)
 
     stages = campaign_run_client["client"].get(run_path(campaign_run_client, "/stages")).json()["items"]
-    assert stages[0]["stage"] == "RESEARCH"
-    assert stages[0]["status"] == "READY"
-    # Starting a run never means an agent ran: nothing beyond stage 1
-    # moves, and stage 1 itself only reaches READY, never RUNNING/COMPLETED.
-    assert all(s["status"] == "PENDING" for s in stages[1:])
+    by_stage = {s["stage"]: s["status"] for s in stages}
+    assert by_stage["RESEARCH"] == "COMPLETED"
+    assert by_stage["AUDIENCE"] == "COMPLETED"
+    assert by_stage["STRATEGY"] == "COMPLETED"
+    assert by_stage["PLAN"] == "COMPLETED"
+    for pending_stage in ("CONTENT", "CREATIVE", "DISTRIBUTION", "PAID_MEDIA", "TRACKING", "MEASUREMENT", "LEARNING"):
+        assert by_stage[pending_stage] == "PENDING", pending_stage
 
 
 def test_start_is_not_idempotent(campaign_run_client: dict) -> None:
@@ -128,7 +136,9 @@ def test_progress_reflects_run_and_stage_state(campaign_run_client: dict) -> Non
     assert body["campaign_id"] == campaign_run_client["campaign_id"]
     assert body["run_id"] == campaign_run_client["run_id"]
     assert body["run_status"] == "RUNNING"
-    assert body["current_stage"] == "RESEARCH"
+    # MVP-04: start now also runs the deterministic bootstrap through
+    # PLAN, so the first non-terminal stage is CONTENT, not RESEARCH.
+    assert body["current_stage"] == "CONTENT"
     assert body["waiting_for_input"] is False
     assert body["open_decision_count"] == 0
     assert len(body["stages"]) == len(BUSINESS_STAGE_ORDER)

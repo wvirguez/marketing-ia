@@ -90,6 +90,21 @@ class CampaignBriefRepository:
         self.session.flush()
         return brief
 
+    def get_latest_for_campaign(self, campaign_id: uuid.UUID) -> CampaignBrief | None:
+        """Internal-only read (MVP-04): the deterministic orchestration
+        bootstrap needs the Brief's captured fields as its sole synthesis
+        input. No public route exposes this — deliberately (MVP-03's own
+        reservation). "Latest" = highest ``version`` for the campaign,
+        the same convention every other versioned domain entity in this
+        codebase already uses (``ResearchReportRepository.
+        get_current_for_campaign`` etc.)."""
+        return self.session.execute(
+            select(CampaignBrief)
+            .where(CampaignBrief.campaign_id == campaign_id)
+            .order_by(CampaignBrief.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
 
 class CampaignRunRepository:
     def __init__(self, session: Session) -> None:
