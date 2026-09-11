@@ -10,6 +10,19 @@ Strategy -> Plan, not CampaignBrief -> Plan directly. No external network
 call, no LLM/provider call, no hidden fixture corpus, and no fabricated
 company/competitor/customer fact.
 
+MVP-05E extends this with Content builders (``build_content_brief``,
+``build_content_piece_fields``, ``build_content_version_payload``), one set
+per persisted ``PlanItem``. These derive ONLY from the Campaign's name, its
+CampaignBrief, the persisted ``Positioning`` (STRATEGY stage), and the
+persisted ``PlanItem`` itself (PLAN stage) — never from anything invented.
+``PlanItem`` carries no ``funnel_stage``/``cta`` equivalent anywhere upstream
+(confirmed against ``app/planning/models.py`` and ``app/campaigns/models.py``
+in the MVP-05E Phase 1 source review), so those two required ``ContentPiece``
+fields use the literal ``_UNSPECIFIED`` marker rather than an invented
+business claim — the same "state plainly that data is absent" discipline
+``_or_unspecified`` already applies to missing CampaignBrief fields, never a
+guessed funnel stage or call-to-action.
+
 Neither ResearchReport, AudienceProfile, Strategy, nor ContentPlan has a
 structural maturity/status/"synthetic" column (confirmed in the MVP-04
 Phase 1 architecture gate) — so every narrative field below explicitly
@@ -17,7 +30,10 @@ discloses, in its own text, that it is an initial draft derived only
 from the Campaign Brief, never external research, never validated
 evidence, never a strategic or content decision. This is the only
 honesty mechanism available without inventing a schema field, which is
-explicitly out of scope for this phase.
+explicitly out of scope for this phase. ``ContentPiece`` is the one
+exception with a real status column — see ``app/orchestration/service.py``
+for why the bootstrap leaves it at its ``DRAFT`` creation default rather
+than advancing it.
 
 `OrchestrationService` (app/orchestration/service.py) owns state
 transitions, provenance objects, call order, and failure behavior — this
@@ -27,7 +43,10 @@ module owns none of that and never touches the database.
 from __future__ import annotations
 
 from app.campaigns.models import CampaignBrief
+from app.planning.models import PlanItem
 from app.strategy.models import Positioning
+
+_UNSPECIFIED = "no especificado"
 
 _DRAFT_DISCLAIMER = (
     "Borrador inicial generado automáticamente a partir del brief de la "
@@ -136,3 +155,56 @@ def build_plan_content(
         },
     ]
     return {"summary": summary, "items": items}
+
+
+def build_content_brief(
+    *, campaign_name: str, brief: CampaignBrief, strategy_positioning: Positioning, plan_item: PlanItem
+) -> str:
+    """MVP-05E: one ContentBrief per persisted PlanItem, expressing
+    CampaignBrief -> Strategy -> Plan -> Content — never restating the
+    CampaignBrief alone. ``plan_item`` must be the real persisted row this
+    Content is materializing for; ``strategy_positioning`` must be the real
+    persisted Positioning for this Campaign's current Strategy — neither is
+    independently reconstructed here."""
+    return (
+        f"{_DRAFT_DISCLAIMER}\n\n"
+        f"Campaña: {campaign_name}\n"
+        f"Elemento de plan #{plan_item.sequence}: {plan_item.objective}\n"
+        f"Formato/canal previsto en el plan: {plan_item.format}\n\n"
+        "Contexto de posicionamiento definido en la Estrategia de esta "
+        f'campaña (borrador, sin validar): "{strategy_positioning.statement}"\n\n'
+        "Esta instrucción no incorpora investigación externa, evidencia de "
+        "voz del cliente real ni una decisión de mensajes aprobada; sirve "
+        "únicamente como punto de partida para un borrador inicial de "
+        "contenido."
+    )
+
+
+def build_content_piece_fields(*, plan_item: PlanItem, brief: CampaignBrief) -> dict:
+    """MVP-05E: ``funnel_stage``/``cta`` have no equivalent anywhere upstream
+    (not on PlanItem, not on CampaignBrief) — the literal ``_UNSPECIFIED``
+    marker is used rather than guessing a business claim neither the Plan
+    nor the Brief actually makes. ``format``/``objective`` are a direct,
+    unmodified passthrough of the persisted PlanItem's own values."""
+    return {
+        "format": plan_item.format,
+        "objective": plan_item.objective,
+        "funnel_stage": _UNSPECIFIED,
+        "cta": _UNSPECIFIED,
+        "channel": _or_unspecified(brief.channel),
+    }
+
+
+def build_content_version_payload(*, plan_item: PlanItem, strategy_positioning: Positioning) -> dict:
+    """MVP-05E: minimal, deterministic, human-readable JSON — no invented
+    platform-specific structure (no scenes/hooks/hashtags), since neither
+    the Plan nor the Brief provides enough information to justify one."""
+    return {
+        "kind": "draft",
+        "disclaimer": _DRAFT_DISCLAIMER,
+        "format": plan_item.format,
+        "objective": plan_item.objective,
+        "sequence": plan_item.sequence,
+        "scheduled_date": plan_item.scheduled_date.isoformat() if plan_item.scheduled_date else None,
+        "positioning_reference": strategy_positioning.statement,
+    }

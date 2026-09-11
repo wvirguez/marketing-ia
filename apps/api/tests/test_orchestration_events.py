@@ -221,7 +221,13 @@ def test_decision_id_is_exposed_in_the_public_events_api(campaign_run_client: di
         )
         decision_public_id = request.public_id
 
-    events = campaign_run_client["client"].get(run_path(campaign_run_client, "/events")).json()["items"]
+    # MVP-05E extends the deterministic bootstrap through CONTENT, so a
+    # full RESEARCH->CONTENT run now produces more than the default
+    # page-size (20) of run-scoped events before this decision is even
+    # opened; the default page's own size is what this test used to rely
+    # on, not the semantics under test. Request the maximum page instead
+    # of asserting deterministic-bootstrap event volume here.
+    events = campaign_run_client["client"].get(run_path(campaign_run_client, "/events?limit=100")).json()["items"]
     decision_event = next(e for e in events if e["event_type"] == "orchestration.decision.opened")
     assert decision_event["decision_id"] == decision_public_id
 

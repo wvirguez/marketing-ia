@@ -90,6 +90,16 @@ class ContentPieceRepository:
             return self.session.execute(query).scalar_one_or_none()
         return self.session.get(ContentPiece, content_piece_id)
 
+    def get_for_brief(self, content_brief_id: uuid.UUID) -> ContentPiece | None:
+        """MVP-05E idempotency check: no DB-level uniqueness exists on
+        ``content_brief_id`` (a Brief could structurally have multiple
+        Pieces), so the deterministic bootstrap's own "one Piece per Brief"
+        policy is enforced here at the application level, not the schema
+        level."""
+        return self.session.execute(
+            select(ContentPiece).where(ContentPiece.content_brief_id == content_brief_id)
+        ).scalar_one_or_none()
+
     def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> ContentPiece | None:
         """Non-leaky resource-scope lookup (mirrors
         ``CampaignAccessService.get_authorized_run``): a Content Piece that

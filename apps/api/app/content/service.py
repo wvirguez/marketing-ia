@@ -105,6 +105,22 @@ class ContentService:
         latest_version = self.versions.get_latest_for_piece(piece.id)
         return piece, latest_version
 
+    # --- MVP-05E: narrow read helpers for the orchestration bootstrap's
+    # own idempotency checks (one Brief per PlanItem, one Piece per Brief)
+    # — kept here rather than having orchestration reach into
+    # self.briefs/self.pieces/self.versions directly, matching the
+    # "callers use a named service method, not a repository" shape every
+    # other domain service (Strategy/Planning/Research) already follows. --
+
+    def get_brief_for_plan_item(self, plan_item_id: uuid.UUID) -> ContentBrief | None:
+        return self.briefs.get_for_plan_item(plan_item_id)
+
+    def get_piece_for_brief(self, content_brief_id: uuid.UUID) -> ContentPiece | None:
+        return self.pieces.get_for_brief(content_brief_id)
+
+    def get_latest_version_for_piece(self, content_piece_id: uuid.UUID) -> ContentVersion | None:
+        return self.versions.get_latest_for_piece(content_piece_id)
+
     # --- Content Brief: service-layer only, no public route ----------
 
     def record_brief(

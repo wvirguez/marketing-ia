@@ -25,6 +25,7 @@ from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign, CampaignRun, CampaignRunStatus
 from app.campaigns.repository import CampaignBriefRepository
+from app.content.service import ContentService
 from app.core.api_errors import (
     DecisionAlreadyResolvedError,
     ForbiddenError,
@@ -58,14 +59,16 @@ EVENT_DECISION_RESOLVED = "orchestration.decision.resolved"
 
 _FIRST_STAGE_ORDINAL = 1
 
-# MVP-04: the only business stages a deterministic bootstrap is authorized
-# to populate. CONTENT and every later stage are explicitly out of scope
-# and must remain PENDING — see docs/backend (MVP-04 Phase 1 gate).
+# MVP-04/MVP-05E: the only business stages a deterministic bootstrap is
+# authorized to populate. CREATIVE and every later stage are explicitly out
+# of scope and must remain PENDING — see docs/backend (MVP-04 Phase 1 gate)
+# and the MVP-05D/05E architecture reviews for CONTENT specifically.
 _BOOTSTRAP_STAGE_ORDER: tuple[BusinessStage, ...] = (
     BusinessStage.RESEARCH,
     BusinessStage.AUDIENCE,
     BusinessStage.STRATEGY,
     BusinessStage.PLAN,
+    BusinessStage.CONTENT,
 )
 
 
@@ -215,11 +218,11 @@ class OrchestrationService:
     def run_deterministic_bootstrap(
         self, *, campaign: Campaign, run: CampaignRun, actor_user_id: uuid.UUID | None, request_id: str | None
     ) -> None:
-        """Populates RESEARCH -> AUDIENCE -> STRATEGY -> PLAN with a
-        deterministic, Campaign-Brief-derived synthesis, immediately after
-        ``start_run`` promotes stage #1 to READY. CONTENT and every later
-        business stage are explicitly out of scope and are never touched —
-        this method never promotes CONTENT past PENDING.
+        """Populates RESEARCH -> AUDIENCE -> STRATEGY -> PLAN -> CONTENT
+        with a deterministic, Campaign-Brief-derived synthesis, immediately
+        after ``start_run`` promotes stage #1 to READY. CREATIVE and every
+        later business stage are explicitly out of scope and are never
+        touched — this method never promotes CREATIVE past PENDING.
 
         SYSTEM activity only: every domain write below passes
         ``actor_user_id=None`` unconditionally, regardless of the real
@@ -246,8 +249,9 @@ class OrchestrationService:
         research_service = ResearchService(self.session)
         strategy_service = StrategyService(self.session)
         planning_service = PlanningService(self.session)
+        content_service = ContentService(self.session)
 
-        research_stage, audience_stage, strategy_stage, plan_stage = stage_sequence
+        research_stage, audience_stage, strategy_stage, plan_stage, content_stage = stage_sequence
 
         self._run_bootstrap_stage(
             campaign=campaign,
@@ -329,12 +333,104 @@ class OrchestrationService:
         self._run_bootstrap_stage(
             campaign=campaign,
             stage_execution=plan_stage,
-            # No next stage: CONTENT is explicitly out of MVP-04's scope
+            # MVP-05E: PLAN COMPLETED now promotes CONTENT PENDING -> READY.
+            next_stage_execution=content_stage,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            domain_writer=_write_plan,
+        )
+
+        def _write_content():
+            # MVP-05E: Content must derive from PERSISTED upstream state,
+            # never the in-memory `strategy_content`/`plan_content` dicts
+            # built above — re-read the real persisted ContentPlan/PlanItem
+            # rows and the real persisted Positioning, the same "re-read
+            # from persistence" discipline `_write_plan` already applies to
+            # Strategy above (MVP-04R).
+            content_plan, plan_items = planning_service.get_plan_output(campaign=campaign)
+            if content_plan is None:
+                raise RuntimeError(
+                    "Campaign has no persisted Content Plan; Content cannot "
+                    "bootstrap without the PLAN stage's actual output."
+                )
+            _strategy, positioning, _hypotheses, _experiments = strategy_service.get_strategy_output(
+                campaign=campaign
+            )
+            if positioning is None:
+                raise RuntimeError(
+                    "Campaign has no persisted Strategy/Positioning; Content "
+                    "cannot bootstrap without the STRATEGY stage's actual "
+                    "output."
+                )
+
+            # Zero PlanItems is a legitimate, already-supported ContentPlan
+            # state (PlanningService.record_plan accepts an empty/None
+            # `items` list) — with nothing to materialize, this loop is
+            # vacuously complete rather than an error (MVP-05E §20 design
+            # decision).
+            for plan_item in plan_items:
+                # Idempotency (defense-in-depth, MVP-05E §22/§23/§24): a
+                # Brief already exists for this PlanItem (its own DB
+                # UniqueConstraint on plan_item_id is the authoritative
+                # guard) or a Piece already exists for that Brief (no
+                # DB-level uniqueness exists for content_brief_id, so this
+                # check is the actual guard) means this PlanItem was
+                # already materialized by an earlier attempt — never
+                # create a second Brief, Piece, or Version for it.
+                content_brief = content_service.get_brief_for_plan_item(plan_item.id)
+                if content_brief is None:
+                    brief_text = bootstrap_content.build_content_brief(
+                        campaign_name=campaign.name,
+                        brief=brief,
+                        strategy_positioning=positioning,
+                        plan_item=plan_item,
+                    )
+                    content_brief = content_service.record_brief(
+                        plan_item=plan_item, content_plan=content_plan, brief=brief_text
+                    )
+
+                existing_piece = content_service.get_piece_for_brief(content_brief.id)
+                if existing_piece is not None:
+                    # Consistency check (MVP-05E §26): record_piece creates
+                    # Piece + initial Version atomically, so a Piece found
+                    # here must already have a Version. If it does not,
+                    # persisted state is inconsistent in a way this
+                    # deterministic bootstrap never itself produces — fail
+                    # safe rather than guessing a repair.
+                    if content_service.get_latest_version_for_piece(existing_piece.id) is None:
+                        raise RuntimeError(
+                            "Inconsistent Content state: a Content Piece exists "
+                            "without any Content Version; refusing to repair "
+                            "automatically."
+                        )
+                    continue
+
+                piece_fields = bootstrap_content.build_content_piece_fields(plan_item=plan_item, brief=brief)
+                version_payload = bootstrap_content.build_content_version_payload(
+                    plan_item=plan_item, strategy_positioning=positioning
+                )
+                # MVP-05E §13: leaves ContentPiece.status at its DRAFT
+                # creation default — record_piece never advances status, and
+                # no production-transition or approval-recording method of
+                # any kind is ever invoked anywhere in this method (see
+                # ``test_bootstrap_code_never_references_content_approval_
+                # tracking_measurement_or_learning_write_methods``) — zero
+                # ContentApproval rows are ever created by this bootstrap.
+                content_service.record_piece(
+                    content_brief=content_brief,
+                    initial_payload=version_payload,
+                    **piece_fields,
+                )
+
+        self._run_bootstrap_stage(
+            campaign=campaign,
+            stage_execution=content_stage,
+            # No next stage: CREATIVE is explicitly out of MVP-05E's scope
             # and must remain PENDING.
             next_stage_execution=None,
             actor_user_id=actor_user_id,
             request_id=request_id,
-            domain_writer=_write_plan,
+            domain_writer=_write_content,
         )
 
     def _run_bootstrap_stage(

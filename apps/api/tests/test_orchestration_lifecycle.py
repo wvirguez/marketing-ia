@@ -68,13 +68,13 @@ def test_start_transitions_run_to_running(campaign_run_client: dict) -> None:
     assert body["status"] == "RUNNING"
 
 
-def test_start_runs_the_mvp04_deterministic_bootstrap_through_plan(campaign_run_client: dict) -> None:
+def test_start_runs_the_mvp04_deterministic_bootstrap_through_content(campaign_run_client: dict) -> None:
     """MVP-04: starting a run now also synchronously executes the
     deterministic Research/Audience/Strategy/Plan bootstrap (an
     authorized, deliberate extension of BACKEND-06's own `start_run` —
-    see the MVP-04 Phase 1 architecture gate). CONTENT and every later
-    business stage remain untouched at PENDING; nothing beyond PLAN is
-    ever promoted."""
+    see the MVP-04 Phase 1 architecture gate), extended by MVP-05E to
+    include CONTENT. CREATIVE and every later business stage remain
+    untouched at PENDING; nothing beyond CONTENT is ever promoted."""
     initialize_run(campaign_run_client)
     start_run(campaign_run_client)
 
@@ -84,7 +84,8 @@ def test_start_runs_the_mvp04_deterministic_bootstrap_through_plan(campaign_run_
     assert by_stage["AUDIENCE"] == "COMPLETED"
     assert by_stage["STRATEGY"] == "COMPLETED"
     assert by_stage["PLAN"] == "COMPLETED"
-    for pending_stage in ("CONTENT", "CREATIVE", "DISTRIBUTION", "PAID_MEDIA", "TRACKING", "MEASUREMENT", "LEARNING"):
+    assert by_stage["CONTENT"] == "COMPLETED"
+    for pending_stage in ("CREATIVE", "DISTRIBUTION", "PAID_MEDIA", "TRACKING", "MEASUREMENT", "LEARNING"):
         assert by_stage[pending_stage] == "PENDING", pending_stage
 
 
@@ -136,9 +137,9 @@ def test_progress_reflects_run_and_stage_state(campaign_run_client: dict) -> Non
     assert body["campaign_id"] == campaign_run_client["campaign_id"]
     assert body["run_id"] == campaign_run_client["run_id"]
     assert body["run_status"] == "RUNNING"
-    # MVP-04: start now also runs the deterministic bootstrap through
-    # PLAN, so the first non-terminal stage is CONTENT, not RESEARCH.
-    assert body["current_stage"] == "CONTENT"
+    # MVP-05E: start now also runs the deterministic bootstrap through
+    # CONTENT, so the first non-terminal stage is CREATIVE, not RESEARCH.
+    assert body["current_stage"] == "CREATIVE"
     assert body["waiting_for_input"] is False
     assert body["open_decision_count"] == 0
     assert len(body["stages"]) == len(BUSINESS_STAGE_ORDER)
