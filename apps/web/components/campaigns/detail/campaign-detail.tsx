@@ -7,6 +7,7 @@ import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { campaignStatusLabel, campaignStatusTone, formatCampaignDate } from "@/lib/campaigns/status";
 import type { CampaignPublic, CampaignRunPublic } from "@/types/campaign";
 import { CampaignRuns } from "./campaign-runs";
+import { GenerateDraftAction } from "./generate-draft-action";
 import { NotAvailableYetPanel } from "./not-available-yet-panel";
 
 const TABS: { id: string; label: string }[] = [
@@ -105,7 +106,12 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
     <div className="workspace-tabs" role="tablist" aria-label="Secciones de la campaña">{TABS.map((tab, index) => <button type="button" role="tab" key={tab.id} id={`tab-${tab.id}`} aria-selected={active === tab.id} aria-controls={`panel-${tab.id}`} tabIndex={active === tab.id ? 0 : -1} ref={element => { buttons.current[tab.id] = element; }} onClick={() => selectTab(tab.id)} onKeyDown={event => handleKey(event, index)}>{tab.label}</button>)}</div>
 
     {TABS.map(tab => <section key={tab.id} role="tabpanel" id={`panel-${tab.id}`} aria-labelledby={`tab-${tab.id}`} tabIndex={0} hidden={active !== tab.id} className="workspace-tab-panel">
-      {tab.id === "overview" && <CampaignRuns runs={runs} total={runsTotal} />}
+      {tab.id === "overview" && (
+        <>
+          <GenerateDraftAction key={campaignId} campaignId={campaignId} runs={runs} />
+          <CampaignRuns runs={runs} total={runsTotal} />
+        </>
+      )}
       {tab.id !== "overview" && <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />}
     </section>)}
 
