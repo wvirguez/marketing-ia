@@ -1,8 +1,11 @@
 import { Icon } from "@/components/ui/icon";
 
 /** Shared truthful framing for every deterministic-bootstrap output tab
- * (Research/Audience today; Strategy/Plan in a later phase) — one
- * reusable component so the wording never drifts between tabs. */
+ * (Research, Audience, Strategy, Plan) — one reusable component so the
+ * wording never drifts between tabs. Stays accurate for Strategy/Plan
+ * too: neither is externally validated, and Plan is derived only from
+ * the persisted Strategy/CampaignBrief, never from approved production
+ * authorization. */
 export function DraftDisclosureBanner() {
   return (
     <p className="muted small-text" role="note">

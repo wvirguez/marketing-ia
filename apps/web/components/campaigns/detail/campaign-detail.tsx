@@ -10,7 +10,9 @@ import { AudiencePanel } from "./audience-panel";
 import { CampaignRuns } from "./campaign-runs";
 import { GenerateDraftAction } from "./generate-draft-action";
 import { NotAvailableYetPanel } from "./not-available-yet-panel";
+import { PlanPanel } from "./plan-panel";
 import { ResearchPanel } from "./research-panel";
+import { StrategyPanel } from "./strategy-panel";
 
 const TABS: { id: string; label: string }[] = [
   { id: "overview", label: "Resumen" },
@@ -25,8 +27,6 @@ const TABS: { id: string; label: string }[] = [
 ];
 
 const TAB_UNAVAILABLE_COPY: Record<string, { icon: IconName; title: string; body: string }> = {
-  strategy: { icon: "target", title: "Estrategia aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
-  plan: { icon: "calendar", title: "Plan aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   content: { icon: "content", title: "Contenido aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   creatives: { icon: "image", title: "Creatividades aún no disponibles", body: "Esta sección se conectará en una próxima fase de integración." },
   tracking: { icon: "chart", title: "Tracking aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
@@ -128,9 +128,17 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
       {tab.id === "audience" && (
         <AudiencePanel key={campaignId} campaignId={campaignId} active={active === "audience"} refreshToken={draftVersion} />
       )}
-      {tab.id !== "overview" && tab.id !== "research" && tab.id !== "audience" && (
-        <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />
+      {tab.id === "strategy" && (
+        <StrategyPanel key={campaignId} campaignId={campaignId} active={active === "strategy"} refreshToken={draftVersion} />
       )}
+      {tab.id === "plan" && (
+        <PlanPanel key={campaignId} campaignId={campaignId} active={active === "plan"} refreshToken={draftVersion} />
+      )}
+      {tab.id !== "overview" &&
+        tab.id !== "research" &&
+        tab.id !== "audience" &&
+        tab.id !== "strategy" &&
+        tab.id !== "plan" && <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />}
     </section>)}
 
     <footer className="dashboard-footer"><span>Una visión clara. Todo lo necesario, en un solo espacio.</span><span>Impulso <span aria-hidden="true">✦</span> Tu creatividad, más lejos.</span></footer>
