@@ -6,9 +6,11 @@ import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { campaignStatusLabel, campaignStatusTone, formatCampaignDate } from "@/lib/campaigns/status";
 import type { CampaignPublic, CampaignRunPublic } from "@/types/campaign";
+import { AudiencePanel } from "./audience-panel";
 import { CampaignRuns } from "./campaign-runs";
 import { GenerateDraftAction } from "./generate-draft-action";
 import { NotAvailableYetPanel } from "./not-available-yet-panel";
+import { ResearchPanel } from "./research-panel";
 
 const TABS: { id: string; label: string }[] = [
   { id: "overview", label: "Resumen" },
@@ -23,8 +25,6 @@ const TABS: { id: string; label: string }[] = [
 ];
 
 const TAB_UNAVAILABLE_COPY: Record<string, { icon: IconName; title: string; body: string }> = {
-  research: { icon: "spark", title: "Investigación aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
-  audience: { icon: "target", title: "Audiencia aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   strategy: { icon: "target", title: "Estrategia aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   plan: { icon: "calendar", title: "Plan aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   content: { icon: "content", title: "Contenido aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
@@ -41,6 +41,11 @@ type LoadState =
 export function CampaignDetail({ campaignId }: { campaignId: string }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [active, setActive] = useState("overview");
+  // MVP-05B: bumped every time a "Generar borrador" attempt reaches the
+  // backend, so ResearchPanel/AudiencePanel know a previously-cached
+  // pre-generation (or stale) output must be re-fetched next time their
+  // tab is opened.
+  const [draftVersion, setDraftVersion] = useState(0);
   const buttons = useRef<Partial<Record<string, HTMLButtonElement | null>>>({});
 
   useEffect(() => {
@@ -108,11 +113,24 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
     {TABS.map(tab => <section key={tab.id} role="tabpanel" id={`panel-${tab.id}`} aria-labelledby={`tab-${tab.id}`} tabIndex={0} hidden={active !== tab.id} className="workspace-tab-panel">
       {tab.id === "overview" && (
         <>
-          <GenerateDraftAction key={campaignId} campaignId={campaignId} runs={runs} />
+          <GenerateDraftAction
+            key={campaignId}
+            campaignId={campaignId}
+            runs={runs}
+            onGenerated={() => setDraftVersion((version) => version + 1)}
+          />
           <CampaignRuns runs={runs} total={runsTotal} />
         </>
       )}
-      {tab.id !== "overview" && <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />}
+      {tab.id === "research" && (
+        <ResearchPanel key={campaignId} campaignId={campaignId} active={active === "research"} refreshToken={draftVersion} />
+      )}
+      {tab.id === "audience" && (
+        <AudiencePanel key={campaignId} campaignId={campaignId} active={active === "audience"} refreshToken={draftVersion} />
+      )}
+      {tab.id !== "overview" && tab.id !== "research" && tab.id !== "audience" && (
+        <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />
+      )}
     </section>)}
 
     <footer className="dashboard-footer"><span>Una visión clara. Todo lo necesario, en un solo espacio.</span><span>Impulso <span aria-hidden="true">✦</span> Tu creatividad, más lejos.</span></footer>

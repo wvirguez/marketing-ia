@@ -47,7 +47,21 @@ function planCompleted(progress: RunProgressPublic): boolean {
   return progress.stages.some((stage) => stage.stage === "PLAN" && stage.status === "COMPLETED");
 }
 
-export function GenerateDraftAction({ campaignId, runs }: { campaignId: string; runs: CampaignRunPublic[] }) {
+export function GenerateDraftAction({
+  campaignId,
+  runs,
+  onGenerated,
+}: {
+  campaignId: string;
+  runs: CampaignRunPublic[];
+  /** MVP-05B: called once after each initialize->start attempt reaches
+   * the backend (success or partial failure alike) — the caller uses
+   * this to invalidate any Research/Audience/Strategy/Plan output it
+   * cached before this campaign had a draft, so the next time those
+   * tabs are opened they re-fetch instead of showing a stale
+   * pre-generation empty state forever. */
+  onGenerated?: () => void;
+}) {
   const [state, setState] = useState<ProgressState>({ status: "loading" });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -110,6 +124,7 @@ export function GenerateDraftAction({ campaignId, runs }: { campaignId: string; 
       }
     } finally {
       setSubmitting(false);
+      onGenerated?.();
     }
   }
 
