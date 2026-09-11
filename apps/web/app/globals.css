@@ -73,6 +73,9 @@ svg { flex-shrink: 0; }
 .plan-card p { color: var(--muted); font-size: 11px; line-height: 1.8; margin: 8px 0 12px; }
 .plan-badge { color: #345b92; font-size: 10px; font-weight: 600; }
 .user-profile { display: flex; align-items: center; gap: 10px; padding: 19px 5px 23px; margin-top: 12px; border-top: 1px solid var(--border); }
+.user-profile .icon-button { margin-left: auto; }
+.user-profile .icon-button:disabled { opacity: .5; cursor: not-allowed; }
+.logout-error { color: var(--error); font-size: 10px; line-height: 1.6; padding: 0 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .avatar { display: inline-grid; place-items: center; height: 36px; width: 36px; flex-shrink: 0; border-radius: 50%; background: #f6e7df; color: #825640; font-size: 11px; font-weight: 700; border: 3px solid white; box-shadow: 0 0 0 1px #f0e6e0; }
 .avatar.small { height: 32px; width: 32px; font-size: 10px; }
 .app-body { margin-left: 238px; }
@@ -202,6 +205,9 @@ time { color: var(--muted); font-size: 8px; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
 
 /* Authentication surfaces reuse the light theme without changing the dashboard. */
+.auth-loading-screen { min-height: 100svh; display: grid; place-items: center; background: var(--surface); }
+.auth-loading-spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--primary); animation: auth-spin 0.7s linear infinite; }
+@keyframes auth-spin { to { transform: rotate(360deg); } }
 .auth-page { min-height: 100svh; display: grid; grid-template-columns: 1fr 1fr; background: var(--surface); }
 .auth-brand-panel { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; padding: 44px 9%; color: white; background: linear-gradient(150deg, #10204a 0%, #124884 48%, #087bff 85%, #00b8ff 115%); }
 .auth-brand { font-size: 33px; }

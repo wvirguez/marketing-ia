@@ -17,6 +17,7 @@ const paths = {
   menu: "M4 6h16 M4 12h16 M4 18h16",
   chevron: "m9 5 7 7-7 7",
   target: "M21 12a9 9 0 1 1-9-9 M17 12a5 5 0 1 1-5-5 M12 12l9-9 M16 3h5v5",
+  logout: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4 M10 17l5-5-5-5 M15 12H3",
 } as const;
 export type IconName = keyof typeof paths;
 export function Icon({ name, size = 20, style }: { name: IconName; size?: number; style?: CSSProperties }) {
