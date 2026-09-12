@@ -15,6 +15,7 @@ import { NotAvailableYetPanel } from "./not-available-yet-panel";
 import { PlanPanel } from "./plan-panel";
 import { ResearchPanel } from "./research-panel";
 import { StrategyPanel } from "./strategy-panel";
+import { TrackingPanel } from "./tracking-panel";
 
 const TABS: { id: string; label: string }[] = [
   { id: "overview", label: "Resumen" },
@@ -30,7 +31,6 @@ const TABS: { id: string; label: string }[] = [
 
 const TAB_UNAVAILABLE_COPY: Record<string, { icon: IconName; title: string; body: string }> = {
   creatives: { icon: "image", title: "Creatividades aún no disponibles", body: "Esta sección se conectará en una próxima fase de integración." },
-  tracking: { icon: "chart", title: "Tracking aún no disponible", body: "Esta sección se conectará en una próxima fase de integración." },
   metrics: { icon: "chart", title: "Métricas aún no disponibles", body: "Esta sección se conectará en una próxima fase de integración." },
 };
 
@@ -147,12 +147,16 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
       {tab.id === "content" && (
         <ContentPanel key={campaignId} campaignId={campaignId} active={active === "content"} refreshToken={draftVersion} />
       )}
+      {tab.id === "tracking" && (
+        <TrackingPanel key={campaignId} campaignId={campaignId} active={active === "tracking"} refreshToken={draftVersion} />
+      )}
       {tab.id !== "overview" &&
         tab.id !== "research" &&
         tab.id !== "audience" &&
         tab.id !== "strategy" &&
         tab.id !== "plan" &&
-        tab.id !== "content" && <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />}
+        tab.id !== "content" &&
+        tab.id !== "tracking" && <NotAvailableYetPanel {...TAB_UNAVAILABLE_COPY[tab.id]} />}
     </section>)}
 
     <footer className="dashboard-footer"><span>Una visión clara. Todo lo necesario, en un solo espacio.</span><span>Impulso <span aria-hidden="true">✦</span> Tu creatividad, más lejos.</span></footer>
