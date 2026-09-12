@@ -23,6 +23,7 @@ import { getContentDetail } from "@/lib/api/content";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { contentPieceStatusLabel, contentPieceStatusTone, formatCampaignDate } from "@/lib/campaigns/status";
 import type { ContentPieceDetailResponse } from "@/types/content";
+import { ContentAssetsSection } from "./content-assets-section";
 
 type State =
   | { status: "loading" }
@@ -211,6 +212,8 @@ export function ContentDetailView({ campaignId, contentId }: { campaignId: strin
           <h2>{NO_VERSION_COPY}</h2>
         </section>
       )}
+
+      <ContentAssetsSection campaignId={campaignId} contentId={contentId} />
     </div>
   );
 }
