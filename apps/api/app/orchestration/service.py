@@ -56,6 +56,16 @@ EVENT_RUN_TRANSITIONED = "orchestration.run.transitioned"
 EVENT_STAGE_TRANSITIONED = "orchestration.stage.transitioned"
 EVENT_DECISION_OPENED = "orchestration.decision.opened"
 EVENT_DECISION_RESOLVED = "orchestration.decision.resolved"
+# MVP-06E: orchestration-level bootstrap lifecycle envelope events — purely
+# observational (never a state-machine input), attributed the same way as
+# every other orchestration-level lifecycle event above (ActorType.USER,
+# the real actor_user_id) rather than SYSTEM, since "the user's request
+# caused this bootstrap to run" is exactly as true here as it already is
+# for EVENT_RUN_TRANSITIONED/EVENT_STAGE_TRANSITIONED — only the domain
+# content _produced_ by the bootstrap is SYSTEM-attributed.
+EVENT_BOOTSTRAP_STARTED = "orchestration.bootstrap.started"
+EVENT_BOOTSTRAP_COMPLETED = "orchestration.bootstrap.completed"
+EVENT_BOOTSTRAP_FAILED = "orchestration.bootstrap.failed"
 
 _FIRST_STAGE_ORDINAL = 1
 
@@ -252,6 +262,22 @@ class OrchestrationService:
         content_service = ContentService(self.session)
 
         research_stage, audience_stage, strategy_stage, plan_stage, content_stage = stage_sequence
+
+        # MVP-06E: durable envelope-start marker, committed on its own
+        # before any stage runs — if RESEARCH or any later stage fails,
+        # this record must still exist (BACKEND-06 §28-style atomicity
+        # applies to it in the other direction: nothing that happens
+        # afterward can ever roll it back, since it is already committed).
+        self.events.record(
+            workspace_id=run.workspace_id,
+            event_type=EVENT_BOOTSTRAP_STARTED,
+            actor_type=ActorType.USER,
+            campaign_id=campaign.id,
+            campaign_run_id=run.id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
 
         self._run_bootstrap_stage(
             campaign=campaign,
@@ -493,6 +519,32 @@ class OrchestrationService:
                     actor_user_id=actor_user_id,
                     request_id=request_id,
                 )
+            if stage_execution.stage is BusinessStage.CONTENT:
+                # MVP-06E-R1: bootstrap.completed must be atomic with
+                # CONTENT's own COMPLETED transition — recorded in this
+                # same, still-uncommitted transaction so the single
+                # `session.commit()` below either persists both together
+                # or neither. Never a second, later transaction: if this
+                # write itself raises, execution falls straight into the
+                # `except` block below, which rolls back this entire
+                # attempt (including the COMPLETED transition just above)
+                # exactly like any other in-flight bootstrap failure —
+                # there is no special-case that lets CONTENT stay
+                # COMPLETED without a corresponding bootstrap.completed.
+                # Explicitly tied to BusinessStage.CONTENT (never inferred
+                # merely from `next_stage_execution is None`) so completion
+                # semantics stay anchored to the real business boundary.
+                self.events.record(
+                    workspace_id=stage_execution.workspace_id,
+                    event_type=EVENT_BOOTSTRAP_COMPLETED,
+                    actor_type=ActorType.USER,
+                    campaign_id=campaign.id,
+                    campaign_run_id=stage_execution.campaign_run_id,
+                    stage_execution_id=stage_execution.id,
+                    new_state=BusinessStage.CONTENT.value,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                )
             self.session.commit()
         except Exception:
             self.session.rollback()
@@ -505,7 +557,32 @@ class OrchestrationService:
                     actor_user_id=actor_user_id,
                     request_id=request_id,
                 )
-                self.session.commit()
+            # MVP-06E: the bootstrap-envelope failure event is recorded
+            # unconditionally here — never gated on `stage_execution.status
+            # is RUNNING` the way the stage's own FAILED transition above
+            # is. That condition only governs whether *this specific
+            # stage* legally transitions to FAILED (it may still be
+            # PENDING/READY if the exception struck before RUNNING was
+            # ever durably committed); every exception that reaches this
+            # except block is still a real bootstrap failure and must
+            # still produce exactly one `bootstrap.failed`, attributing it
+            # to whichever stage was in flight when it happened. Recorded
+            # after `rollback()`/`refresh()` (so it cannot be erased by
+            # the same rollback that caused it) and committed together
+            # with the conditional FAILED transition above when that
+            # transition also applies.
+            self.events.record(
+                workspace_id=stage_execution.workspace_id,
+                event_type=EVENT_BOOTSTRAP_FAILED,
+                actor_type=ActorType.USER,
+                campaign_id=campaign.id,
+                campaign_run_id=stage_execution.campaign_run_id,
+                stage_execution_id=stage_execution.id,
+                new_state=stage_execution.stage.value,
+                actor_user_id=actor_user_id,
+                request_id=request_id,
+            )
+            self.session.commit()
             raise
 
     # --- reads -------------------------------------------------------------
