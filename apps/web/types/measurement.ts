@@ -32,3 +32,54 @@ export interface MetricEntryWriteRequest {
   client_request_id: string;
   values: Record<string, string | number>;
 }
+
+// MVP-11D-B: mirrors apps/api/app/measurement/schemas.py's Measurement
+// Analysis contracts (GET /analysis, POST /analysis/run). `value` uses
+// `string | number` for the same reason as MetricEntryPublic.values above
+// — it is the same backend Decimal family. No field here represents a
+// grade, percentage, recommendation, or causal claim — the backend
+// returns none of those either.
+
+export type MeasurementAnalysisRunStatus = "RUNNING" | "COMPLETED" | "FAILED";
+
+export interface MeasurementAnalysisRunPublic {
+  id: string;
+  campaign_id: string;
+  client_request_id: string;
+  status: MeasurementAnalysisRunStatus;
+  failure_reason: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface MeasurementAnalysisRunTriggerRequest {
+  client_request_id: string;
+}
+
+export interface PerformanceObservationPublic {
+  id: string;
+  metric_name: string;
+  value: string | number;
+  source_metric_entry_ids: string[];
+  created_at: string;
+}
+
+export interface PerformanceSignalPublic {
+  id: string;
+  summary: string;
+  source_observation_ids: string[];
+  created_at: string;
+}
+
+export interface AnalysisResultPublic {
+  id: string;
+  summary: string;
+  source_signal_ids: string[];
+  created_at: string;
+}
+
+export interface AnalysisResponse {
+  observations: PerformanceObservationPublic[];
+  signals: PerformanceSignalPublic[];
+  analysis_results: AnalysisResultPublic[];
+}

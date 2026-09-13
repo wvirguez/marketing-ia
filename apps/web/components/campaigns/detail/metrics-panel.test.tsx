@@ -9,16 +9,19 @@ import type { MetricEntryPublic, MetricEntryWriteRequest } from "@/types/measure
 vi.mock("@/lib/api/measurement", () => ({
   getMetrics: vi.fn(),
   createMetricEntry: vi.fn(),
+  getCampaignAnalysis: vi.fn(),
+  triggerCampaignAnalysis: vi.fn(),
 }));
 vi.mock("@/lib/api/campaigns", () => ({
   getCampaign: vi.fn(),
   listCampaignRuns: vi.fn(),
 }));
 
-import { createMetricEntry, getMetrics } from "@/lib/api/measurement";
+import { createMetricEntry, getCampaignAnalysis, getMetrics } from "@/lib/api/measurement";
 import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
 
 const mockGetMetrics = vi.mocked(getMetrics);
+const mockGetCampaignAnalysis = vi.mocked(getCampaignAnalysis);
 const mockCreateMetricEntry = vi.mocked(createMetricEntry);
 const mockGetCampaign = vi.mocked(getCampaign);
 const mockListCampaignRuns = vi.mocked(listCampaignRuns);
@@ -404,6 +407,7 @@ describe("MetricsPanel integration inside CampaignDetail", () => {
     });
     mockListCampaignRuns.mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
     mockGetMetrics.mockResolvedValue({ items: [] });
+    mockGetCampaignAnalysis.mockResolvedValue({ observations: [], signals: [], analysis_results: [] });
 
     const user = userEvent.setup();
     render(<CampaignDetail campaignId="campaign-42" />);

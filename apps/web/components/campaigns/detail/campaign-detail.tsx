@@ -7,6 +7,7 @@ import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { campaignStatusLabel, campaignStatusTone, formatCampaignDate } from "@/lib/campaigns/status";
 import type { CampaignPublic, CampaignRunPublic } from "@/types/campaign";
 import type { DraftPresentationState } from "@/lib/campaigns/draft-progress";
+import { AnalysisPanel } from "./analysis-panel";
 import { AudiencePanel } from "./audience-panel";
 import { CampaignRuns } from "./campaign-runs";
 import { ContentPanel } from "./content-panel";
@@ -151,7 +152,10 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
         <TrackingPanel key={campaignId} campaignId={campaignId} active={active === "tracking"} refreshToken={draftVersion} />
       )}
       {tab.id === "metrics" && (
-        <MetricsPanel key={campaignId} campaignId={campaignId} active={active === "metrics"} refreshToken={draftVersion} />
+        <>
+          <MetricsPanel key={`${campaignId}-metrics`} campaignId={campaignId} active={active === "metrics"} refreshToken={draftVersion} />
+          <AnalysisPanel key={`${campaignId}-analysis`} campaignId={campaignId} active={active === "metrics"} refreshToken={draftVersion} />
+        </>
       )}
       {tab.id !== "overview" &&
         tab.id !== "research" &&
