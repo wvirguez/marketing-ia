@@ -214,3 +214,21 @@ class TrackingRequirementMutationForbiddenError(ApiError):
 
     def __init__(self, message: str = "This operation is not permitted while the Tracking Plan is in its current state.") -> None:
         super().__init__(message, status_code=409, code="TRACKING_REQUIREMENT_MUTATION_FORBIDDEN")
+
+
+class IdempotencyKeyConflictError(ApiError):
+    """MVP-11C-A-R1: a ``client_request_id`` is scoped to
+    ``(workspace_id, client_request_id)`` only — the same shape MetricEntry
+    already established — never to the specific campaign the caller
+    intended it for. A campaign-scoped route (e.g.
+    ``POST /campaigns/{id}/analysis/run``) must never return another
+    campaign's resource just because its key collided with one already
+    used elsewhere in the same workspace. A genuinely new shape (no
+    existing 409 class means "this key was already used for a different
+    target"), so this is a narrow, dedicated exception rather than a
+    reuse of e.g. ``VersionConflictError``. Deliberately non-leaky: never
+    names the other campaign, its public ID, the other run, or any
+    internal identifier."""
+
+    def __init__(self, message: str = "client_request_id has already been used for another operation.") -> None:
+        super().__init__(message, status_code=409, code="IDEMPOTENCY_KEY_CONFLICT")

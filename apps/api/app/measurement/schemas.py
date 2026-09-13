@@ -16,7 +16,15 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.measurement.models import AnalysisResult, MetricEntry, MetricSource, MetricValue, PerformanceObservation, PerformanceSignal
+from app.measurement.models import (
+    AnalysisResult,
+    MeasurementAnalysisRun,
+    MetricEntry,
+    MetricSource,
+    MetricValue,
+    PerformanceObservation,
+    PerformanceSignal,
+)
 
 
 class MetricEntryWriteRequest(BaseModel):
@@ -109,4 +117,49 @@ def signal_to_public(signal: PerformanceSignal, *, source_public_ids: list[str])
 def analysis_result_to_public(result: AnalysisResult, *, source_public_ids: list[str]) -> AnalysisResultPublic:
     return AnalysisResultPublic(
         id=result.public_id, summary=result.summary, source_signal_ids=source_public_ids, created_at=result.created_at
+    )
+
+
+class MeasurementAnalysisRunTriggerRequest(BaseModel):
+    """MVP-11C-A/-R1: ``client_request_id`` is an opaque, client-owned
+    idempotency key, unique per logical analysis-trigger operation across
+    the *entire workspace* (never merely per campaign) — matching
+    ``MetricEntryWriteRequest.client_request_id`` exactly, including its
+    length constraint. Reusing this key for the SAME campaign returns the
+    original run unchanged rather than executing again. Reusing it for a
+    DIFFERENT campaign in the same workspace is not a valid replay — it is
+    a key-scope collision, rejected with HTTP 409 (``IDEMPOTENCY_KEY_
+    CONFLICT``) and never executes a second run. Use a fresh key for every
+    new logical execution."""
+
+    client_request_id: str = Field(min_length=1, max_length=100)
+
+
+class MeasurementAnalysisRunPublic(BaseModel):
+    id: str
+    campaign_id: str
+    client_request_id: str
+    status: str
+    failure_reason: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+def measurement_analysis_run_to_public(
+    run: MeasurementAnalysisRun, *, campaign_public_id: str
+) -> MeasurementAnalysisRunPublic:
+    """``campaign_public_id`` must come from the caller's own already-
+    authorized campaign, never from ``run`` itself — the router is
+    responsible for proving ``run.campaign_id == authorized_campaign.id``
+    before this converter is ever invoked (MVP-11C-A-R1's resource
+    invariant), so this function never silently serializes a mismatched
+    campaign."""
+    return MeasurementAnalysisRunPublic(
+        id=run.public_id,
+        campaign_id=campaign_public_id,
+        client_request_id=run.client_request_id,
+        status=run.status.value,
+        failure_reason=run.failure_reason,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
     )
