@@ -1,12 +1,14 @@
-"""Learning bounded context — BACKEND-14.
+"""Learning bounded context — BACKEND-14, extended by MVP-12B.
 
-Persists exactly the two entities the BACKEND-14 Governance Freeze
-authorizes: ``LearningCandidate``, ``StrategicRecommendationCandidate``.
-Provisional/Validated Learning are **statuses of the same LearningCandidate
-row**, not separate tables (domain-model §1 note). Strategic Decision,
-CampaignVersion creation, object storage, AI execution, and any Distribution/
-Paid Media/Tracking concept are all explicitly deferred — nothing below
-implements, references, or invents any of them.
+Persists the entities the BACKEND-14 Governance Freeze authorizes
+(``LearningCandidate``, ``StrategicRecommendationCandidate``) plus one
+additive bridge-provenance entity authorized by MVP-12B-A/-R1
+(``LearningDerivation``). Provisional/Validated Learning are **statuses of
+the same LearningCandidate row**, not separate tables (domain-model §1
+note). Strategic Decision, CampaignVersion creation, object storage, AI
+execution, and any Distribution/Paid Media/Tracking concept are all
+explicitly deferred — nothing below implements, references, or invents
+any of them.
 
 **Ownership (frozen):** ``AnalysisResult 1 -> 0..N LearningCandidate`` via a
 plain FK (``analysis_result_id``) — no association table, no
@@ -153,3 +155,48 @@ class StrategicRecommendationCandidate(Base, UUIDPrimaryKeyMixin):
     # Set exactly when `decision` moves from NULL to a terminal value — a
     # direct structural analog to ContentApproval.decided_at.
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class LearningDerivation(Base, UUIDPrimaryKeyMixin):
+    """Bridge-specific identity + creator provenance for a LearningCandidate
+    produced by the explicit Measurement -> Learning bridge (MVP-12B) —
+    living entirely outside LearningCandidate itself, mirroring
+    ``app/measurement/models.py``'s own MeasurementObservationDerivation/
+    MeasurementAnalysisRunResult pattern exactly. A LearningCandidate
+    created by any OTHER path (manual, a future second bridge/agent
+    runtime) simply has no row here — that absence, not a flag value, is
+    what distinguishes a bridge-created candidate from any other.
+
+    ``UNIQUE(analysis_result_id)`` enforces "at most one bridge derivation
+    per AnalysisResult" (the bridge's own narrower contract) without
+    touching LearningCandidate's frozen schema or its global 0..N-per-
+    AnalysisResult cardinality at all. ``UNIQUE(learning_candidate_id)``
+    makes the mapping 1:1 in both directions, since a bridge-created
+    candidate never has more than one derivation row by construction.
+
+    No ``derivation_kind``/``source`` column: this table is single-purpose
+    by construction — every row here IS a Measurement -> Learning bridge
+    derivation. A second future source would earn its own dedicated
+    table under its own separately-authorized gate, not a speculative
+    enum value added here today (MVP-12B-A-R1)."""
+
+    __tablename__ = "learning_derivations"
+    __table_args__ = (
+        UniqueConstraint("analysis_result_id", name="uq_learning_derivations_analysis_result_id"),
+        UniqueConstraint("learning_candidate_id", name="uq_learning_derivations_learning_candidate_id"),
+        ForeignKeyConstraint(
+            ["analysis_result_id", "workspace_id"],
+            ["analysis_results.id", "analysis_results.workspace_id"],
+            name="fk_learning_derivations_analysis_result_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["learning_candidate_id", "workspace_id"],
+            ["learning_candidates.id", "learning_candidates.workspace_id"],
+            name="fk_learning_derivations_learning_candidate_workspace",
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    analysis_result_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by composite FK + UNIQUE
+    learning_candidate_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by composite FK + UNIQUE
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

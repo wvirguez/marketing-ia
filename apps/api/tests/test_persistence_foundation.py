@@ -98,7 +98,10 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     its input-snapshot association, the Observation/Signal derivation
     (natural-identity + creator) tables, the Observation/Signal usage
     (consumer-provenance) tables, and the AnalysisResult ownership table
-    (MVP-11B) — all exist, plus the BACKEND-03 infrastructure probe. No
+    (MVP-11B) — and the Measurement -> Learning bridge's own provenance
+    table, LearningDerivation (MVP-12B-A/-R1), which is purely additive
+    and never adds a column to learning_candidates/analysis_results
+    themselves — all exist, plus the BACKEND-03 infrastructure probe. No
     Content Revision Request/Distribution/Paid Media/Measurement Cycle/
     Performance Snapshot/Strategic Decision/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
@@ -155,6 +158,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "asset_versions",
         "learning_candidates",
         "strategic_recommendation_candidates",
+        "learning_derivations",
         "tracking_plans",
         "tracking_requirements",
         "measurement_analysis_runs",

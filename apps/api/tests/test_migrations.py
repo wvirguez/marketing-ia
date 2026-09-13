@@ -1359,3 +1359,115 @@ def test_mvp_11b_migration_round_trips_to_the_previous_revision(migrations_datab
             assert "ck_measurement_signal_derivations_distinct_observations" in signal_derivation_checks
     finally:
         engine.dispose()
+
+
+_PRE_MVP_12B_REVISION = "1c5dd0290557"
+
+
+def test_mvp_12b_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """MVP-12B-A/-R1: upgrade to head, downgrade to exactly the pre-MVP-12B
+    revision (1c5dd0290557), upgrade to head again — proving the new
+    learning_derivations bridge-provenance table adds/removes cleanly
+    without disturbing any earlier stage's object, and — critically —
+    without adding any column to learning_candidates or analysis_results
+    (the bridge's own uniqueness lives entirely on the new satellite
+    table, never on either frozen entity)."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    def _derivations_table_exists() -> bool:
+        with engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_name = 'learning_derivations')"
+                )
+            ).scalar_one()
+
+    try:
+        command.upgrade(config, "head")
+        assert _derivations_table_exists() is True
+
+        command.downgrade(config, _PRE_MVP_12B_REVISION)
+        assert _derivations_table_exists() is False
+        with engine.connect() as connection:
+            # Every earlier stage's own table must survive an MVP-12B-only
+            # downgrade completely untouched.
+            for table in (
+                "users", "user_preferences", "organizations", "workspaces", "memberships", "auth_sessions",
+                "ai_preferences", "notification_preferences",
+                "campaigns", "campaign_briefs", "campaign_runs",
+                "run_stage_executions", "human_decision_requests", "human_decision_responses", "audit_events",
+                "research_reports", "research_sources", "audience_profiles", "voc_evidence",
+                "strategies", "positionings", "hypotheses", "experiments",
+                "content_plans", "plan_items",
+                "content_briefs", "content_pieces", "content_versions", "content_approvals",
+                *_BACKEND_11_TABLES,
+                "creative_briefs", "assets", "asset_versions",
+                *_BACKEND_14_TABLES,
+                "tracking_plans", "tracking_requirements",
+                *_MVP_11B_TABLES,
+            ):
+                exists = connection.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :t)"),
+                    {"t": table},
+                ).scalar_one()
+                assert exists is True, f"{table} must survive an MVP-12B-only downgrade"
+
+            # learning_candidates/analysis_results must have gained no new
+            # column at all — the bridge's identity lives entirely on the
+            # new satellite table.
+            for table in ("learning_candidates", "analysis_results"):
+                columns = connection.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"), {"t": table}
+                ).scalars().all()
+                assert "learning_derivation_id" not in columns
+
+            # MVP-12B introduces no native enum type at all.
+            surviving_enums = connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('campaign_status', 'campaign_run_status', 'membership_role', 'membership_status', "
+                    "'user_status', 'business_stage', 'stage_execution_status', 'audit_actor_type', "
+                    "'decision_request_status', 'source_type', 'hypothesis_status', "
+                    "'content_piece_status', 'content_approval_status', 'metric_source', "
+                    "'learning_candidate_status', 'strategic_recommendation_decision', "
+                    "'tracking_readiness_status', 'measurement_analysis_run_status')"
+                )
+            ).scalars().all()
+            assert len(surviving_enums) == 18, "an MVP-12B downgrade must not remove any earlier stage's enum type"
+
+        command.upgrade(config, "head")
+        assert _derivations_table_exists() is True
+        with engine.connect() as connection:
+            unique_names = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'learning_derivations'::regclass "
+                    "AND contype = 'u'"
+                )
+            ).scalars().all()
+            assert "uq_learning_derivations_analysis_result_id" in unique_names
+            assert "uq_learning_derivations_learning_candidate_id" in unique_names
+
+            # The tenant-safety FK contract: both analysis_result_id and
+            # learning_candidate_id are composite, through their own
+            # (id, workspace_id) candidate keys — never a bare single-
+            # column FK.
+            fk_rows = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'learning_derivations'::regclass "
+                    "AND contype = 'f'"
+                )
+            ).scalars().all()
+            assert "fk_learning_derivations_analysis_result_workspace" in fk_rows
+            assert "fk_learning_derivations_learning_candidate_workspace" in fk_rows
+
+            # learning_candidates/analysis_results must still have gained no
+            # new column after a full round trip.
+            for table in ("learning_candidates", "analysis_results"):
+                columns = connection.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"), {"t": table}
+                ).scalars().all()
+                assert "learning_derivation_id" not in columns
+    finally:
+        engine.dispose()

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.ids import generate_public_id
-from app.learning.models import LearningCandidate, StrategicRecommendationCandidate
+from app.learning.models import LearningCandidate, LearningDerivation, StrategicRecommendationCandidate
 from app.measurement.models import AnalysisResult
 
 
@@ -121,3 +121,33 @@ class StrategicRecommendationCandidateRepository:
             .scalars()
             .all()
         )
+
+
+class LearningDerivationRepository:
+    """Data access for LearningDerivation — the Measurement -> Learning
+    bridge's own provenance/identity row (MVP-12B-A/-R1). No method here
+    calls ``session.commit()``, matching this module's own transaction-
+    ownership convention exactly."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(self, *, analysis_result: AnalysisResult, learning_candidate: LearningCandidate) -> LearningDerivation:
+        row = LearningDerivation(
+            workspace_id=analysis_result.workspace_id,
+            analysis_result_id=analysis_result.id,
+            learning_candidate_id=learning_candidate.id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_analysis_result_id(self, analysis_result_id: uuid.UUID) -> LearningDerivation | None:
+        return self.session.execute(
+            select(LearningDerivation).where(LearningDerivation.analysis_result_id == analysis_result_id)
+        ).scalar_one_or_none()
+
+    def get_by_learning_candidate_id(self, learning_candidate_id: uuid.UUID) -> LearningDerivation | None:
+        return self.session.execute(
+            select(LearningDerivation).where(LearningDerivation.learning_candidate_id == learning_candidate_id)
+        ).scalar_one_or_none()
