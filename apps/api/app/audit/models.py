@@ -183,6 +183,18 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     tracking_requirement_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tracking_requirements.id"), default=None, index=True
     )
+    # MVP-11B (MVP-11A-R2 §23/§29 Governance repair): supplementary
+    # trace/compliance only — domain reconstruction of what a
+    # MeasurementAnalysisRun produced/reused never depends on this column,
+    # since that is already fully solved by the dedicated provenance
+    # tables in app/measurement/models.py (measurement_observation_
+    # derivations, measurement_signal_derivations, measurement_analysis_
+    # run_observation_usages, measurement_analysis_run_signal_usages,
+    # measurement_analysis_run_results). Nullable, single-column, matching
+    # every other AuditEvent subject FK exactly.
+    measurement_analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("measurement_analysis_runs.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

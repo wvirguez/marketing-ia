@@ -1231,3 +1231,131 @@ def test_backend_15_migration_round_trips_to_the_previous_revision(migrations_da
             assert "uq_tracking_plans_id_workspace_id" not in unique_names
     finally:
         engine.dispose()
+
+
+_PRE_MVP_11B_REVISION = "d2af7df6e279"
+_MVP_11B_TABLES = (
+    "measurement_analysis_runs",
+    "measurement_analysis_run_metric_entries",
+    "measurement_observation_derivations",
+    "measurement_signal_derivations",
+    "measurement_analysis_run_observation_usages",
+    "measurement_analysis_run_signal_usages",
+    "measurement_analysis_run_results",
+)
+
+
+def test_mvp_11b_migration_round_trips_to_the_previous_revision(migrations_database_url: str) -> None:
+    """MVP-11B: upgrade to head, downgrade to exactly the pre-MVP-11B
+    revision (d2af7df6e279), upgrade to head again — proving the seven
+    new Measurement Analysis Run provenance tables and the new
+    audit_events.measurement_analysis_run_id column add/remove cleanly
+    without disturbing any earlier stage's object, and — critically —
+    without modifying any column on the four frozen Measurement core
+    tables (metric_entries, performance_observations, performance_signals,
+    analysis_results), per MVP-11A-R2's own backward-compatibility repair."""
+    config = _alembic_config()
+    engine = create_db_engine(migrations_database_url)
+
+    def _tables_exist() -> bool:
+        with engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_name = 'measurement_analysis_runs')"
+                )
+            ).scalar_one()
+
+    try:
+        command.upgrade(config, "head")
+        assert _tables_exist() is True
+
+        command.downgrade(config, _PRE_MVP_11B_REVISION)
+        assert _tables_exist() is False
+        with engine.connect() as connection:
+            for table in _MVP_11B_TABLES:
+                exists = connection.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :t)"),
+                    {"t": table},
+                ).scalar_one()
+                assert exists is False, f"{table} must not survive an MVP-11B downgrade"
+
+            # The four frozen Measurement core tables, and every earlier
+            # stage's own table, must survive an MVP-11B-only downgrade
+            # completely untouched.
+            for table in (
+                "metric_entries", "metric_values", "performance_observations", "performance_signals",
+                "analysis_results", "observation_metric_entries", "signal_observations", "analysis_result_signals",
+                "tracking_plans", "tracking_requirements", "learning_candidates",
+                "strategic_recommendation_candidates", "assets", "asset_versions", "audit_events",
+            ):
+                exists = connection.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :t)"),
+                    {"t": table},
+                ).scalar_one()
+                assert exists is True, f"{table} must survive an MVP-11B-only downgrade"
+
+            # The four frozen core tables must have gained no new column.
+            for table in ("metric_entries", "performance_observations", "performance_signals", "analysis_results"):
+                columns = connection.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"), {"t": table}
+                ).scalars().all()
+                assert "measurement_analysis_run_id" not in columns
+                assert "source_metric_entry_id" not in columns
+                assert "current_observation_id" not in columns
+                assert "prior_observation_id" not in columns
+
+            # audit_events must be reverted to its exact pre-MVP-11B shape.
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "measurement_analysis_run_id" not in audit_columns
+
+            leftover_enums = connection.execute(
+                text("SELECT typname FROM pg_type WHERE typname = 'measurement_analysis_run_status'")
+            ).scalars().all()
+            assert leftover_enums == [], "downgrade must drop the MVP-11B-owned enum type"
+
+        command.upgrade(config, "head")
+        assert _tables_exist() is True
+        with engine.connect() as connection:
+            audit_columns = connection.execute(
+                text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_events'")
+            ).scalars().all()
+            assert "measurement_analysis_run_id" in audit_columns
+
+            # The four frozen core tables must still have gained no new
+            # column after a full round trip.
+            for table in ("metric_entries", "performance_observations", "performance_signals", "analysis_results"):
+                columns = connection.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"), {"t": table}
+                ).scalars().all()
+                assert "measurement_analysis_run_id" not in columns
+
+            unique_names = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'measurement_analysis_runs'::regclass "
+                    "AND contype = 'u'"
+                )
+            ).scalars().all()
+            assert "uq_measurement_analysis_runs_workspace_client_request_id" in unique_names
+            assert "uq_measurement_analysis_runs_id_workspace_id" in unique_names
+
+            observation_derivation_unique = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = "
+                    "'measurement_observation_derivations'::regclass AND contype = 'u'"
+                )
+            ).scalars().all()
+            assert "uq_measurement_observation_derivations_identity" in observation_derivation_unique
+            assert "uq_measurement_observation_derivations_observation_id" in observation_derivation_unique
+
+            signal_derivation_checks = connection.execute(
+                text(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = "
+                    "'measurement_signal_derivations'::regclass AND contype = 'c'"
+                )
+            ).scalars().all()
+            assert "ck_measurement_signal_derivations_distinct_observations" in signal_derivation_checks
+    finally:
+        engine.dispose()

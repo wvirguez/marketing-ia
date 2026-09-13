@@ -92,18 +92,25 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     (BACKEND-12) — the Assets persistence contracts — CreativeBrief,
     Asset, AssetVersion (BACKEND-13) — the Learning persistence
     contracts — LearningCandidate, StrategicRecommendationCandidate
-    (BACKEND-14) — and the Tracking persistence contracts —
-    TrackingPlan, TrackingRequirement (BACKEND-15) — all exist, plus the
-    BACKEND-03 infrastructure probe. No Content Revision Request/
-    Distribution/Paid Media/Measurement Cycle/Performance Snapshot/
-    Strategic Decision/Agent Run/Handoff/Return/Gate Decision/
-    IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
+    (BACKEND-14) — the Tracking persistence contracts —
+    TrackingPlan, TrackingRequirement (BACKEND-15) — and the Measurement
+    Analysis Run pipeline provenance contracts — MeasurementAnalysisRun,
+    its input-snapshot association, the Observation/Signal derivation
+    (natural-identity + creator) tables, the Observation/Signal usage
+    (consumer-provenance) tables, and the AnalysisResult ownership table
+    (MVP-11B) — all exist, plus the BACKEND-03 infrastructure probe. No
+    Content Revision Request/Distribution/Paid Media/Measurement Cycle/
+    Performance Snapshot/Strategic Decision/Agent Run/Handoff/Return/Gate
+    Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
     Subscription/CreativeBriefVersion/CampaignVersion/TrackingStatus/
     TrackingReadiness/Channel table has been prematurely introduced —
     BACKEND-15's persistence is deliberately limited to TrackingPlan/
     TrackingRequirement; TrackingPlan.status is the sole readiness
     source of truth, never a second persisted rollup (Governance
-    Freeze)."""
+    Freeze). MVP-11B's own provenance tables are purely additive and
+    never add a column to metric_entries/performance_observations/
+    performance_signals/analysis_results themselves (MVP-11A-R2
+    Governance repair)."""
     assert set(metadata.tables.keys()) == {
         "_infra_persistence_probe",
         "users",
@@ -150,6 +157,13 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "strategic_recommendation_candidates",
         "tracking_plans",
         "tracking_requirements",
+        "measurement_analysis_runs",
+        "measurement_analysis_run_metric_entries",
+        "measurement_observation_derivations",
+        "measurement_signal_derivations",
+        "measurement_analysis_run_observation_usages",
+        "measurement_analysis_run_signal_usages",
+        "measurement_analysis_run_results",
     }
 
 

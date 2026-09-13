@@ -21,6 +21,14 @@ from app.core.ids import generate_public_id
 from app.measurement.models import (
     AnalysisResult,
     AnalysisResultSignal,
+    MeasurementAnalysisRun,
+    MeasurementAnalysisRunMetricEntry,
+    MeasurementAnalysisRunObservationUsage,
+    MeasurementAnalysisRunResult,
+    MeasurementAnalysisRunSignalUsage,
+    MeasurementAnalysisRunStatus,
+    MeasurementObservationDerivation,
+    MeasurementSignalDerivation,
     MetricEntry,
     MetricSource,
     MetricValue,
@@ -284,3 +292,208 @@ class AnalysisResultSignalRepository:
             .scalars()
             .all()
         )
+
+
+# --- Measurement Analysis Run pipeline — MVP-11B ---------------------------
+
+
+class MeasurementAnalysisRunRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(self, *, campaign: Campaign, client_request_id: str) -> MeasurementAnalysisRun:
+        run = MeasurementAnalysisRun(
+            public_id=generate_public_id("MAR"),
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.id,
+            client_request_id=client_request_id,
+            status=MeasurementAnalysisRunStatus.RUNNING,
+        )
+        self.session.add(run)
+        self.session.flush()
+        return run
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> MeasurementAnalysisRun | None:
+        return self.session.execute(
+            select(MeasurementAnalysisRun).where(
+                MeasurementAnalysisRun.workspace_id == workspace_id,
+                MeasurementAnalysisRun.client_request_id == client_request_id,
+            )
+        ).scalar_one_or_none()
+
+    def get_by_public_id(self, public_id: str) -> MeasurementAnalysisRun | None:
+        return self.session.execute(
+            select(MeasurementAnalysisRun).where(MeasurementAnalysisRun.public_id == public_id)
+        ).scalar_one_or_none()
+
+    def get_by_id(self, run_id: uuid.UUID) -> MeasurementAnalysisRun | None:
+        return self.session.get(MeasurementAnalysisRun, run_id)
+
+
+class MeasurementAnalysisRunMetricEntryRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create_many(
+        self, *, run: MeasurementAnalysisRun, metric_entries: list[MetricEntry]
+    ) -> list[MeasurementAnalysisRunMetricEntry]:
+        rows = [
+            MeasurementAnalysisRunMetricEntry(
+                workspace_id=run.workspace_id, analysis_run_id=run.id, metric_entry_id=entry.id
+            )
+            for entry in metric_entries
+        ]
+        self.session.add_all(rows)
+        self.session.flush()
+        return rows
+
+    def list_metric_entry_ids_for_run(self, run_id: uuid.UUID) -> list[uuid.UUID]:
+        return list(
+            self.session.execute(
+                select(MeasurementAnalysisRunMetricEntry.metric_entry_id).where(
+                    MeasurementAnalysisRunMetricEntry.analysis_run_id == run_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+class MeasurementObservationDerivationRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_identity(
+        self, *, source_metric_entry_id: uuid.UUID, metric_name: str
+    ) -> MeasurementObservationDerivation | None:
+        return self.session.execute(
+            select(MeasurementObservationDerivation).where(
+                MeasurementObservationDerivation.source_metric_entry_id == source_metric_entry_id,
+                MeasurementObservationDerivation.metric_name == metric_name,
+            )
+        ).scalar_one_or_none()
+
+    def create(
+        self,
+        *,
+        observation: PerformanceObservation,
+        source_metric_entry_id: uuid.UUID,
+        metric_name: str,
+        creator_run: MeasurementAnalysisRun,
+    ) -> MeasurementObservationDerivation:
+        row = MeasurementObservationDerivation(
+            workspace_id=observation.workspace_id,
+            observation_id=observation.id,
+            source_metric_entry_id=source_metric_entry_id,
+            metric_name=metric_name,
+            creator_analysis_run_id=creator_run.id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+
+class MeasurementSignalDerivationRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_identity(
+        self, *, current_observation_id: uuid.UUID, prior_observation_id: uuid.UUID
+    ) -> MeasurementSignalDerivation | None:
+        return self.session.execute(
+            select(MeasurementSignalDerivation).where(
+                MeasurementSignalDerivation.current_observation_id == current_observation_id,
+                MeasurementSignalDerivation.prior_observation_id == prior_observation_id,
+            )
+        ).scalar_one_or_none()
+
+    def create(
+        self,
+        *,
+        signal: PerformanceSignal,
+        current_observation_id: uuid.UUID,
+        prior_observation_id: uuid.UUID,
+        creator_run: MeasurementAnalysisRun,
+    ) -> MeasurementSignalDerivation:
+        row = MeasurementSignalDerivation(
+            workspace_id=signal.workspace_id,
+            signal_id=signal.id,
+            current_observation_id=current_observation_id,
+            prior_observation_id=prior_observation_id,
+            creator_analysis_run_id=creator_run.id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+
+class MeasurementAnalysisRunObservationUsageRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, *, run: MeasurementAnalysisRun, observation: PerformanceObservation
+    ) -> MeasurementAnalysisRunObservationUsage:
+        row = MeasurementAnalysisRunObservationUsage(
+            workspace_id=run.workspace_id, analysis_run_id=run.id, observation_id=observation.id
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_observation_ids_for_run(self, run_id: uuid.UUID) -> list[uuid.UUID]:
+        return list(
+            self.session.execute(
+                select(MeasurementAnalysisRunObservationUsage.observation_id).where(
+                    MeasurementAnalysisRunObservationUsage.analysis_run_id == run_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+class MeasurementAnalysisRunSignalUsageRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(self, *, run: MeasurementAnalysisRun, signal: PerformanceSignal) -> MeasurementAnalysisRunSignalUsage:
+        row = MeasurementAnalysisRunSignalUsage(
+            workspace_id=run.workspace_id, analysis_run_id=run.id, signal_id=signal.id
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_signal_ids_for_run(self, run_id: uuid.UUID) -> list[uuid.UUID]:
+        return list(
+            self.session.execute(
+                select(MeasurementAnalysisRunSignalUsage.signal_id).where(
+                    MeasurementAnalysisRunSignalUsage.analysis_run_id == run_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+class MeasurementAnalysisRunResultRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, *, run: MeasurementAnalysisRun, analysis_result: AnalysisResult
+    ) -> MeasurementAnalysisRunResult:
+        row = MeasurementAnalysisRunResult(
+            workspace_id=run.workspace_id, analysis_run_id=run.id, analysis_result_id=analysis_result.id
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_for_run(self, run_id: uuid.UUID) -> MeasurementAnalysisRunResult | None:
+        return self.session.execute(
+            select(MeasurementAnalysisRunResult).where(MeasurementAnalysisRunResult.analysis_run_id == run_id)
+        ).scalar_one_or_none()

@@ -180,8 +180,23 @@ class MeasurementService:
         return entry
 
     # --- derived entities: service-layer only ----------------------------
+    #
+    # MVP-11B (MVP-11A-R3 §E/§F/§G Governance repair): each of the three
+    # public methods below is split into a private, non-committing
+    # primitive (all the actual validation/creation/audit work, ending in
+    # flush() only) plus a thin public wrapper that calls the primitive
+    # and then commits — reproducing today's exact external behavior for
+    # every existing caller, byte for byte. This is a pure internal
+    # refactor: the published signature, return value, and commit
+    # semantics of record_observation/record_signal/record_analysis_result
+    # are completely unchanged. The new MeasurementAnalysisService (MVP-11B)
+    # calls the private primitives directly, inside its own
+    # session.begin_nested() savepoints, so it can own its own transaction
+    # boundary — something impossible if it only had the committing public
+    # methods to call (a public method's own internal commit() cannot be
+    # undone by a savepoint opened around the call to it).
 
-    def record_observation(
+    def _record_observation_uncommitted(
         self,
         *,
         campaign: Campaign,
@@ -205,10 +220,30 @@ class MeasurementService:
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
+        return observation
+
+    def record_observation(
+        self,
+        *,
+        campaign: Campaign,
+        metric_entries: list[MetricEntry],
+        metric_name: str,
+        value: Decimal,
+        actor_user_id: uuid.UUID | None = None,
+        request_id: str | None = None,
+    ) -> PerformanceObservation:
+        observation = self._record_observation_uncommitted(
+            campaign=campaign,
+            metric_entries=metric_entries,
+            metric_name=metric_name,
+            value=value,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
         self.session.commit()
         return observation
 
-    def record_signal(
+    def _record_signal_uncommitted(
         self,
         *,
         campaign: Campaign,
@@ -231,10 +266,25 @@ class MeasurementService:
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
+        return signal
+
+    def record_signal(
+        self,
+        *,
+        campaign: Campaign,
+        observations: list[PerformanceObservation],
+        summary: str,
+        actor_user_id: uuid.UUID | None = None,
+        request_id: str | None = None,
+    ) -> PerformanceSignal:
+        signal = self._record_signal_uncommitted(
+            campaign=campaign, observations=observations, summary=summary,
+            actor_user_id=actor_user_id, request_id=request_id,
+        )
         self.session.commit()
         return signal
 
-    def record_analysis_result(
+    def _record_analysis_result_uncommitted(
         self,
         *,
         campaign: Campaign,
@@ -256,6 +306,21 @@ class MeasurementService:
             analysis_result_id=analysis_result.id,
             actor_user_id=actor_user_id,
             request_id=request_id,
+        )
+        return analysis_result
+
+    def record_analysis_result(
+        self,
+        *,
+        campaign: Campaign,
+        signals: list[PerformanceSignal],
+        summary: str,
+        actor_user_id: uuid.UUID | None = None,
+        request_id: str | None = None,
+    ) -> AnalysisResult:
+        analysis_result = self._record_analysis_result_uncommitted(
+            campaign=campaign, signals=signals, summary=summary,
+            actor_user_id=actor_user_id, request_id=request_id,
         )
         self.session.commit()
         return analysis_result
