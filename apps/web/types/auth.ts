@@ -51,3 +51,13 @@ export interface LoginRequest {
   email: string;
   password: string;
 }
+
+export interface UserPreferencesPatch {
+  locale?: string | null;
+  timezone?: string | null;
+}
+
+export interface UserPatchRequest {
+  display_name?: string;
+  preferences?: UserPreferencesPatch;
+}

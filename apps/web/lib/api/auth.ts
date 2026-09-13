@@ -10,6 +10,7 @@ import type {
   LogoutResponse,
   RegisterRequest,
   SessionContext,
+  UserPatchRequest,
   UserPublic,
   WorkspacePublic,
 } from "@/types/auth";
@@ -38,6 +39,16 @@ export async function getCsrfToken(): Promise<CsrfTokenResponse["csrf_token"]> {
 /** `GET /users/me` — kept available for later phases (e.g. Settings/Profile); not used by the MVP-02 bootstrap, which sources the same data from `getSession()` in one round trip. */
 export async function getCurrentUser(): Promise<UserPublic> {
   return request<UserPublic>("/users/me", { method: "GET" });
+}
+
+/** `PATCH /users/me` (MVP-13B) — Settings' Profile section. Only
+ * `display_name`/`preferences.{locale,timezone}` are ever writable here
+ * (mirrors apps/api/app/users/schemas.py's `UserPatchRequest` exactly);
+ * `email` has no PATCH field at all and must never be included in
+ * `payload`. Callers are responsible for including only the fields that
+ * actually changed. */
+export async function updateCurrentUser(payload: UserPatchRequest): Promise<UserPublic> {
+  return request<UserPublic>("/users/me", { method: "PATCH", body: payload });
 }
 
 /** `GET /workspaces/current` — kept available for later phases; MVP-02's bootstrap sources the same data from `getSession()`. */
