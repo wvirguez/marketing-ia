@@ -16,15 +16,21 @@ vi.mock("@/lib/api/campaigns", () => ({
   getCampaign: vi.fn(),
   listCampaignRuns: vi.fn(),
 }));
+vi.mock("@/lib/api/learning", () => ({
+  getCampaignLearning: vi.fn(),
+  deriveCampaignLearning: vi.fn(),
+}));
 
 import { createMetricEntry, getCampaignAnalysis, getMetrics } from "@/lib/api/measurement";
 import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
+import { getCampaignLearning } from "@/lib/api/learning";
 
 const mockGetMetrics = vi.mocked(getMetrics);
 const mockGetCampaignAnalysis = vi.mocked(getCampaignAnalysis);
 const mockCreateMetricEntry = vi.mocked(createMetricEntry);
 const mockGetCampaign = vi.mocked(getCampaign);
 const mockListCampaignRuns = vi.mocked(listCampaignRuns);
+const mockGetCampaignLearning = vi.mocked(getCampaignLearning);
 
 const EMPTY_COPY = "Aún no hay métricas registradas para esta campaña.";
 const SUCCESS_COPY = "Métricas registradas.";
@@ -408,6 +414,7 @@ describe("MetricsPanel integration inside CampaignDetail", () => {
     mockListCampaignRuns.mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
     mockGetMetrics.mockResolvedValue({ items: [] });
     mockGetCampaignAnalysis.mockResolvedValue({ observations: [], signals: [], analysis_results: [] });
+    mockGetCampaignLearning.mockResolvedValue({ learning_candidates: [], strategic_recommendation_candidates: [] });
 
     const user = userEvent.setup();
     render(<CampaignDetail campaignId="campaign-42" />);
