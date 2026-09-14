@@ -30,3 +30,24 @@ export interface TrackingPlanPublic {
 export interface TrackingResponse {
   plan: TrackingPlanPublic | null;
 }
+
+// Request-side DTOs (MVP-15B). Plan creation takes no body — every field
+// is either fixed or derived from the already-authorized campaign — so no
+// request type exists for it.
+
+export interface CreateTrackingRequirementRequest {
+  name: string;
+}
+
+export interface TrackingTransitionPlanRequest {
+  operation: "TRANSITION_PLAN";
+  target_status: TrackingReadinessStatus;
+}
+
+export interface TrackingUpdateRequirementStatusRequest {
+  operation: "UPDATE_REQUIREMENT_STATUS";
+  requirement_id: string;
+  status: string | null;
+}
+
+export type TrackingPatchRequest = TrackingTransitionPlanRequest | TrackingUpdateRequirementStatusRequest;

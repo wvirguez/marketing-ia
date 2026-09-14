@@ -39,6 +39,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.models import ActorType
@@ -87,11 +88,29 @@ class TrackingService:
         """Always created at NOT_DEFINED (Governance Freeze §F) — the
         caller cannot supply an arbitrary initial status. Enforces the
         0..1 cardinality (TRK-D01): a second Plan for the same Campaign
-        is a deterministic conflict, never a silent no-op/overwrite."""
+        is a deterministic conflict, never a silent no-op/overwrite.
+
+        MVP-15B concurrency repair: the existence check above and the
+        insert below are not atomic, so two genuinely concurrent callers
+        can both pass the check and both attempt to insert. The insert is
+        wrapped in its own SAVEPOINT (mirroring
+        WorkspaceSettingsService._get_or_create_notification_preference)
+        so the race loser's `IntegrityError` on
+        `uq_tracking_plans_campaign_workspace` rolls back only the failed
+        insert — never the outer transaction/session — and is converted
+        to the same deterministic 409 the sequential-duplicate path
+        already raises. Unlike the notification-preference precedent,
+        the frozen Tracking contract never silently returns the winner's
+        row here — a race loser gets the identical conflict a sequential
+        duplicate would."""
         if self.plans.get_for_campaign(campaign_id=campaign.id) is not None:
             raise TrackingPlanAlreadyExistsError()
 
-        plan = self.plans.create(campaign=campaign)
+        try:
+            with self.session.begin_nested():
+                plan = self.plans.create(campaign=campaign)
+        except IntegrityError:
+            raise TrackingPlanAlreadyExistsError()
 
         actor_type = ActorType.USER if actor_user_id is not None else ActorType.SYSTEM
         self.events.record(

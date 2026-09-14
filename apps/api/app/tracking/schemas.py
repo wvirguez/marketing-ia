@@ -34,6 +34,12 @@ class TrackingResponse(BaseModel):
     plan: TrackingPlanPublic | None
 
 
+class CreateTrackingRequirementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+
+
 class TransitionPlanOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

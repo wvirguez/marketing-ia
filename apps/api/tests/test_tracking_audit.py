@@ -1,5 +1,6 @@
 """Audit attribution and atomicity for Tracking persistence (BACKEND-15
-Governance Freeze §T/§U/§V). All marked `postgres`.
+Governance Freeze §T/§U/§V; HTTP-triggered creation attribution added by
+MVP-15B). All marked `postgres`.
 """
 
 from __future__ import annotations
@@ -9,8 +10,11 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import func, select
 
+from sqlalchemy.orm import Session as OrmSession
+
 from app.audit.models import ActorType, AuditEvent
 from app.audit.repository import AuditEventRepository
+from app.persistence.session import get_engine
 from app.tracking.models import TrackingPlan, TrackingReadinessStatus, TrackingRequirement
 from app.tracking.service import TrackingService
 from tests.contenttest import make_user
@@ -200,3 +204,73 @@ def test_audit_failure_rolls_back_a_requirement_status_update(db_session) -> Non
     db_session.rollback()
     db_session.refresh(requirement)
     assert requirement.status is None
+
+
+# --- HTTP-triggered creation attribution (MVP-15B) --------------------
+
+
+def _tracking_path(fixtures: dict) -> str:
+    return f"/api/v1/campaigns/{fixtures['campaign_id']}/tracking"
+
+
+def test_http_created_plan_is_attributed_to_the_real_user_not_system(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    response = fixtures["client"].post(_tracking_path(fixtures), headers={"X-CSRF-Token": fixtures["csrf_token"]})
+    assert response.status_code == 201, response.text
+    plan_public_id = response.json()["plan"]["id"]
+
+    with OrmSession(bind=get_engine()) as session:
+        plan = session.execute(select(TrackingPlan).where(TrackingPlan.public_id == plan_public_id)).scalar_one()
+        events = session.execute(
+            select(AuditEvent).where(AuditEvent.event_type == "tracking.plan.recorded", AuditEvent.tracking_plan_id == plan.id)
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None
+
+
+def test_http_created_requirement_is_attributed_to_the_real_user_not_system(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    fixtures["client"].post(_tracking_path(fixtures), headers=headers)
+    response = fixtures["client"].post(
+        f"{_tracking_path(fixtures)}/requirements", json={"name": "Purchase event"}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    requirement_public_id = response.json()["plan"]["requirements"][0]["id"]
+
+    with OrmSession(bind=get_engine()) as session:
+        requirement = session.execute(
+            select(TrackingRequirement).where(TrackingRequirement.public_id == requirement_public_id)
+        ).scalar_one()
+        events = session.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "tracking.requirement.recorded",
+                AuditEvent.tracking_requirement_id == requirement.id,
+            )
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None
+
+
+def test_concurrent_plan_creation_loser_emits_no_audit_event(campaign_run_client: dict) -> None:
+    """The race loser must raise before reaching audit recording at all —
+    a duplicate/conflicting request must never produce a second
+    ``tracking.plan.recorded`` event."""
+    fixtures = campaign_run_client
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    first = fixtures["client"].post(_tracking_path(fixtures), headers=headers)
+    assert first.status_code == 201
+    plan_public_id = first.json()["plan"]["id"]
+    second = fixtures["client"].post(_tracking_path(fixtures), headers=headers)
+    assert second.status_code == 409
+
+    with OrmSession(bind=get_engine()) as session:
+        plan = session.execute(select(TrackingPlan).where(TrackingPlan.public_id == plan_public_id)).scalar_one()
+        events = session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.event_type == "tracking.plan.recorded", AuditEvent.tracking_plan_id == plan.id)
+        ).scalar_one()
+        assert events == 1
