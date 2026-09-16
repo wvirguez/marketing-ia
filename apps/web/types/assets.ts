@@ -25,3 +25,20 @@ export interface AssetsForContentPieceResponse {
   creative_brief: CreativeBriefPublic | null;
   assets: AssetPublic[];
 }
+
+// Request-side DTOs (MVP-16B). `status`/`metadata` are deliberately never
+// accepted at creation time — the backend already defaults them, and no
+// public mutation path for either exists yet.
+
+export interface CreateCreativeBriefRequest {
+  spec: Record<string, unknown>;
+}
+
+export interface CreateAssetRequest {
+  kind: string;
+  storage_reference?: string | null;
+}
+
+export interface CreateAssetVersionRequest {
+  storage_reference?: string | null;
+}

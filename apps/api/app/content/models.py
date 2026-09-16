@@ -1,13 +1,9 @@
 """Content bounded context — BACKEND-10.
 
-Persists exactly the four entities the BACKEND-10 Governance Freeze
-authorizes (Phase 1 + Phase 1B, superseding the original Phase 1
-recommendation where the two disagree): ``ContentBrief``, ``ContentPiece``,
-``ContentVersion``, ``ContentApproval``. Content Revision Request, Creative
-Brief, Asset, Asset Version, Distribution, Paid Media, Experiment/Variant
-linkage, Strategy linkage, and any claim/evidence subsystem are all
-explicitly deferred — nothing below implements, references, or invents any
-of them. PLAN ITEM != CONTENT BRIEF. CONTENT BRIEF != CONTENT PIECE.
+The original BACKEND-10 four entities remain intact. MVP-18B adds the
+narrow, human-recorded ContentDistribution shadow to this context; Content
+Revision Request, external publishing, Paid Media, and Experiment/Variant
+linkage remain deferred. PLAN ITEM != CONTENT BRIEF. CONTENT BRIEF != CONTENT PIECE.
 CONTENT PIECE != CONTENT VERSION. CONTENT VERSION != CONTENT APPROVAL.
 
 **ContentBrief provenance (frozen, Phase 1B §C):** DERIVED VIA PLANNING
@@ -93,6 +89,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -285,4 +282,123 @@ class ContentApproval(Base, UUIDPrimaryKeyMixin):
     # matches this naming directly. Nullable until resolved.
     reviewer_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), default=None)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContentDistributionStatus(str, enum.Enum):
+    READY = "READY"
+    DISTRIBUTED = "DISTRIBUTED"
+
+
+class ContentDistribution(Base, UUIDPrimaryKeyMixin):
+    """One immutable approved-version provenance record per Piece.
+
+    ContentService alone couples this shadow status to ContentPiece.status.
+    """
+
+    __tablename__ = "content_distributions"
+    __table_args__ = (
+        UniqueConstraint("content_piece_id", name="uq_content_distributions_content_piece_id"),
+        ForeignKeyConstraint(
+            ["content_piece_id", "workspace_id"],
+            ["content_pieces.id", "content_pieces.workspace_id"],
+            name="fk_content_distributions_content_piece_workspace",
+        ),
+        # MVP-19B (explicitly authorized, additive-only): a candidate key
+        # purely so DistributionMetricEvidence can declare a composite,
+        # tenant-safe FK on (distribution_id, workspace_id) — the same
+        # "logically redundant but structurally required for a composite
+        # FK" pattern already established for ContentPiece/ContentBrief/
+        # MetricEntry (see their own uq_..._id_workspace_id constraints).
+        UniqueConstraint("id", "workspace_id", name="uq_content_distributions_id_workspace_id"),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    content_piece_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    content_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_versions.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(_CHANNEL_MAX_LENGTH))
+    status: Mapped[ContentDistributionStatus] = mapped_column(
+        Enum(ContentDistributionStatus, name="content_distribution_status", native_enum=True)
+    )
+    external_reference: Mapped[str | None] = mapped_column(String(2048), default=None)
+    ready_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    distributed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class ContentDistributionTrackingRequirement(Base, UUIDPrimaryKeyMixin):
+    """MVP-24: a human-declared association between one ContentDistribution
+    and one TrackingRequirement (BACKEND-15's own Tracking domain) — pure
+    identity, never a snapshot. IDENTITY-ONLY HISTORICAL ASSOCIATION
+    (MVP-24A-R1): this row means only "TrackingRequirement R was declared
+    applicable to ContentDistribution D" — it never copies, and must never
+    be read as preserving, ``TrackingRequirement.status`` or
+    ``TrackingPlan.status`` as of any particular moment. Those remain
+    current-state-only metadata, reachable only via a fresh read of the
+    Tracking domain itself.
+
+    ASSOCIATION != ATTRIBUTION != CAUSALITY: this table records a
+    declared, non-verified traceability link only — never that tracking
+    fired, was verified, or produced any reported metric.
+
+    Mutability (MVP-24A §M, MVP-24A-R1 §F/§N): rows may be freely inserted
+    or deleted while the owning ContentDistribution.status == READY;
+    ``ContentService`` alone enforces that a Distribution already
+    DISTRIBUTED accepts no further insert/delete here — mirrors
+    ``ContentDistribution``'s own "ContentService alone couples this
+    shadow status" precedent exactly. Mutability is governed exclusively
+    by ContentDistribution.status — never by TrackingPlan.status/
+    TrackingRequirement.status (MVP-24A-R1 §D/§M: CERTIFIED does not reach
+    this table at all).
+
+    Physical N:N only (MVP-24A §S): this does not assert that any real
+    Requirement/Distribution pair is typically many-to-many — it only
+    avoids imposing an unsupported 1:1 restriction.
+
+    Placed here (not in ``app/tracking/models.py``) because
+    ``ContentService`` is the sole writer — it alone can take the
+    ``ContentPiece`` row lock (``_load_piece_for_transition``) this
+    mutation's concurrency safety depends on (MVP-24B §V) — mirroring the
+    precedent ``LearningDerivation`` already sets (lives with its writer,
+    ``app/learning/models.py``, despite referencing
+    ``app.measurement.models.AnalysisResult``)."""
+
+    __tablename__ = "content_distribution_tracking_requirements"
+    __table_args__ = (
+        UniqueConstraint(
+            "content_distribution_id", "tracking_requirement_id",
+            name="uq_content_distribution_tracking_requirements_pair",
+        ),
+        ForeignKeyConstraint(
+            ["content_distribution_id", "workspace_id"],
+            ["content_distributions.id", "content_distributions.workspace_id"],
+            name="fk_content_distribution_tracking_requirements_distribution_ws",
+        ),
+        # Plain FK only — TrackingRequirement carries no workspace_id of
+        # its own (tracking/models.py: "Workspace (via Plan)"), so no
+        # composite, tenant-safe FK is possible on this side. Same-Campaign
+        # integrity for this side is service-layer only, enforced by
+        # resolving the TrackingRequirement through
+        # TrackingRequirementRepository.get_for_campaign_by_public_id
+        # BEFORE this row is ever created — the identical, already-accepted
+        # limitation that repository's own docstring already carries.
+        ForeignKeyConstraint(
+            ["tracking_requirement_id"], ["tracking_requirements.id"],
+            name="fk_content_distribution_tracking_requirements_requirement",
+        ),
+        # Explicit, shortened names below: the naming convention's own
+        # derived names for this long table exceed PostgreSQL's
+        # 63-character identifier limit (verified empirically: 69 chars
+        # for each) — the same repair BACKEND-14/MVP-19B already applied
+        # to their own long-named FKs/indexes.
+        Index("ix_content_distribution_tracking_requirements_distribution_id", "content_distribution_id"),
+        Index("ix_content_distribution_tracking_requirements_requirement_id", "tracking_requirement_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", name="fk_content_distribution_tracking_requirements_workspace_id"),
+        index=True,
+    )
+    content_distribution_id: Mapped[uuid.UUID] = mapped_column()  # covered by the composite FK + explicit index above
+    tracking_requirement_id: Mapped[uuid.UUID] = mapped_column()  # covered by the explicit index above
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

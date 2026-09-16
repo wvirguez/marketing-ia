@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.api_errors import InvalidLifecycleTransitionError, LearningCandidateNotValidatedError
 from app.learning.models import LearningCandidate, LearningCandidateStatus, StrategicRecommendationCandidate, StrategicRecommendationDecision
 from app.learning.service import LearningService
+from tests.learningtest import seed_sufficient_qualification
 from app.learning.transitions import LEARNING_CANDIDATE_TRANSITIONS, is_legal_learning_candidate_transition
 from app.workspaces.repository import OrganizationRepository, WorkspaceRepository
 from tests.learningtest import build_analysis_result, build_learning_candidate, build_recommendation, build_validated_learning_candidate
@@ -88,6 +89,7 @@ def test_every_allowed_transition_succeeds(db_session) -> None:
     assert candidate.status is LearningCandidateStatus.INSUFFICIENT_EVIDENCE
     candidate = service.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATION_PENDING)
     assert candidate.status is LearningCandidateStatus.VALIDATION_PENDING
+    seed_sufficient_qualification(db_session, candidate)
     candidate = service.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATED)
     assert candidate.status is LearningCandidateStatus.VALIDATED
 

@@ -99,7 +99,11 @@ def test_get_returns_frozen_shape(campaign_run_client: dict) -> None:
     assert requirement["id"] == requirement_id
     assert requirement["name"] == "Purchase event"
     assert requirement["status"] is None
-    assert set(requirement.keys()) == {"id", "name", "status"}
+    # MVP-24: additive field — no association exists yet, so it is an
+    # empty list, never null (mirrors every other empty-collection
+    # convention in this codebase).
+    assert requirement["associated_distribution_ids"] == []
+    assert set(requirement.keys()) == {"id", "name", "status", "associated_distribution_ids"}
 
 
 def test_requirements_are_deterministically_ordered(campaign_run_client: dict) -> None:

@@ -59,7 +59,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Index, text, DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.base import Base, UUIDPrimaryKeyMixin
@@ -200,3 +200,86 @@ class LearningDerivation(Base, UUIDPrimaryKeyMixin):
     analysis_result_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by composite FK + UNIQUE
     learning_candidate_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by composite FK + UNIQUE
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# MVP-25: qualification is separate from the candidate lifecycle. VALIDATED
+# means bounded acceptance under current evidence, never causal proof,
+# statistical significance, experiment validation or system-verified replication.
+class QualificationConfidence(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class ReplicationStatus(str, enum.Enum):
+    REPLICATION_NOT_ESTABLISHED = "REPLICATION_NOT_ESTABLISHED"
+    REPLICATION_EVIDENCE_PRESENT = "REPLICATION_EVIDENCE_PRESENT"
+    REPLICATION_FAILED = "REPLICATION_FAILED"
+
+
+class EvidenceRelationship(str, enum.Enum):
+    SUPPORTING = "SUPPORTING"
+    CONTRADICTING = "CONTRADICTING"
+
+
+class EvidenceRemovalReason(str, enum.Enum):
+    ATTACHMENT_ERROR = "ATTACHMENT_ERROR"
+    OTHER = "OTHER"
+
+
+class LearningQualification(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "learning_qualifications"
+    __table_args__ = (
+        UniqueConstraint("learning_candidate_id", name="uq_lq_candidate"),
+        UniqueConstraint("id", "workspace_id", name="uq_lq_id_workspace"),
+        ForeignKeyConstraint(["learning_candidate_id", "workspace_id"],
+                             ["learning_candidates.id", "learning_candidates.workspace_id"],
+                             name="fk_lq_candidate_workspace"),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    learning_candidate_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    confidence: Mapped[QualificationConfidence | None] = mapped_column(Enum(QualificationConfidence, name="learning_qualification_confidence"))
+    replication_status: Mapped[ReplicationStatus | None] = mapped_column(
+        Enum(ReplicationStatus, name="learning_qualification_replication_status"),
+        default=ReplicationStatus.REPLICATION_NOT_ESTABLISHED,
+        server_default=ReplicationStatus.REPLICATION_NOT_ESTABLISHED.value,
+    )
+    scope: Mapped[str | None] = mapped_column(Text)
+    generalization_boundary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class LearningQualificationSignal(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "learning_qualification_signals"
+    __table_args__ = (
+        ForeignKeyConstraint(["learning_qualification_id", "workspace_id"],
+                             ["learning_qualifications.id", "learning_qualifications.workspace_id"],
+                             name="fk_lqs_qualification_workspace"),
+        ForeignKeyConstraint(["performance_signal_id", "workspace_id"],
+                             ["performance_signals.id", "performance_signals.workspace_id"],
+                             name="fk_lqs_signal_workspace"),
+        CheckConstraint(
+            "(removed_at IS NULL AND removal_reason IS NULL AND removal_note IS NULL AND removed_by_user_id IS NULL) OR "
+            "(removed_at IS NOT NULL AND removal_reason IS NOT NULL AND removal_note IS NOT NULL AND removed_by_user_id IS NOT NULL)",
+            name="disposition_complete",
+        ),
+        CheckConstraint("relationship != 'CONTRADICTING' OR (note IS NOT NULL AND length(trim(note)) > 0)", name="contradiction_note"),
+        CheckConstraint("removal_note IS NULL OR length(trim(removal_note)) > 0", name="removal_note_nonempty"),
+        Index("uq_lqs_active_pair", "learning_qualification_id", "performance_signal_id", unique=True,
+              postgresql_where=text("removed_at IS NULL")),
+        # OTHER remains effective for both relationships. A second partial
+        # index closes the historical-disposition hole in active-only uniqueness.
+        Index("uq_lqs_effective_pair", "learning_qualification_id", "performance_signal_id", unique=True,
+              postgresql_where=text("removal_reason IS NULL OR removal_reason != 'ATTACHMENT_ERROR'")),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    learning_qualification_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    performance_signal_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    relationship: Mapped[EvidenceRelationship] = mapped_column(Enum(EvidenceRelationship, name="learning_qualification_signal_relationship"))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    removal_reason: Mapped[EvidenceRemovalReason | None] = mapped_column(Enum(EvidenceRemovalReason, name="learning_qualification_signal_removal_reason"))
+    removal_note: Mapped[str | None] = mapped_column(Text)
+    removed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)

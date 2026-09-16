@@ -11,6 +11,7 @@ vi.mock("@/lib/api/measurement", () => ({
   createMetricEntry: vi.fn(),
   getCampaignAnalysis: vi.fn(),
   triggerCampaignAnalysis: vi.fn(),
+  getCampaignDistributionEvidenceRollup: vi.fn().mockResolvedValue({ campaign_id: "CMP-1", metrics: [] }),
 }));
 vi.mock("@/lib/api/campaigns", () => ({
   getCampaign: vi.fn(),
@@ -20,10 +21,14 @@ vi.mock("@/lib/api/learning", () => ({
   getCampaignLearning: vi.fn(),
   deriveCampaignLearning: vi.fn(),
 }));
+vi.mock("@/lib/auth/auth-context", () => ({
+  useAuth: vi.fn(),
+}));
 
 import { createMetricEntry, getCampaignAnalysis, getMetrics } from "@/lib/api/measurement";
 import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
 import { getCampaignLearning } from "@/lib/api/learning";
+import { useAuth } from "@/lib/auth/auth-context";
 
 const mockGetMetrics = vi.mocked(getMetrics);
 const mockGetCampaignAnalysis = vi.mocked(getCampaignAnalysis);
@@ -31,6 +36,7 @@ const mockCreateMetricEntry = vi.mocked(createMetricEntry);
 const mockGetCampaign = vi.mocked(getCampaign);
 const mockListCampaignRuns = vi.mocked(listCampaignRuns);
 const mockGetCampaignLearning = vi.mocked(getCampaignLearning);
+const mockUseAuth = vi.mocked(useAuth);
 
 const EMPTY_COPY = "Aún no hay métricas registradas para esta campaña.";
 const SUCCESS_COPY = "Métricas registradas.";
@@ -43,6 +49,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   uuidCounter = 0;
   vi.spyOn(crypto, "randomUUID").mockImplementation(() => `uuid-${++uuidCounter}` as ReturnType<typeof crypto.randomUUID>);
+  // MetricsPanel's own tests don't care about role; CampaignDetail (this
+  // file's integration tests) mounts LearningPanel unconditionally, which
+  // now calls useAuth() (MVP-23B) — mirrors content-detail-view.test.tsx's
+  // own default-OWNER convention.
+  mockUseAuth.mockReturnValue({
+    status: "authenticated",
+    session: {
+      user: { id: "USR-1", email: "user@impulso.test", display_name: "User", status: "ACTIVE", preferences: { locale: null, timezone: null } },
+      workspace: { id: "WS-1", name: "Workspace", slug: "workspace" },
+      membership: { role: "OWNER" },
+    },
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+    refresh: vi.fn(),
+  });
 });
 
 function makeEntry(overrides: Partial<MetricEntryPublic> = {}): MetricEntryPublic {

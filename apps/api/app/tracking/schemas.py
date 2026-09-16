@@ -22,6 +22,10 @@ class TrackingRequirementPublic(BaseModel):
     id: str
     name: str
     status: str | None
+    # MVP-24: identity-only (MVP-24A-R1) — public IDs of the
+    # ContentDistributions this Requirement has been declared applicable
+    # to. Never implies verification, firing, or attribution.
+    associated_distribution_ids: list[str] = Field(default_factory=list)
 
 
 class TrackingPlanPublic(BaseModel):
@@ -61,13 +65,27 @@ TrackingPatchRequest = Annotated[
 ]
 
 
-def tracking_requirement_to_public(requirement: TrackingRequirement) -> TrackingRequirementPublic:
-    return TrackingRequirementPublic(id=requirement.public_id, name=requirement.name, status=requirement.status)
+def tracking_requirement_to_public(
+    requirement: TrackingRequirement, *, associated_distribution_ids: list[str] | None = None
+) -> TrackingRequirementPublic:
+    return TrackingRequirementPublic(
+        id=requirement.public_id, name=requirement.name, status=requirement.status,
+        associated_distribution_ids=associated_distribution_ids if associated_distribution_ids is not None else [],
+    )
 
 
-def tracking_plan_to_public(plan: TrackingPlan, *, requirements: list[TrackingRequirement]) -> TrackingPlanPublic:
+def tracking_plan_to_public(
+    plan: TrackingPlan,
+    *,
+    requirements: list[TrackingRequirement],
+    associated_distribution_ids_by_requirement_id: dict | None = None,
+) -> TrackingPlanPublic:
+    by_id = associated_distribution_ids_by_requirement_id or {}
     return TrackingPlanPublic(
         id=plan.public_id,
         status=plan.status,
-        requirements=[tracking_requirement_to_public(requirement) for requirement in requirements],
+        requirements=[
+            tracking_requirement_to_public(requirement, associated_distribution_ids=by_id.get(requirement.id, []))
+            for requirement in requirements
+        ],
     )

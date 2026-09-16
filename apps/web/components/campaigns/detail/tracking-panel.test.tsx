@@ -16,9 +16,17 @@ vi.mock("@/lib/api/campaigns", () => ({
   getCampaign: vi.fn(),
   listCampaignRuns: vi.fn(),
 }));
+vi.mock("@/lib/api/learning", () => ({
+  getCampaignLearning: vi.fn(),
+  deriveCampaignLearning: vi.fn(),
+}));
+vi.mock("@/lib/auth/auth-context", () => ({
+  useAuth: vi.fn(),
+}));
 
 import { createTrackingPlan, createTrackingRequirement, getTracking, patchTracking } from "@/lib/api/tracking";
 import { getCampaign, listCampaignRuns } from "@/lib/api/campaigns";
+import { useAuth } from "@/lib/auth/auth-context";
 
 const mockGetTracking = vi.mocked(getTracking);
 const mockCreateTrackingPlan = vi.mocked(createTrackingPlan);
@@ -26,6 +34,7 @@ const mockCreateTrackingRequirement = vi.mocked(createTrackingRequirement);
 const mockPatchTracking = vi.mocked(patchTracking);
 const mockGetCampaign = vi.mocked(getCampaign);
 const mockListCampaignRuns = vi.mocked(listCampaignRuns);
+const mockUseAuth = vi.mocked(useAuth);
 
 const EMPTY_COPY = "Aún no se ha definido un plan de tracking para esta campaña.";
 const ZERO_REQUIREMENTS_COPY = "No hay requisitos registrados en este plan.";
@@ -36,6 +45,21 @@ const CREATE_PLAN_LABEL = "Crear plan de tracking manual";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // TrackingPanel's own tests don't care about role; CampaignDetail (this
+  // file's integration tests) mounts LearningPanel unconditionally, which
+  // now calls useAuth() (MVP-23B).
+  mockUseAuth.mockReturnValue({
+    status: "authenticated",
+    session: {
+      user: { id: "USR-1", email: "user@impulso.test", display_name: "User", status: "ACTIVE", preferences: { locale: null, timezone: null } },
+      workspace: { id: "WS-1", name: "Workspace", slug: "workspace" },
+      membership: { role: "OWNER" },
+    },
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+    refresh: vi.fn(),
+  });
 });
 
 function makePlan(overrides: Partial<TrackingPlanPublic> = {}): TrackingPlanPublic {
@@ -75,8 +99,8 @@ describe("TrackingPanel", () => {
         makePlan({
           status: "CONFIGURED",
           requirements: [
-            { id: "req-1", name: "Purchase event", status: "Implementado" },
-            { id: "req-2", name: "Lead event", status: "Pendiente" },
+            { id: "req-1", name: "Purchase event", status: "Implementado", associated_distribution_ids: [] },
+            { id: "req-2", name: "Lead event", status: "Pendiente", associated_distribution_ids: [] },
           ],
         }),
       ),
@@ -90,6 +114,31 @@ describe("TrackingPanel", () => {
     expect(screen.getByDisplayValue("Pendiente")).toBeInTheDocument();
   });
 
+  it("shows associated Distribution public IDs for a Requirement (MVP-24, identity-only)", async () => {
+    mockGetTracking.mockResolvedValue(
+      makeResponse(
+        makePlan({
+          requirements: [
+            { id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: ["DST-1", "DST-2"] },
+          ],
+        }),
+      ),
+    );
+    render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
+
+    expect(await screen.findByText("Distribuciones asociadas: DST-1, DST-2")).toBeInTheDocument();
+  });
+
+  it("shows no association line when a Requirement has zero associations", async () => {
+    mockGetTracking.mockResolvedValue(
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
+    );
+    render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
+
+    await screen.findByText("Purchase event");
+    expect(screen.queryByText(/Distribuciones asociadas/)).not.toBeInTheDocument();
+  });
+
   it("renders a truthful state for a Plan with zero requirements", async () => {
     mockGetTracking.mockResolvedValue(makeResponse(makePlan({ status: "REQUIREMENTS_DEFINED", requirements: [] })));
     render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
@@ -101,7 +150,7 @@ describe("TrackingPanel", () => {
 
   it("renders a neutral fallback for a Requirement with a null status", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
     render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
 
@@ -150,7 +199,7 @@ describe("TrackingPanel", () => {
 
   it("never implies measurement results, validated learning, or strategic decisions", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ status: "CONFIGURED", requirements: [{ id: "req-1", name: "Purchase event", status: "ok" }] })),
+      makeResponse(makePlan({ status: "CONFIGURED", requirements: [{ id: "req-1", name: "Purchase event", status: "ok", associated_distribution_ids: [] }] })),
     );
     render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
 
@@ -255,7 +304,7 @@ describe("TrackingPanel", () => {
   it("replaces local state with the server response after a successful requirement creation", async () => {
     mockGetTracking.mockResolvedValue(makeResponse(makePlan({ status: "NOT_DEFINED" })));
     mockCreateTrackingRequirement.mockResolvedValue(
-      makeResponse(makePlan({ status: "NOT_DEFINED", requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ status: "NOT_DEFINED", requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
 
     const user = userEvent.setup();
@@ -334,7 +383,7 @@ describe("TrackingPanel", () => {
 
   it("uses a free-text status input, not a fixed dropdown vocabulary", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
     render(<TrackingPanel campaignId="campaign-1" active refreshToken={0} />);
 
@@ -347,10 +396,10 @@ describe("TrackingPanel", () => {
 
   it("submits null when the status input is blank or whitespace-only", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Pendiente" }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Pendiente", associated_distribution_ids: [] }] })),
     );
     mockPatchTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
 
     const user = userEvent.setup();
@@ -371,10 +420,10 @@ describe("TrackingPanel", () => {
 
   it("replaces local state with the server response after a successful requirement status update", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
     mockPatchTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Implementado" }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Implementado", associated_distribution_ids: [] }] })),
     );
 
     const user = userEvent.setup();
@@ -395,7 +444,7 @@ describe("TrackingPanel", () => {
 
   it("preserves the last confirmed status and shows an error when the status update fails", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Pendiente" }] })),
+      makeResponse(makePlan({ requirements: [{ id: "req-1", name: "Purchase event", status: "Pendiente", associated_distribution_ids: [] }] })),
     );
     mockPatchTracking.mockRejectedValueOnce(new ApiError(500, "INTERNAL", "boom"));
 
@@ -417,7 +466,7 @@ describe("TrackingPanel", () => {
 
   it("disables every write control while one mutation is pending (section-global lock)", async () => {
     mockGetTracking.mockResolvedValue(
-      makeResponse(makePlan({ status: "NOT_DEFINED", requirements: [{ id: "req-1", name: "Purchase event", status: null }] })),
+      makeResponse(makePlan({ status: "NOT_DEFINED", requirements: [{ id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] }] })),
     );
     let resolveCreate: (value: TrackingResponse) => void = () => {};
     mockCreateTrackingRequirement.mockImplementation(
@@ -444,8 +493,8 @@ describe("TrackingPanel", () => {
         makePlan({
           status: "NOT_DEFINED",
           requirements: [
-            { id: "req-1", name: "Purchase event", status: null },
-            { id: "req-2", name: "Lead event", status: null },
+            { id: "req-1", name: "Purchase event", status: null, associated_distribution_ids: [] },
+            { id: "req-2", name: "Lead event", status: null, associated_distribution_ids: [] },
           ],
         }),
       ),

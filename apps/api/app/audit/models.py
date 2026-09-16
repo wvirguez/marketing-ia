@@ -119,6 +119,9 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     content_approval_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("content_approvals.id"), default=None, index=True
     )
+    distribution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_distributions.id"), default=None, index=True
+    )
     # BACKEND-11 §16: same reasoning as content_brief_id/content_piece_id
     # above — a measurement.metric_entry.recorded/measurement.observation.
     # recorded/measurement.signal.recorded/measurement.analysis_result.
@@ -194,6 +197,20 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     # every other AuditEvent subject FK exactly.
     measurement_analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("measurement_analysis_runs.id"), default=None, index=True
+    )
+    # MVP-19B: same reasoning as metric_entry_id/distribution_id above — a
+    # measurement.distribution_evidence.recorded/...corrected event must
+    # identify its exact DistributionMetricEvidence row, never only be
+    # inferable from metric_entry_id/distribution_id positionally.
+    # Explicit, shortened FK name: the naming convention's own derived name
+    # ("fk_audit_events_distribution_metric_evidence_id_distribution_
+    # metric_evidence") exceeds PostgreSQL's 63-character identifier
+    # limit (verified: 79 chars) — the same repair BACKEND-14 already
+    # applied to strategic_recommendation_candidate_id above.
+    distribution_metric_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("distribution_metric_evidence.id", name="fk_audit_events_distribution_metric_evidence_id"),
+        default=None,
+        index=True,
     )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.

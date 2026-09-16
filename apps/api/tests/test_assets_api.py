@@ -83,15 +83,26 @@ def _assets_path(fixtures: dict, content_public_id: str) -> str:
 # --- route surface -------------------------------------------------------
 
 
-def test_only_get_route_exists_for_assets(campaign_client_with_stages: dict) -> None:
+def test_only_get_post_routes_exist_put_patch_delete_rejected(campaign_client_with_stages: dict) -> None:
+    """MVP-16B: POST now legitimately creates a Creative Brief/Asset/
+    AssetVersion (201) instead of the old blanket 405 — PUT/PATCH/DELETE
+    remain unsupported on every Assets route."""
     fixtures = campaign_client_with_stages
     content_public_id = _record_content_piece(fixtures)
     path = _assets_path(fixtures, content_public_id)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
     assert fixtures["client"].get(path).status_code == 200
-    assert fixtures["client"].post(path, json={}).status_code == 405
     assert fixtures["client"].put(path, json={}).status_code == 405
     assert fixtures["client"].patch(path, json={}).status_code == 405
     assert fixtures["client"].delete(path).status_code == 405
+    assert fixtures["client"].put(f"{path}/creative-brief", json={"spec": {}}).status_code == 405
+    assert fixtures["client"].delete(f"{path}/creative-brief").status_code == 405
+    # Consume the POST route itself so this test does not leave a stray
+    # Creative Brief behind for tests sharing the fixture's campaign — a
+    # duplicate second creation is what actually proves 201 happened.
+    created = fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    assert created.status_code == 201, created.text
+    assert fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers).status_code == 409
 
 
 # --- response shape --------------------------------------------------------
@@ -232,3 +243,273 @@ def test_content_piece_belonging_to_another_campaign_is_not_visible(campaign_cli
     ).json()
     response = fixtures_a["client"].get(f"/api/v1/campaigns/{body_b['campaign']['id']}/content/{content_public_id}/assets")
     assert response.status_code == 403
+
+
+# --- CREATE CreativeBrief (MVP-16B) ----------------------------------------
+
+
+def test_create_creative_brief_happy_path(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    response = fixtures["client"].post(
+        f"{_assets_path(fixtures, content_public_id)}/creative-brief",
+        json={"spec": {"tone": "playful"}},
+        headers={"X-CSRF-Token": fixtures["csrf_token"]},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["creative_brief"] == {"spec": {"tone": "playful"}}
+    assert response.json()["assets"] == []
+
+
+def test_create_creative_brief_requires_authentication(auth_client: TestClient) -> None:
+    response = auth_client.post(
+        "/api/v1/campaigns/CMP-FAKE00000000/content/CNT-FAKE00000000/assets/creative-brief", json={"spec": {}}
+    )
+    assert response.status_code == 401
+
+
+def test_create_creative_brief_requires_csrf(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    response = fixtures["client"].post(
+        f"{_assets_path(fixtures, content_public_id)}/creative-brief", json={"spec": {}}
+    )
+    assert response.status_code == 403
+
+
+def test_create_creative_brief_cross_tenant_rejected_non_leakily(auth_client: TestClient) -> None:
+    client_a = auth_client
+    register_and_get_csrf(client_a, display_name="User A")
+
+    client_b = TestClient(auth_client.app, raise_server_exceptions=False)
+    register_and_get_csrf(client_b, display_name="User B")
+    csrf_b = client_b.get("/api/v1/auth/csrf").json()["csrf_token"]
+    body_b = client_b.post("/api/v1/campaigns", json=campaign_payload(name="B"), headers={"X-CSRF-Token": csrf_b}).json()
+
+    csrf_a = client_a.get("/api/v1/auth/csrf").json()["csrf_token"]
+    response = client_a.post(
+        f"/api/v1/campaigns/{body_b['campaign']['id']}/content/CNT-FAKE00000000/assets/creative-brief",
+        json={"spec": {}},
+        headers={"X-CSRF-Token": csrf_a},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_create_creative_brief_duplicate_is_conflict(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = f"{_assets_path(fixtures, content_public_id)}/creative-brief"
+    first = fixtures["client"].post(path, json={"spec": {}}, headers=headers)
+    assert first.status_code == 201
+    second = fixtures["client"].post(path, json={"spec": {}}, headers=headers)
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "CREATIVE_BRIEF_ALREADY_EXISTS"
+
+
+def test_create_creative_brief_non_object_spec_rejected(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    response = fixtures["client"].post(
+        f"{_assets_path(fixtures, content_public_id)}/creative-brief",
+        json={"spec": "not an object"},
+        headers={"X-CSRF-Token": fixtures["csrf_token"]},
+    )
+    assert response.status_code == 422
+
+
+# --- CREATE Asset (MVP-16B) --------------------------------------------------
+
+
+def test_create_asset_happy_path(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+
+    response = fixtures["client"].post(path, json={"kind": "image", "storage_reference": "https://example.com/a.png"}, headers=headers)
+    assert response.status_code == 201, response.text
+    assets = response.json()["assets"]
+    assert len(assets) == 1
+    assert assets[0]["kind"] == "image"
+    assert assets[0]["status"] is None
+    assert assets[0]["id"].startswith("AST-")
+    assert assets[0]["current_version"]["storage_reference"] == "https://example.com/a.png"
+
+
+def test_create_asset_requires_authentication(auth_client: TestClient) -> None:
+    response = auth_client.post(
+        "/api/v1/campaigns/CMP-FAKE00000000/content/CNT-FAKE00000000/assets", json={"kind": "image"}
+    )
+    assert response.status_code == 401
+
+
+def test_create_asset_requires_csrf(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers={"X-CSRF-Token": fixtures["csrf_token"]})
+    response = fixtures["client"].post(path, json={"kind": "image"})
+    assert response.status_code == 403
+
+
+def test_create_asset_with_no_creative_brief_is_forbidden(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    response = fixtures["client"].post(
+        _assets_path(fixtures, content_public_id), json={"kind": "image"}, headers={"X-CSRF-Token": fixtures["csrf_token"]}
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_create_multiple_assets_under_one_creative_brief(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+
+    first = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    second = fixtures["client"].post(path, json={"kind": "video"}, headers=headers)
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assets = second.json()["assets"]
+    assert len(assets) == 2
+    assert assets[0]["id"] != assets[1]["id"]
+
+
+def test_create_asset_empty_kind_rejected(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    response = fixtures["client"].post(path, json={"kind": ""}, headers=headers)
+    assert response.status_code == 422
+
+
+def test_create_asset_extra_field_rejected(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    response = fixtures["client"].post(path, json={"kind": "image", "status": "approved"}, headers=headers)
+    assert response.status_code == 422
+
+
+# --- APPEND AssetVersion (MVP-16B) ------------------------------------------
+
+
+def test_append_asset_version_happy_path(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    created = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    asset_id = created.json()["assets"][0]["id"]
+
+    response = fixtures["client"].post(
+        f"{path}/{asset_id}/versions", json={"storage_reference": "https://example.com/v2.png"}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["assets"][0]["current_version"]["storage_reference"] == "https://example.com/v2.png"
+
+
+def test_append_asset_version_requires_authentication(auth_client: TestClient) -> None:
+    response = auth_client.post(
+        "/api/v1/campaigns/CMP-FAKE00000000/content/CNT-FAKE00000000/assets/AST-FAKE00000000/versions", json={}
+    )
+    assert response.status_code == 401
+
+
+def test_append_asset_version_requires_csrf(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    created = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    asset_id = created.json()["assets"][0]["id"]
+
+    response = fixtures["client"].post(f"{path}/{asset_id}/versions", json={})
+    assert response.status_code == 403
+
+
+def test_append_asset_version_on_archived_asset_is_conflict(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    created = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    asset_id = created.json()["assets"][0]["id"]
+
+    engine = get_engine()
+    with OrmSession(bind=engine) as session:
+        campaign = CampaignRepository(session).get_by_public_id(fixtures["campaign_id"])
+        AssetsService(session).archive_asset(workspace_id=campaign.workspace_id, asset_public_id=asset_id)
+
+    response = fixtures["client"].post(f"{path}/{asset_id}/versions", json={}, headers=headers)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "ASSET_ARCHIVED"
+
+
+def test_append_asset_version_for_asset_from_another_content_piece_is_forbidden(campaign_client_with_stages: dict) -> None:
+    """MVP-16A §AD: an Asset belonging to a different Content Piece's own
+    Creative Brief, even within the same workspace, must be rejected via
+    this Content Piece's URL — the underlying service only re-verifies
+    workspace-level tenancy, so the router itself must close this gap."""
+    fixtures = campaign_client_with_stages
+    content_public_id_a = _record_content_piece(fixtures)
+    content_public_id_b = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path_a = _assets_path(fixtures, content_public_id_a)
+    path_b = _assets_path(fixtures, content_public_id_b)
+
+    fixtures["client"].post(f"{path_b}/creative-brief", json={"spec": {}}, headers=headers)
+    created_b = fixtures["client"].post(path_b, json={"kind": "image"}, headers=headers)
+    asset_b_id = created_b.json()["assets"][0]["id"]
+
+    response = fixtures["client"].post(f"{path_a}/{asset_b_id}/versions", json={}, headers=headers)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+# --- full manual flow --------------------------------------------------------
+
+
+def test_full_manual_flow_create_brief_asset_and_append_version(campaign_client_with_stages: dict) -> None:
+    """Proves the whole MVP-16B contract end to end through public HTTP
+    only: create Creative Brief -> create Asset (+ atomic initial
+    Version) -> append a second Version -> all visible via GET."""
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    client = fixtures["client"]
+    path = _assets_path(fixtures, content_public_id)
+
+    brief_response = client.post(f"{path}/creative-brief", json={"spec": {"tone": "playful"}}, headers=headers)
+    assert brief_response.status_code == 201
+
+    asset_response = client.post(
+        path, json={"kind": "image", "storage_reference": "https://example.com/v1.png"}, headers=headers
+    )
+    assert asset_response.status_code == 201
+    asset_id = asset_response.json()["assets"][0]["id"]
+    assert asset_response.json()["assets"][0]["current_version"]["storage_reference"] == "https://example.com/v1.png"
+
+    version_response = client.post(
+        f"{path}/{asset_id}/versions", json={"storage_reference": "https://example.com/v2.png"}, headers=headers
+    )
+    assert version_response.status_code == 201
+    assert version_response.json()["assets"][0]["current_version"]["storage_reference"] == "https://example.com/v2.png"
+
+    final = client.get(path).json()
+    assert final["creative_brief"] == {"spec": {"tone": "playful"}}
+    assert len(final["assets"]) == 1
+    assert final["assets"][0]["current_version"]["storage_reference"] == "https://example.com/v2.png"

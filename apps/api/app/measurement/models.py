@@ -85,6 +85,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Numeric,
     String,
     Text,
@@ -97,6 +98,8 @@ from app.persistence.base import Base, UUIDPrimaryKeyMixin
 
 _CHANNEL_MAX_LENGTH = 100
 _METRIC_NAME_MAX_LENGTH = 100
+_SOURCE_REFERENCE_MAX_LENGTH = 2048
+_CORRECTION_REASON_MAX_LENGTH = 500
 _CLIENT_REQUEST_ID_MAX_LENGTH = 100
 # Wide enough for both large counts (impressions) and currency values with
 # cents — not a canonical requirement, a plain, generous numeric bound.
@@ -587,3 +590,101 @@ class MeasurementAnalysisRunResult(Base, UUIDPrimaryKeyMixin):
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     analysis_run_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
     analysis_result_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+
+
+# --- Distribution-linked Measurement Evidence — MVP-19B ---------------------
+#
+# CORE SEMANTIC (frozen, MVP-19A/§4): "For this Distribution, the user
+# reported these metrics for this period from this source." NEVER "this
+# Distribution generated/caused these metrics" — no attribution source of
+# truth exists anywhere in this codebase, and nothing below creates one.
+#
+# DistributionMetricEvidence is a narrow association entity, not a new
+# MetricEntry shape: every Evidence owns exactly one fresh MetricEntry
+# (never an existing aggregate one, never inferred/backfilled), created in
+# the same transaction as the Evidence row itself. ContentDistribution
+# remains the sole source of distributed-version/channel identity;
+# MetricEntry/MetricValue remain the sole source of recorded numeric
+# values; this table is the sole source of the human-reported association
+# between the two — three separate sources of truth, never collapsed.
+
+
+class DistributionMetricEvidence(Base, UUIDPrimaryKeyMixin):
+    """One human-reported metrics association for exactly one
+    ``ContentDistribution``. A correction is a brand-new row (never a
+    mutation of a prior one) that ``supersedes`` its immediate predecessor
+    — at most one immediate successor per row (``UNIQUE(supersedes_
+    evidence_id)``), and a successor may only target a row belonging to
+    the *same* Distribution and workspace (the composite self-FK below,
+    MVP-19B §12) — a correction chain can never cross a Distribution or
+    workspace boundary, by database construction, not merely service
+    discipline. "Current" (no successor yet) is always derived at read
+    time, never stored (MVP-19B §56)."""
+
+    __tablename__ = "distribution_metric_evidence"
+    __table_args__ = (
+        UniqueConstraint("metric_entry_id", name="uq_distribution_metric_evidence_metric_entry_id"),
+        UniqueConstraint(
+            "supersedes_evidence_id", name="uq_distribution_metric_evidence_supersedes_evidence_id"
+        ),
+        # Self-referential candidate key purely so the composite self-FK
+        # below can prove a correction's target belongs to the same
+        # Distribution and workspace — the same "candidate key exists only
+        # to support a composite FK" pattern used throughout this codebase.
+        UniqueConstraint(
+            "id", "distribution_id", "workspace_id",
+            name="uq_distribution_metric_evidence_id_distribution_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["distribution_id", "workspace_id"],
+            ["content_distributions.id", "content_distributions.workspace_id"],
+            name="fk_distribution_metric_evidence_distribution_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["metric_entry_id", "workspace_id"],
+            ["metric_entries.id", "metric_entries.workspace_id"],
+            name="fk_distribution_metric_evidence_metric_entry_workspace",
+        ),
+        # MVP-19B §12 (mandatory): a correction may supersede only Evidence
+        # in the same Distribution AND the same workspace — enforced here,
+        # not merely by service discipline, so a correction chain can never
+        # cross either boundary.
+        ForeignKeyConstraint(
+            ["supersedes_evidence_id", "distribution_id", "workspace_id"],
+            ["distribution_metric_evidence.id", "distribution_metric_evidence.distribution_id", "distribution_metric_evidence.workspace_id"],
+            name="fk_distribution_metric_evidence_supersedes_same_distribution",
+        ),
+        # supersedes_evidence_id and correction_reason are set together or
+        # not at all — an application-level invariant, backstopped here so
+        # a bug can never persist a correction with no stated reason, or a
+        # non-correction with a stray reason.
+        # NAMING_CONVENTION's own "ck" rule always re-applies
+        # "ck_%(table_name)s_..." on top of whatever name is given here
+        # (unlike every other constraint type, where an explicit name
+        # bypasses the convention) — passing only the bare suffix, the
+        # same way ``MetricEntry``'s own ``period_end_after_start`` check
+        # does, is what produces the single-prefixed
+        # ``ck_distribution_metric_evidence_correction_reason_pairing``
+        # this migration's own literal name must match exactly.
+        CheckConstraint(
+            "(supersedes_evidence_id IS NULL AND correction_reason IS NULL) "
+            "OR (supersedes_evidence_id IS NOT NULL AND correction_reason IS NOT NULL)",
+            name="correction_reason_pairing",
+        ),
+        Index(
+            "ix_distribution_metric_evidence_distribution_created_id",
+            "distribution_id", "created_at", "id",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    distribution_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # UNIQUE — every Evidence owns exactly one fresh MetricEntry, never a
+    # shared/aggregate one (MVP-19B §5/§14).
+    metric_entry_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    supersedes_evidence_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    source_reference: Mapped[str | None] = mapped_column(String(_SOURCE_REFERENCE_MAX_LENGTH), default=None)
+    correction_reason: Mapped[str | None] = mapped_column(String(_CORRECTION_REASON_MAX_LENGTH), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

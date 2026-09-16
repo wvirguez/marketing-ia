@@ -9,6 +9,7 @@ import type { CampaignPublic, CampaignRunPublic } from "@/types/campaign";
 import type { DraftPresentationState } from "@/lib/campaigns/draft-progress";
 import { AnalysisPanel } from "./analysis-panel";
 import { AudiencePanel } from "./audience-panel";
+import { CampaignDistributionEvidenceRollupPanel } from "./campaign-distribution-evidence-rollup-panel";
 import { CampaignRuns } from "./campaign-runs";
 import { ContentPanel } from "./content-panel";
 import { GenerateDraftAction } from "./generate-draft-action";
@@ -157,6 +158,12 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
         <>
           <MetricsPanel key={`${campaignId}-metrics`} campaignId={campaignId} active={active === "metrics"} refreshToken={draftVersion} />
           <AnalysisPanel key={`${campaignId}-analysis`} campaignId={campaignId} active={active === "metrics"} refreshToken={draftVersion} />
+          <CampaignDistributionEvidenceRollupPanel
+            key={`${campaignId}-distribution-evidence-rollup`}
+            campaignId={campaignId}
+            active={active === "metrics"}
+            refreshToken={draftVersion}
+          />
         </>
       )}
       {tab.id === "learning" && (

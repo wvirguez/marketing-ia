@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session as OrmSession
 from app.campaigns.repository import CampaignRepository
 from app.learning.models import LearningCandidateStatus, StrategicRecommendationDecision
 from app.learning.service import LearningService
+from tests.learningtest import seed_sufficient_qualification
 from app.measurement.models import MetricSource
 from app.measurement.service import MeasurementService
 from app.persistence.session import get_engine
@@ -53,6 +54,7 @@ def _record_recommendation(campaign_public_id: str, *, validated: bool = True) -
 
         learning = LearningService(session)
         candidate = learning.record_learning_candidate(analysis_result=analysis_result, summary="Shorter hooks win.")
+        seed_sufficient_qualification(session, candidate)
         if not validated:
             return candidate.public_id, None
         learning.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.PROVISIONAL)
@@ -112,7 +114,7 @@ def test_get_returns_frozen_shape(campaign_run_client: dict) -> None:
     assert candidate["status"] == "VALIDATED"
     assert candidate["summary"]
     assert "created_at" in candidate
-    assert set(candidate.keys()) == {"id", "analysis_result_id", "status", "summary", "created_at"}
+    assert set(candidate.keys()) == {"id", "analysis_result_id", "status", "summary", "created_at", "qualification"}
 
     assert len(body["strategic_recommendation_candidates"]) == 1
     recommendation = body["strategic_recommendation_candidates"][0]
@@ -178,7 +180,7 @@ def test_no_raw_uuid_or_forbidden_fields_in_response(campaign_run_client: dict) 
     text = fixtures["client"].get(_learning_path(fixtures)).text
     assert not _UUID_RE.search(text), "learning response leaked a raw UUID"
     lowered = text.lower()
-    for forbidden in ("workspace_id", "confidence", "reasoning", "chain_of_thought", "agent_id"):
+    for forbidden in ("workspace_id", "reasoning", "chain_of_thought", "agent_id"):
         assert forbidden not in lowered
 
 

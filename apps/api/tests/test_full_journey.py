@@ -1,14 +1,26 @@
-"""MVP-14B: full journey backend integration test (MVP-14A design).
+"""MVP-14B: full journey backend integration test (MVP-14A design),
+extended through the Content lifecycle + human-in-the-loop approval
+workflow by MVP-17B.
 
 Exercises the current production-reachable MVP campaign journey — auth ->
 campaign creation -> START (deterministic bootstrap) -> Research/Audience/
-Strategy/Plan/Content -> Assets/Tracking (truthful empty) -> manual metrics
--> measurement analysis -> learning derivation -> a lightweight Settings GET
-— entirely through real public HTTP routes (never a direct service-layer
-write), proving the CONNECTIONS across bounded contexts. It does not
-re-test any single module's own already-covered behavior (each module has
-its own dedicated, exhaustive test suite); assertions here are the minimum
-needed to prove one continuous journey holds together end to end.
+Strategy/Plan/Content -> Content lifecycle + human-in-the-loop approval
+(MVP-17B approval, then MVP-18B Distribution) -> Assets/Tracking (truthful empty) -> manual
+metrics -> measurement analysis -> learning derivation -> a lightweight
+Settings GET — entirely through real public HTTP routes (never a direct
+service-layer write), proving the CONNECTIONS across bounded contexts. It
+does not re-test any single module's own already-covered behavior (each
+module has its own dedicated, exhaustive test suite); assertions here are
+the minimum needed to prove one continuous journey holds together end to
+end.
+
+The Content approval decision below proves the human-in-the-loop
+APPLICATION workflow only — the journey's own authenticated human user
+(OWNER of their own freshly-created workspace) records the decision; this
+does not claim AGENT-00 itself technically executed anything (see
+``app/content/service.py``'s own module docstring, and MVP-17A-R1). The
+journey records a human-reported external distribution event; no external
+publishing is performed by this application.
 
 Assets/Tracking are asserted as truthful-empty only: no production caller
 creates a CreativeBrief/Asset or TrackingPlan/TrackingRequirement anywhere
@@ -18,6 +30,8 @@ Freeze) — this test does not open that gap, per MVP-14A §17/§18.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from sqlalchemy import func, select
 
@@ -25,10 +39,11 @@ from app.assets.models import Asset, CreativeBrief
 from app.audit.models import ActorType, AuditEvent
 from app.campaigns.models import CampaignRun
 from app.campaigns.repository import CampaignRepository
-from app.content.models import ContentApproval, ContentBrief, ContentPiece, ContentVersion
+from app.content.models import ContentApproval, ContentBrief, ContentDistribution, ContentPiece, ContentPieceStatus, ContentVersion
 from app.learning.models import LearningCandidate, LearningCandidateStatus, LearningDerivation, StrategicRecommendationCandidate
 from app.measurement.models import (
     AnalysisResult,
+    DistributionMetricEvidence,
     MeasurementAnalysisRun,
     MeasurementAnalysisRunMetricEntry,
     MeasurementAnalysisRunResult,
@@ -122,6 +137,201 @@ def test_full_campaign_journey_from_creation_through_learning_and_settings(
     assert all(item["status"] == "DRAFT" for item in content_items), "[CONTENT] no ContentPiece may leave DRAFT here"
     content_id = content_items[0]["id"]
 
+    # --- Content lifecycle + human-in-the-loop approval (MVP-17B) -----------------
+    # Advances only the first ContentPiece through the full lifecycle +
+    # approval workflow, followed by human-recorded Distribution. The
+    # second ContentPiece is deliberately left untouched at DRAFT.
+    content_path = _campaign_path(fixtures, f"/content/{content_id}")
+
+    in_production_response = client.post(f"{content_path}/mark-in-production", headers=csrf_headers)
+    assert in_production_response.status_code == 200, f"[CONTENT LIFECYCLE] {in_production_response.text}"
+    assert in_production_response.json()["piece"]["status"] == "IN_PRODUCTION"
+
+    produced_response = client.post(f"{content_path}/mark-produced", headers=csrf_headers)
+    assert produced_response.status_code == 200, f"[CONTENT LIFECYCLE] {produced_response.text}"
+    assert produced_response.json()["piece"]["status"] == "PRODUCED"
+
+    ready_response = client.post(f"{content_path}/mark-ready-for-review", headers=csrf_headers)
+    assert ready_response.status_code == 200, f"[CONTENT LIFECYCLE] {ready_response.text}"
+    assert ready_response.json()["piece"]["status"] == "READY_FOR_REVIEW"
+    v1_id = ready_response.json()["latest_version"]["id"]
+
+    request_approval_response = client.post(f"{content_path}/request-approval", headers=csrf_headers)
+    assert request_approval_response.status_code == 201, f"[CONTENT APPROVAL] {request_approval_response.text}"
+    approval_id = request_approval_response.json()["latest_approval"]["id"]
+    assert request_approval_response.json()["latest_approval"]["status"] == "REQUESTED"
+
+    under_review_response = client.post(f"{content_path}/approvals/{approval_id}/mark-under-review", headers=csrf_headers)
+    assert under_review_response.status_code == 200, f"[CONTENT APPROVAL] {under_review_response.text}"
+    assert under_review_response.json()["latest_approval"]["status"] == "UNDER_REVIEW"
+
+    # --- Revision loop (MVP-20): the reviewer requests changes, the
+    # producer revises, and only the revised version can be resubmitted.
+    # Recorded by the journey's own authenticated human user (OWNER of
+    # their own workspace) — an application-level decision, not a claim
+    # that AGENT-00 itself executed the governance gate.
+    changes_requested_response = client.post(
+        f"{content_path}/approvals/{approval_id}/decision", json={"decision": "CHANGES_REQUESTED"}, headers=csrf_headers
+    )
+    assert changes_requested_response.status_code == 200, f"[REVISION] {changes_requested_response.text}"
+    assert changes_requested_response.json()["latest_approval"]["status"] == "CHANGES_REQUESTED"
+    assert changes_requested_response.json()["piece"]["status"] == "REVISION_REQUESTED"
+
+    # The generic mark-in-production bypass must be rejected — the only
+    # legitimate way out of REVISION_REQUESTED is creating a new Version.
+    bypass_response = client.post(f"{content_path}/mark-in-production", headers=csrf_headers)
+    assert bypass_response.status_code == 409, f"[REVISION] mark-in-production bypass was not rejected: {bypass_response.text}"
+    stale_resubmit_response = client.post(f"{content_path}/request-approval", headers=csrf_headers)
+    assert stale_resubmit_response.status_code == 409, f"[REVISION] stale resubmission was not rejected: {stale_resubmit_response.text}"
+
+    create_version_response = client.post(
+        f"{content_path}/versions",
+        json={"payload": {"kind": "reel", "hook": "Revised hook after feedback.", "scenes": [], "caption": "Revised.", "hashtags": []}},
+        headers=csrf_headers,
+    )
+    assert create_version_response.status_code == 201, f"[REVISION] {create_version_response.text}"
+    v2_id = create_version_response.json()["latest_version"]["id"]
+    assert v2_id != v1_id, "[REVISION] a genuinely new immutable ContentVersion must be created"
+    assert create_version_response.json()["piece"]["status"] == "IN_PRODUCTION"
+
+    revised_produced_response = client.post(f"{content_path}/mark-produced", headers=csrf_headers)
+    assert revised_produced_response.status_code == 200, f"[REVISION] {revised_produced_response.text}"
+
+    revised_ready_response = client.post(f"{content_path}/mark-ready-for-review", headers=csrf_headers)
+    assert revised_ready_response.status_code == 200, f"[REVISION] {revised_ready_response.text}"
+    assert revised_ready_response.json()["latest_version"]["id"] == v2_id
+
+    resubmit_response = client.post(f"{content_path}/request-approval", headers=csrf_headers)
+    assert resubmit_response.status_code == 201, f"[REVISION] {resubmit_response.text}"
+    approval_id_2 = resubmit_response.json()["latest_approval"]["id"]
+    assert approval_id_2 != approval_id, "[REVISION] the resubmission must be a genuinely new Approval, not the closed A1"
+
+    under_review_response_2 = client.post(f"{content_path}/approvals/{approval_id_2}/mark-under-review", headers=csrf_headers)
+    assert under_review_response_2.status_code == 200, f"[REVISION] {under_review_response_2.text}"
+
+    decision_response = client.post(
+        f"{content_path}/approvals/{approval_id_2}/decision", json={"decision": "APPROVED"}, headers=csrf_headers
+    )
+    assert decision_response.status_code == 200, f"[CONTENT APPROVAL] {decision_response.text}"
+    decision_body = decision_response.json()
+    assert decision_body["latest_approval"]["status"] == "APPROVED"
+    assert decision_body["latest_approval"]["decided_at"] is not None
+    assert decision_body["piece"]["status"] == "APPROVED"
+    assert decision_body["latest_version"]["id"] == v2_id, "[REVISION] the APPROVED cycle must be for V2, not the original V1"
+    mark_distribution_response = client.post(
+        f"{content_path}/distribution/mark-ready-for-distribution", headers=csrf_headers
+    )
+    assert mark_distribution_response.status_code == 201, mark_distribution_response.text
+    assert mark_distribution_response.json()["piece"]["status"] == "READY_FOR_DISTRIBUTION"
+    assert mark_distribution_response.json()["distribution"]["status"] == "READY"
+    record_distribution_response = client.post(
+        f"{content_path}/distribution/record-distributed",
+        json={"external_reference": "opaque-reference-123"}, headers=csrf_headers,
+    )
+    assert record_distribution_response.status_code == 200, record_distribution_response.text
+    assert record_distribution_response.json()["piece"]["status"] == "DISTRIBUTED"
+    assert record_distribution_response.json()["distribution"]["status"] == "DISTRIBUTED"
+    assert record_distribution_response.json()["distribution"]["distributed_at"] is not None
+
+    # --- Revision-loop traceability + provenance (MVP-20 §61/§62/§81) --------
+    # Distribution must freeze the *revised, approved* V2 — never the
+    # original, CHANGES_REQUESTED V1 — with no MVP-18 redesign required.
+    v1_row = db_session.execute(select(ContentVersion).where(ContentVersion.public_id == v1_id)).scalar_one()
+    v2_row = db_session.execute(select(ContentVersion).where(ContentVersion.public_id == v2_id)).scalar_one()
+    assert v1_row.id != v2_row.id
+    distribution_row = db_session.execute(
+        select(ContentDistribution).where(ContentDistribution.content_piece_id == v2_row.content_piece_id)
+    ).scalar_one()
+    assert distribution_row.content_version_id == v2_row.id, "[REVISION] Distribution must freeze V2, not V1"
+
+    a1_row = db_session.execute(select(ContentApproval).where(ContentApproval.public_id == approval_id)).scalar_one()
+    a2_row = db_session.execute(select(ContentApproval).where(ContentApproval.public_id == approval_id_2)).scalar_one()
+    assert a1_row.content_version_id == v1_row.id, "[REVISION] A1 must remain permanently linked to V1"
+    assert a2_row.content_version_id == v2_row.id, "[REVISION] A2 must be linked to V2"
+    assert a1_row.status.value == "CHANGES_REQUESTED", "[REVISION] A1 must remain unchanged, never overwritten"
+    stale_approvals_against_v1 = db_session.execute(
+        select(func.count()).select_from(ContentApproval).where(ContentApproval.content_version_id == v1_row.id)
+    ).scalar_one()
+    assert stale_approvals_against_v1 == 1, "[REVISION] no second Approval may ever exist against the stale V1"
+
+    # --- Distribution-linked Measurement Evidence (MVP-19B): human-reported
+    # metrics for THIS Distribution — never a claim of attribution/causation.
+    today = datetime.now(timezone.utc).date()
+    evidence_response = client.post(
+        f"{content_path}/distribution/evidence",
+        json={
+            "period_start": (today - timedelta(days=3)).isoformat(),
+            "period_end": today.isoformat(),
+            "values": {"reach": 750, "saves": 30},
+            "client_request_id": next_client_request_id(),
+            "source_reference": "creator dashboard screenshot",
+        },
+        headers=csrf_headers,
+    )
+    assert evidence_response.status_code == 201, f"[EVIDENCE] {evidence_response.text}"
+    evidence_body = evidence_response.json()
+    assert evidence_body["evidence_scope"] == "DISTRIBUTION_SPECIFIC"
+    assert evidence_body["source"] == "MANUAL"
+    assert evidence_body["distribution_id"] == record_distribution_response.json()["distribution"]["id"]
+    assert evidence_body["is_current"] is True
+    evidence_metric_entry_id = evidence_body["metric_entry_id"]
+
+    evidence_list_response = client.get(f"{content_path}/distribution/evidence")
+    assert evidence_list_response.status_code == 200, evidence_list_response.text
+    assert evidence_list_response.json()["total"] == 1
+    assert evidence_list_response.json()["items"][0]["id"] == evidence_body["id"]
+
+    # --- Distribution Evidence Summary (MVP-21): read-only, descriptive,
+    # server-computed — never recomputed by the client, no arithmetic
+    # aggregation across reports.
+    summary_response = client.get(f"{content_path}/distribution/evidence/summary")
+    assert summary_response.status_code == 200, summary_response.text
+    summary_body = summary_response.json()
+    assert summary_body["content_piece_id"] == content_id
+    assert summary_body["distribution_id"] == record_distribution_response.json()["distribution"]["id"]
+    assert summary_body["content_version_id"] == v2_id, "[SUMMARY] must freeze the Distribution's own version (V2), never Piece.latest_version"
+    assert summary_body["channel"] == record_distribution_response.json()["distribution"]["channel"]
+    assert {m["metric_name"] for m in summary_body["metrics"]} == {"reach", "saves"}
+    reach_metric = next(m for m in summary_body["metrics"] if m["metric_name"] == "reach")
+    assert reach_metric["report_count"] == 1
+    assert reach_metric["latest_value"] == "750.0000"
+    assert reach_metric["earliest_value"] == "750.0000"
+    # A correction-chain assertion is deliberately NOT added here — this
+    # journey's later assertions count MetricEntry/AuditEvent rows exactly,
+    # and a correction here would be additive scope creep into an
+    # already-fragile shared test; dedicated correction-chain coverage
+    # lives in tests/test_distribution_evidence_summary_api.py instead.
+
+    # --- Campaign Distribution Evidence Rollup (MVP-22): a real,
+    # end-to-end smoke check that the Campaign-wide route works correctly
+    # against this journey's actual single-Distribution Evidence — never
+    # recomputed by the client, no arithmetic aggregation. A genuine
+    # second, independently-DISTRIBUTED Piece (proving cross-Distribution
+    # membership/report_count/provenance) is deliberately NOT added here:
+    # this journey's own governance assertion later requires the second
+    # bootstrap ContentPiece to remain untouched at DRAFT
+    # ("[GOVERNANCE] the second ContentPiece must remain untouched at
+    # DRAFT"), and advancing it here would break that invariant merely to
+    # duplicate coverage that already exists, independently and more
+    # thoroughly, in tests/test_campaign_distribution_evidence_rollup_api.py.
+    rollup_response = client.get(_campaign_path(fixtures, "/distribution/evidence/summary"))
+    assert rollup_response.status_code == 200, rollup_response.text
+    rollup_body = rollup_response.json()
+    assert rollup_body["campaign_id"] == campaign_id
+    rollup_reach = next(m for m in rollup_body["metrics"] if m["metric_name"] == "reach")
+    assert rollup_reach["report_count"] == 1
+    assert rollup_reach["latest"]["value"] == "750.0000"
+    assert rollup_reach["latest"]["content_piece_id"] == content_id
+    assert rollup_reach["latest"]["distribution_id"] == record_distribution_response.json()["distribution"]["id"]
+    assert rollup_reach["latest"]["content_version_id"] == v2_id
+    assert rollup_reach["latest"]["channel"] == record_distribution_response.json()["distribution"]["channel"]
+
+    # Statuses remain exactly as Distribution left them — Evidence never
+    # touches ContentPiece.status or ContentDistribution.status.
+    unchanged_detail = client.get(content_path)
+    assert unchanged_detail.json()["piece"]["status"] == "DISTRIBUTED"
+    assert unchanged_detail.json()["distribution"]["status"] == "DISTRIBUTED"
+
     # --- Assets (truthful empty) --------------------------------------------------
     assets_response = client.get(_campaign_path(fixtures, f"/content/{content_id}/assets"))
     assert assets_response.status_code == 200, assets_response.text
@@ -173,6 +383,7 @@ def test_full_campaign_journey_from_creation_through_learning_and_settings(
     assert metrics_list_response.status_code == 200, metrics_list_response.text
     persisted_metric_ids = {item["id"] for item in metrics_list_response.json()["items"]}
     assert {baseline_metric_id, current_metric_id} <= persisted_metric_ids, "[METRICS] both entries must be readable via GET"
+    assert evidence_metric_entry_id not in persisted_metric_ids, "[EVIDENCE AGGREGATE ISOLATION] Evidence-linked entry must not appear in the aggregate /metrics listing"
 
     # --- Measurement analysis run ---------------------------------------------------
     analysis_response = client.post(
@@ -201,8 +412,21 @@ def test_full_campaign_journey_from_creation_through_learning_and_settings(
         ).scalars()
     }
     metric_entry_rows = db_session.execute(select(MetricEntry).where(MetricEntry.campaign_id == campaign.id)).scalars().all()
-    assert len(metric_entry_rows) == 2, "[ANALYSIS DB] exactly the two journey MetricEntry rows must exist"
-    assert {row.id for row in metric_entry_rows} == run_entry_ids, "[ANALYSIS DB] the run's own snapshot must reference both real MetricEntries"
+    assert len(metric_entry_rows) == 3, "[ANALYSIS DB] baseline + current aggregate entries + one Evidence-linked entry"
+    assert {row.id for row in metric_entry_rows if row.public_id != evidence_metric_entry_id} == run_entry_ids, (
+        "[ANALYSIS DB] the run's own snapshot must reference exactly the two aggregate MetricEntries"
+    )
+    evidence_entry_row = next(row for row in metric_entry_rows if row.public_id == evidence_metric_entry_id)
+    assert evidence_entry_row.id not in run_entry_ids, "[EVIDENCE ANALYSIS ISOLATION] Evidence-linked entry must never feed the analysis pipeline"
+
+    # --- Distribution-linked Measurement Evidence DB provenance ---------------------
+    evidence_row = db_session.execute(
+        select(DistributionMetricEvidence).where(DistributionMetricEvidence.metric_entry_id == evidence_entry_row.id)
+    ).scalar_one()
+    assert evidence_row.distribution_id is not None
+    assert evidence_row.workspace_id == campaign.workspace_id
+    assert evidence_row.correction_reason is None
+    assert evidence_row.supersedes_evidence_id is None
 
     observations = db_session.execute(
         select(PerformanceObservation).where(PerformanceObservation.campaign_id == campaign.id)
@@ -277,7 +501,51 @@ def test_full_campaign_journey_from_creation_through_learning_and_settings(
         .join(ContentVersion, ContentApproval.content_version_id == ContentVersion.id)
         .where(ContentVersion.content_piece_id.in_([p.id for p in pieces]))
     ).scalar_one()
-    assert approval_count == 0, "[GOVERNANCE] PRODUCED != APPROVED — zero ContentApproval expected"
+    # MVP-20: exactly two now — A1 (CHANGES_REQUESTED, against V1) and A2
+    # (APPROVED, against the revised V2), the journey's own human-in-the-loop
+    # revision cycle. Neither is a stray/unexpected Approval.
+    assert approval_count == 2, "[GOVERNANCE] exactly two ContentApprovals expected — the journey's revision cycle (A1 + A2)"
+
+    version_count = db_session.execute(
+        select(func.count()).select_from(ContentVersion).where(ContentVersion.content_piece_id.in_([p.id for p in pieces]))
+    ).scalar_one()
+    # 2 initial Versions (one per bootstrapped ContentPiece) + 1 revision
+    # Version (V2) created during the journey's own revision cycle.
+    assert version_count == 3, "[GOVERNANCE] exactly three ContentVersions expected (2 initial + 1 revision)"
+
+    approved_piece_count = db_session.execute(
+        select(func.count())
+        .select_from(ContentPiece)
+        .where(ContentPiece.id.in_([p.id for p in pieces]), ContentPiece.status == ContentPieceStatus.DISTRIBUTED)
+    ).scalar_one()
+    assert approved_piece_count == 1, "[GOVERNANCE] exactly one ContentPiece must have reached DISTRIBUTED"
+    distributed_piece = next(piece for piece in pieces if piece.public_id == content_id)
+    other_piece = next(piece for piece in pieces if piece.public_id != content_id)
+    distribution = db_session.execute(select(ContentDistribution).where(ContentDistribution.content_piece_id == distributed_piece.id)).scalar_one()
+    # MVP-20: this Piece now carries two ContentVersions (V1, revised V2)
+    # and two ContentApprovals (A1 CHANGES_REQUESTED, A2 APPROVED) — scope
+    # to the specific Version Distribution actually froze, never "the"
+    # Approval for the whole Piece.
+    approval = db_session.execute(
+        select(ContentApproval).where(ContentApproval.content_version_id == distribution.content_version_id)
+    ).scalar_one()
+    assert distribution.content_version_id == approval.content_version_id
+    assert approval.status.value == "APPROVED"
+    assert distribution.channel == distributed_piece.channel
+    assert distribution.distributed_at is not None
+    assert db_session.execute(select(func.count()).select_from(ContentDistribution).where(ContentDistribution.content_piece_id == other_piece.id)).scalar_one() == 0
+    distribution_events = db_session.execute(select(AuditEvent).where(AuditEvent.distribution_id == distribution.id)).scalars().all()
+    assert {event.event_type for event in distribution_events} == {
+        "content.distribution.ready_recorded", "content.distribution.recorded", "content.piece.status_changed",
+        "measurement.distribution_evidence.recorded",
+    }
+    assert all(event.actor_type is ActorType.USER and event.actor_user_id is not None for event in distribution_events)
+    draft_piece_count = db_session.execute(
+        select(func.count())
+        .select_from(ContentPiece)
+        .where(ContentPiece.id.in_([p.id for p in pieces]), ContentPiece.status == ContentPieceStatus.DRAFT)
+    ).scalar_one()
+    assert draft_piece_count == 1, "[GOVERNANCE] the second ContentPiece must remain untouched at DRAFT"
 
     creative_brief_count = db_session.execute(
         select(func.count()).select_from(CreativeBrief).where(CreativeBrief.content_piece_id.in_([p.id for p in pieces]))

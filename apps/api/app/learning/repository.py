@@ -42,9 +42,32 @@ class LearningCandidateRepository:
 
     def get_by_id(self, learning_candidate_id: uuid.UUID, *, for_update: bool = False) -> LearningCandidate | None:
         if for_update:
-            query = select(LearningCandidate).where(LearningCandidate.id == learning_candidate_id).with_for_update()
+            query = select(LearningCandidate).where(LearningCandidate.id == learning_candidate_id).with_for_update().execution_options(populate_existing=True)
             return self.session.execute(query).scalar_one_or_none()
         return self.session.get(LearningCandidate, learning_candidate_id)
+
+    def get_for_campaign_by_public_id(
+        self, *, campaign_id: uuid.UUID, public_id: str, for_update: bool = False
+    ) -> LearningCandidate | None:
+        """Non-leaky, campaign-scoped resource lookup (MVP-23B, mirrors
+        ``StrategicRecommendationCandidateRepository.get_for_campaign_by_public_id``
+        exactly, one join-hop shallower): a candidate that does not exist at
+        all, that belongs to a different workspace, or that belongs to a
+        different Campaign within the *same* workspace, is indistinguishable
+        — all three return ``None`` here, and the service/router turn that
+        into the same ``ForbiddenError`` either way. ``for_update=True`` is
+        required before any call to ``LearningService.transition_learning_candidate``
+        (MVP-23A §AJ / MVP-23B §8-§9) — state validity must be evaluated
+        against the row loaded under this lock, never against a pre-lock
+        read."""
+        query = (
+            select(LearningCandidate)
+            .join(AnalysisResult, LearningCandidate.analysis_result_id == AnalysisResult.id)
+            .where(AnalysisResult.campaign_id == campaign_id, LearningCandidate.public_id == public_id)
+        )
+        if for_update:
+            query = query.with_for_update(of=LearningCandidate).execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
 
     def list_for_campaign(self, campaign_id: uuid.UUID) -> list[LearningCandidate]:
         """Campaign-scoped, joined through AnalysisResult — never

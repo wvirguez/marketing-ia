@@ -83,3 +83,32 @@ export interface AnalysisResponse {
   signals: PerformanceSignalPublic[];
   analysis_results: AnalysisResultPublic[];
 }
+
+// MVP-22: read-only, Campaign-wide, descriptive, non-causal rollup over
+// current (non-superseded) Distribution Evidence across every eligible
+// Distribution in the Campaign. No sum/average/trend/winner field exists
+// here or on the backend — only cardinality and pure selection by
+// reporting chronology (latest/earliest), each with full provenance back
+// to its real source Distribution/Piece/Version.
+export interface EvidenceObservation {
+  value: string;
+  period_start: string;
+  period_end: string;
+  reported_at: string;
+  content_piece_id: string;
+  distribution_id: string;
+  content_version_id: string;
+  channel: string;
+}
+
+export interface CampaignMetricSummaryItem {
+  metric_name: string;
+  report_count: number;
+  latest: EvidenceObservation;
+  earliest: EvidenceObservation;
+}
+
+export interface CampaignDistributionEvidenceRollupPublic {
+  campaign_id: string;
+  metrics: CampaignMetricSummaryItem[];
+}

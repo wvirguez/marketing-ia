@@ -1,9 +1,3 @@
-// Mirrors apps/api/app/learning/schemas.py exactly (MVP-12C). No field here
-// represents confidence, evidence count, replication status, validation
-// score, or generalization boundary — none of those exist on the backend
-// either. CANDIDATE_IDENTIFIED/PROVISIONAL/VALIDATION_PENDING are NOT
-// validated learning — only VALIDATED is.
-
 export type LearningCandidateStatus =
   | "CANDIDATE_IDENTIFIED"
   | "PROVISIONAL"
@@ -18,6 +12,7 @@ export interface LearningCandidatePublic {
   status: LearningCandidateStatus;
   summary: string;
   created_at: string;
+  qualification: LearningQualificationPublic | null;
 }
 
 export type StrategicRecommendationDecision = "ACCEPTED" | "REJECTED";
@@ -34,4 +29,52 @@ export interface StrategicRecommendationCandidatePublic {
 export interface LearningResponse {
   learning_candidates: LearningCandidatePublic[];
   strategic_recommendation_candidates: StrategicRecommendationCandidatePublic[];
+}
+
+// Human judgments only: confidence is not probability; replication is not system verified.
+export type QualificationConfidence = "LOW" | "MEDIUM" | "HIGH";
+export type ReplicationStatus = "REPLICATION_NOT_ESTABLISHED" | "REPLICATION_EVIDENCE_PRESENT" | "REPLICATION_FAILED";
+export type EvidenceRelationship = "SUPPORTING" | "CONTRADICTING";
+export type EvidenceRemovalReason = "ATTACHMENT_ERROR" | "OTHER";
+export interface QualificationPatch {
+  confidence?: QualificationConfidence | null;
+  replication_status?: ReplicationStatus | null;
+  scope?: string | null;
+  generalization_boundary?: string | null;
+}
+export interface QualificationAttach {
+  performance_signal_id: string;
+  relationship: EvidenceRelationship;
+  note?: string;
+  replication_status?: ReplicationStatus | null;
+}
+export interface QualificationDispose {
+  removal_reason: EvidenceRemovalReason;
+  removal_note: string;
+  replication_status?: ReplicationStatus | null;
+}
+export interface QualificationEvidencePublic {
+  performance_signal_id: string;
+  relationship: EvidenceRelationship;
+  note: string | null;
+  created_at: string;
+  removed_at: string | null;
+  removal_reason: EvidenceRemovalReason | null;
+  removal_note: string | null;
+  removed_by_user_id: string | null;
+  governance_effective: boolean;
+  blocks_validation: boolean;
+}
+export interface LearningQualificationPublic {
+  confidence: QualificationConfidence | null;
+  replication_status: ReplicationStatus | null;
+  consistency_status: "NOT_ASSESSED" | "SUPPORTING_ONLY" | "MIXED" | "CONTRADICTING";
+  scope: string | null;
+  generalization_boundary: string | null;
+  supporting_signal_ids: string[];
+  contradicting_signal_ids: string[];
+  evidence: QualificationEvidencePublic[];
+  validation_blockers: string[];
+  created_at: string;
+  updated_at: string;
 }

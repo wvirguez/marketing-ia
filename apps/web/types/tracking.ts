@@ -19,6 +19,10 @@ export interface TrackingRequirementPublic {
   id: string;
   name: string;
   status: string | null;
+  // MVP-24: identity-only (MVP-24A-R1) — public IDs of the
+  // ContentDistributions this Requirement is declared applicable to.
+  // Never implies verification, firing, or attribution.
+  associated_distribution_ids: string[];
 }
 
 export interface TrackingPlanPublic {

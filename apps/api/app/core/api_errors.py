@@ -232,3 +232,68 @@ class IdempotencyKeyConflictError(ApiError):
 
     def __init__(self, message: str = "client_request_id has already been used for another operation.") -> None:
         super().__init__(message, status_code=409, code="IDEMPOTENCY_KEY_CONFLICT")
+
+
+class ContentApprovalAlreadyOpenError(ApiError):
+    """MVP-17A-R1 concurrency repair: a ContentVersion may have at most
+    one OPEN (REQUESTED/UNDER_REVIEW) ContentApproval at a time — a
+    second ``request_approval`` call while one is already open, whether
+    sequential or genuinely concurrent, is a deterministic conflict,
+    never a silent second row. A genuinely new shape (no existing 409
+    class means "this specific child row is already open" as opposed to
+    "already exists at all" — ``CreativeBriefAlreadyExistsError``'s 0..1
+    lifetime cardinality does not fit, since multiple *terminal*
+    ContentApproval attempts remain valid and expected over time), so
+    this is a narrow, dedicated exception rather than a reuse of a
+    semantically different existing class."""
+
+    def __init__(self, message: str = "An approval is already open for this content.") -> None:
+        super().__init__(message, status_code=409, code="CONTENT_APPROVAL_ALREADY_OPEN")
+
+
+class EvidenceCorrectionTargetStaleError(ApiError):
+    """MVP-19B §12/§13/§31: a DistributionMetricEvidence correction may
+    target only the current leaf of its correction chain (the row with no
+    successor yet) — a second correction attempt against an already-
+    superseded row, whether sequential or genuinely concurrent, is a
+    deterministic conflict, never a silent branching chain. Distinct from
+    ``IdempotencyKeyConflictError`` (reserved for a ``client_request_id``
+    collision against a different logical request) — this is reserved for
+    a structurally stale *target*, regardless of the correction's own key."""
+
+    def __init__(self, message: str = "This Evidence has already been superseded by a later correction.") -> None:
+        super().__init__(message, status_code=409, code="EVIDENCE_CORRECTION_TARGET_STALE")
+
+
+class EvidencePeriodInvalidError(ApiError):
+    """MVP-19B §17: ``period_end`` must fall on or after the Distribution's
+    own ``distributed_at`` UTC calendar date — a fact only the server
+    knows (the Distribution row), so this cannot be expressed as a pure
+    Pydantic field validator on the request body alone."""
+
+    def __init__(self, message: str = "period_end must be on or after the date this content was distributed.") -> None:
+        super().__init__(message, status_code=422, code="EVIDENCE_PERIOD_INVALID")
+
+
+class TrackingRequirementAlreadyAssociatedError(ApiError):
+    """MVP-24: a (ContentDistribution, TrackingRequirement) pair may exist
+    at most once (``uq_content_distribution_tracking_requirements_pair``)
+    — a second association attempt for the same pair, whether sequential
+    or genuinely concurrent, is a deterministic conflict, never a silent
+    duplicate/no-op. The mapped, deterministic surface for the resulting
+    ``IntegrityError``, the same "second attempt is a conflict" pattern
+    ``TrackingPlanAlreadyExistsError``/``CreativeBriefAlreadyExistsError``
+    already establish."""
+
+    def __init__(self, message: str = "This Tracking Requirement is already associated with this Distribution.") -> None:
+        super().__init__(message, status_code=409, code="TRACKING_REQUIREMENT_ALREADY_ASSOCIATED")
+
+
+class TrackingRequirementNotAssociatedError(ApiError):
+    """MVP-24: removing an association that does not exist is a
+    deterministic business-state conflict, never a silent no-op — mirrors
+    ``RecommendationAlreadyDecidedError``'s own "nothing to do, but say so
+    explicitly" precedent rather than treating a missing pair as success."""
+
+    def __init__(self, message: str = "This Tracking Requirement is not associated with this Distribution.") -> None:
+        super().__init__(message, status_code=409, code="TRACKING_REQUIREMENT_NOT_ASSOCIATED")

@@ -61,6 +61,7 @@ def build_validated_learning_candidate(session, **overrides: object):
     service = LearningService(session)
     service.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.PROVISIONAL)
     service.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATION_PENDING)
+    seed_sufficient_qualification(session, candidate)
     service.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATED)
     return campaign, analysis_result, candidate
 
@@ -76,3 +77,14 @@ def build_recommendation(session, **overrides: object):
 @pytest.fixture()
 def learning_campaign(db_session):
     return build_campaign_run_with_stages(db_session, campaign_name="Learning Campaign")
+
+
+def seed_sufficient_qualification(session, candidate):
+    """Explicit qualified fixture for post-MVP25 decisions; no production bypass."""
+    from app.learning.models import LearningQualification, QualificationConfidence
+    row = LearningQualification(workspace_id=candidate.workspace_id, learning_candidate_id=candidate.id,
+        confidence=QualificationConfidence.LOW, scope="Observed campaign and period only",
+        generalization_boundary="No inference beyond this audience and channel")
+    session.add(row)
+    session.commit()
+    return row

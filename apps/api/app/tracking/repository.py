@@ -65,6 +65,22 @@ class TrackingRequirementRepository:
         self.session.flush()
         return row
 
+    def list_for_ids(self, tracking_requirement_ids: list[uuid.UUID]) -> list[TrackingRequirement]:
+        """MVP-24: batched lookup for resolving a set of internal ids to
+        their public representations (e.g. an association list) in a
+        single query — mirrors ``ContentVersionRepository.list_for_ids``'s
+        own batched-lookup precedent. Empty input returns empty output
+        without issuing a query."""
+        if not tracking_requirement_ids:
+            return []
+        return list(
+            self.session.execute(
+                select(TrackingRequirement).where(TrackingRequirement.id.in_(tracking_requirement_ids))
+            )
+            .scalars()
+            .all()
+        )
+
     def count_for_plan(self, *, tracking_plan_id: uuid.UUID) -> int:
         return self.session.execute(
             select(func.count()).select_from(TrackingRequirement).where(TrackingRequirement.tracking_plan_id == tracking_plan_id)

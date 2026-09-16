@@ -1,10 +1,14 @@
 "use client";
 
-// MVP-07B: real, read-only Assets section for Content detail. Fetches
-// GET /campaigns/{campaignId}/content/{contentId}/assets directly — the
-// only Assets endpoint that exists (apps/api/app/assets/router.py); no
-// write capability of any kind is exposed by the backend, so this
-// component never mutates, generates, uploads, or archives anything.
+// MVP-07B: real Assets section for Content detail.
+// MVP-16B: adds the write capability (create Creative Brief, create Asset
+// with its atomic initial Version, append additional Versions) on top of
+// the original read-only GET. Every mutation goes through the real,
+// authenticated, CSRF-protected backend routes
+// (apps/api/app/assets/router.py) — there is no optimistic/fake state
+// anywhere in this file: every write replaces local state with the exact
+// `AssetsForContentPieceResponse` the server returned, and a failed write
+// leaves the last confirmed server state untouched.
 //
 // Hard invariants preserved throughout (apps/api/app/assets/models.py):
 // CREATIVE BRIEF != ASSET. ASSET != ASSET VERSION. ASSET STATUS != CONTENT
@@ -12,18 +16,26 @@
 // is rendered as plain descriptive text, never as the colored `.status`
 // pill used elsewhere for ContentPiece/Campaign governance state, and
 // `storage_reference` is rendered as inert text, never as a clickable
-// link — the backend supplies no URL, mime type, or file name, only an
-// opaque reference string (§19/§23 of the BACKEND-13 Governance Freeze).
+// link, and never collected under a "URL" label — the backend supplies
+// no URL, mime type, or file name, only an opaque external/storage
+// reference string that may or may not be a URL (§12/§23 of the
+// BACKEND-13 Governance Freeze; MVP-16A §Y).
 //
-// ASSET PRODUCTION GAP (preserved, not solved here): no production caller
-// currently creates CreativeBrief/Asset/AssetVersion rows, so every real
-// campaign today returns `{ creative_brief: null, assets: [] }` — the
-// empty state below is written to be truthful about that, not to imply
-// generation is pending, in progress, or failed.
+// ASSET PRODUCTION GAP: resolved by MVP-16B for the create/append path —
+// a real content piece can now obtain a Creative Brief, register Assets,
+// and append Versions via the actions below. `status`/`metadata` remain
+// unwritable from this form (MVP-16A §Z/§AA — no public mutation path for
+// either exists yet); Archive remains unexposed (MVP-16A §V — deferred).
+//
+// Single-flight: at most one Assets mutation may be in flight at a time
+// from this section — every write control is disabled while any one
+// mutation is pending, mirroring TrackingPanel's own section-global lock.
+// This is a same-section double-submit guard only; it does not and
+// cannot protect against two separate tabs, devices, or API clients.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { Icon } from "@/components/ui/icon";
-import { getAssetsForContent } from "@/lib/api/assets";
+import { createAsset, createAssetVersion, createCreativeBrief, getAssetsForContent } from "@/lib/api/assets";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { formatCampaignDate } from "@/lib/campaigns/status";
 import type { AssetPublic, AssetsForContentPieceResponse } from "@/types/assets";
@@ -38,6 +50,12 @@ const EMPTY_SECONDARY_COPY =
   "Esta sección muestra las creatividades y sus activos persistidos cuando existen.";
 const NO_ASSETS_WITH_BRIEF_COPY = "No hay activos registrados para este brief todavía.";
 const NO_VERSION_COPY = "Este activo no tiene una versión registrada disponible.";
+const REFERENCE_LABEL = "Referencia externa (opcional)";
+const CREATE_BRIEF_LABEL = "Crear brief creativo";
+const CREATE_ASSET_LABEL = "Registrar activo";
+const ADD_VERSION_LABEL = "Añadir versión";
+const KIND_MAX_LENGTH = 100;
+const REFERENCE_MAX_LENGTH = 2048;
 
 // Local, minimal recursive renderer for opaque JSON (CreativeBrief.spec,
 // AssetVersion.metadata) — mirrors ContentDetailView's own JsonValue
@@ -78,8 +96,24 @@ function JsonValue({ value }: { value: unknown }): ReactElement {
   return <span style={{ whiteSpace: "pre-wrap" }}>{String(value)}</span>;
 }
 
-function AssetCard({ asset }: { asset: AssetPublic }) {
+function AssetCard({
+  asset,
+  pending,
+  onAppendVersion,
+}: {
+  asset: AssetPublic;
+  pending: boolean;
+  onAppendVersion: (assetId: string, storageReference: string | undefined) => void;
+}) {
   const version = asset.current_version;
+  const [referenceDraft, setReferenceDraft] = useState("");
+
+  function submit() {
+    const trimmed = referenceDraft.trim();
+    onAppendVersion(asset.id, trimmed.length === 0 ? undefined : trimmed);
+    setReferenceDraft("");
+  }
+
   return (
     <article className="panel deliverable-card">
       <span className="deliverable-icon">
@@ -113,10 +147,10 @@ function AssetCard({ asset }: { asset: AssetPublic }) {
               <dd style={{ margin: 0 }}>{formatCampaignDate(version.created_at)}</dd>
             </div>
             <div style={{ marginTop: 8 }}>
-              <dt className="muted small-text">Referencia de almacenamiento</dt>
+              <dt className="muted small-text">{REFERENCE_LABEL}</dt>
               {/* Inert text only — never rendered as a link. The backend
-                  supplies no URL, so this string cannot be assumed to be
-                  reachable or downloadable. */}
+                  supplies no URL; this string is an opaque reference that
+                  may or may not be a URL. */}
               <dd style={{ margin: 0 }}>{version.storage_reference ?? <span className="muted small-text">—</span>}</dd>
             </div>
             <div style={{ marginTop: 8 }}>
@@ -129,13 +163,116 @@ function AssetCard({ asset }: { asset: AssetPublic }) {
         ) : (
           <p className="muted small-text">{NO_VERSION_COPY}</p>
         )}
+
+        <div className="settings-fields" style={{ marginTop: 12 }}>
+          <input
+            type="text"
+            value={referenceDraft}
+            maxLength={REFERENCE_MAX_LENGTH}
+            placeholder={REFERENCE_LABEL}
+            disabled={pending}
+            onChange={(event) => setReferenceDraft(event.target.value)}
+            aria-label={`${REFERENCE_LABEL} para ${asset.kind}`}
+          />
+          <button type="button" className="button" disabled={pending} onClick={submit}>
+            {ADD_VERSION_LABEL}
+          </button>
+        </div>
       </div>
     </article>
   );
 }
 
+function CreateCreativeBriefForm({ pending, onSubmit }: { pending: boolean; onSubmit: (summary: string) => void }) {
+  const [draft, setDraft] = useState("");
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    const trimmed = draft.trim();
+    if (trimmed.length === 0) return;
+    onSubmit(trimmed);
+  }
+
+  return (
+    <form className="panel settings-form" onSubmit={handleSubmit}>
+      <div className="settings-field">
+        <label htmlFor="creative-brief-summary">Resumen del brief</label>
+        <input
+          id="creative-brief-summary"
+          type="text"
+          value={draft}
+          disabled={pending}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+      </div>
+      <div className="settings-form-actions" style={{ marginTop: 8 }}>
+        <button type="submit" className="button primary" disabled={pending || draft.trim().length === 0}>
+          {CREATE_BRIEF_LABEL}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function CreateAssetForm({
+  pending,
+  onSubmit,
+}: {
+  pending: boolean;
+  onSubmit: (kind: string, storageReference: string | undefined) => void;
+}) {
+  const [kindDraft, setKindDraft] = useState("");
+  const [referenceDraft, setReferenceDraft] = useState("");
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    const kind = kindDraft.trim();
+    if (kind.length === 0) return;
+    const reference = referenceDraft.trim();
+    onSubmit(kind, reference.length === 0 ? undefined : reference);
+    setKindDraft("");
+    setReferenceDraft("");
+  }
+
+  return (
+    <form className="panel settings-form" onSubmit={handleSubmit}>
+      <div className="settings-fields">
+        <div className="settings-field">
+          <label htmlFor="asset-kind">Tipo de activo</label>
+          <input
+            id="asset-kind"
+            type="text"
+            value={kindDraft}
+            maxLength={KIND_MAX_LENGTH}
+            disabled={pending}
+            onChange={(event) => setKindDraft(event.target.value)}
+          />
+        </div>
+        <div className="settings-field">
+          <label htmlFor="asset-reference">{REFERENCE_LABEL}</label>
+          <input
+            id="asset-reference"
+            type="text"
+            value={referenceDraft}
+            maxLength={REFERENCE_MAX_LENGTH}
+            disabled={pending}
+            onChange={(event) => setReferenceDraft(event.target.value)}
+          />
+        </div>
+      </div>
+      <div className="settings-form-actions" style={{ marginTop: 8 }}>
+        <button type="submit" className="button primary" disabled={pending || kindDraft.trim().length === 0}>
+          {CREATE_ASSET_LABEL}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function ContentAssetsSection({ campaignId, contentId }: { campaignId: string; contentId: string }) {
   const [state, setState] = useState<State>({ status: "loading" });
+  const [pending, setPending] = useState(false);
+  const [mutationError, setMutationError] = useState("");
 
   // Manual retry (button click, not an effect) — no cancellation guard
   // needed for a one-off user-initiated action, matching
@@ -160,6 +297,20 @@ export function ContentAssetsSection({ campaignId, contentId }: { campaignId: st
       cancelled = true;
     };
   }, [campaignId, contentId]);
+
+  async function runMutation(action: () => Promise<AssetsForContentPieceResponse>) {
+    if (pending) return;
+    setPending(true);
+    setMutationError("");
+    try {
+      const data = await action();
+      setState({ status: "ready", data });
+    } catch (error) {
+      setMutationError(describeCampaignError(error));
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <>
@@ -194,21 +345,17 @@ export function ContentAssetsSection({ campaignId, contentId }: { campaignId: st
         const { creative_brief: creativeBrief, assets } = state.data;
         const fullyEmpty = creativeBrief === null && assets.length === 0;
 
-        if (fullyEmpty) {
-          return (
-            <section className="panel workspace-empty">
-              <span className="workspace-empty-symbol">
-                <Icon name="image" size={32} />
-              </span>
-              <h3>{EMPTY_COPY}</h3>
-              <p className="muted small-text">{EMPTY_SECONDARY_COPY}</p>
-            </section>
-          );
-        }
-
         return (
           <>
-            {creativeBrief !== null && (
+            {creativeBrief === null ? (
+              <section className="panel workspace-empty">
+                <span className="workspace-empty-symbol">
+                  <Icon name="image" size={32} />
+                </span>
+                <h3>{EMPTY_COPY}</h3>
+                <p className="muted small-text">{EMPTY_SECONDARY_COPY}</p>
+              </section>
+            ) : (
               <section className="panel">
                 <div className="section-heading">
                   <h3>Brief creativo</h3>
@@ -217,16 +364,55 @@ export function ContentAssetsSection({ campaignId, contentId }: { campaignId: st
               </section>
             )}
 
-            {assets.length === 0 ? (
-              <section className="panel">
-                <p className="muted small-text">{NO_ASSETS_WITH_BRIEF_COPY}</p>
-              </section>
-            ) : (
-              <div className="deliverables-grid">
-                {assets.map((asset) => (
-                  <AssetCard key={asset.id} asset={asset} />
-                ))}
+            {creativeBrief === null && (
+              <div style={{ marginTop: 16 }}>
+                <CreateCreativeBriefForm
+                  pending={pending}
+                  onSubmit={(summary) => runMutation(() => createCreativeBrief(campaignId, contentId, { summary }))}
+                />
               </div>
+            )}
+
+            {!fullyEmpty && (
+              <>
+                {assets.length === 0 ? (
+                  <section className="panel" style={{ marginTop: 16 }}>
+                    <p className="muted small-text">{NO_ASSETS_WITH_BRIEF_COPY}</p>
+                  </section>
+                ) : (
+                  <div className="deliverables-grid" style={{ marginTop: 16 }}>
+                    {assets.map((asset) => (
+                      <AssetCard
+                        key={asset.id}
+                        asset={asset}
+                        pending={pending}
+                        onAppendVersion={(assetId, storageReference) =>
+                          runMutation(() =>
+                            createAssetVersion(campaignId, contentId, assetId, { storage_reference: storageReference }),
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {creativeBrief !== null && (
+              <div style={{ marginTop: 16 }}>
+                <CreateAssetForm
+                  pending={pending}
+                  onSubmit={(kind, storageReference) =>
+                    runMutation(() => createAsset(campaignId, contentId, { kind, storage_reference: storageReference }))
+                  }
+                />
+              </div>
+            )}
+
+            {mutationError && (
+              <p role="alert" className="settings-feedback">
+                {mutationError}
+              </p>
             )}
           </>
         );

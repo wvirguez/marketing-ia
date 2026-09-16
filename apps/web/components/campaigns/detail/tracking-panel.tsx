@@ -152,6 +152,14 @@ function RequirementRow({
         ) : (
           <p className="muted small-text">{requirement.status ?? NO_REQUIREMENT_STATUS_COPY}</p>
         )}
+        {/* MVP-24: identity-only (MVP-24A-R1) — Distribution public IDs
+            only, never a claim that tracking fired or was verified for
+            them. */}
+        {requirement.associated_distribution_ids.length > 0 && (
+          <p className="muted small-text" style={{ marginTop: 8 }}>
+            Distribuciones asociadas: {requirement.associated_distribution_ids.join(", ")}
+          </p>
+        )}
       </div>
     </article>
   );

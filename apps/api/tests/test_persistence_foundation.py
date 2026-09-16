@@ -101,7 +101,11 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     (MVP-11B) — and the Measurement -> Learning bridge's own provenance
     table, LearningDerivation (MVP-12B-A/-R1), which is purely additive
     and never adds a column to learning_candidates/analysis_results
-    themselves — all exist, plus the BACKEND-03 infrastructure probe. No
+    themselves — all exist, plus the MVP-24 ContentDistribution <->
+    TrackingRequirement identity-only association table
+    (content_distribution_tracking_requirements — MVP-24A-R1: no
+    Requirement/Plan status snapshot column, no version column, no
+    history table), plus the BACKEND-03 infrastructure probe. No
     Content Revision Request/Distribution/Paid Media/Measurement Cycle/
     Performance Snapshot/Strategic Decision/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
@@ -145,6 +149,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "content_pieces",
         "content_versions",
         "content_approvals",
+        "content_distributions",
         "metric_entries",
         "metric_values",
         "performance_observations",
@@ -159,6 +164,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "learning_candidates",
         "strategic_recommendation_candidates",
         "learning_derivations",
+        "learning_qualifications",
+        "learning_qualification_signals",
         "tracking_plans",
         "tracking_requirements",
         "measurement_analysis_runs",
@@ -168,6 +175,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "measurement_analysis_run_observation_usages",
         "measurement_analysis_run_signal_usages",
         "measurement_analysis_run_results",
+        "distribution_metric_evidence",
+        "content_distribution_tracking_requirements",
     }
 
 

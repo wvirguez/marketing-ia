@@ -7,6 +7,7 @@
 import { request } from "@/lib/api/client";
 import type {
   AnalysisResponse,
+  CampaignDistributionEvidenceRollupPublic,
   MeasurementAnalysisRunPublic,
   MeasurementAnalysisRunTriggerRequest,
   MetricEntryListResponse,
@@ -44,4 +45,13 @@ export async function triggerCampaignAnalysis(
     method: "POST",
     body: payload,
   });
+}
+
+export async function getCampaignDistributionEvidenceRollup(
+  campaignPublicId: string,
+): Promise<CampaignDistributionEvidenceRollupPublic> {
+  return request<CampaignDistributionEvidenceRollupPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/distribution/evidence/summary`,
+    { method: "GET" },
+  );
 }

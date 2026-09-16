@@ -1,5 +1,6 @@
 """Audit attribution and atomicity for Assets persistence (BACKEND-13
-§18/§19). All marked `postgres`.
+§18/§19; HTTP-triggered creation attribution added by MVP-16B). All
+marked `postgres`.
 """
 
 from __future__ import annotations
@@ -8,13 +9,17 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session as OrmSession
 
 from app.assets.models import Asset, AssetVersion, CreativeBrief
 from app.assets.repository import AssetVersionRepository
 from app.assets.service import AssetsService
-from app.audit.models import AuditEvent
+from app.audit.models import ActorType, AuditEvent
 from app.audit.repository import AuditEventRepository
+from app.content.service import ContentService
+from app.persistence.session import get_engine
 from tests.assetstest import build_asset, build_content_piece, build_creative_brief, default_asset_fields, default_creative_brief_spec
+from tests.test_assets_api import _assets_path, _record_content_piece, campaign_client_with_stages
 
 pytestmark = pytest.mark.postgres
 
@@ -154,3 +159,85 @@ def test_audit_failure_rolls_back_the_archive(db_session) -> None:
     db_session.rollback()
     db_session.refresh(asset)
     assert asset.archived_at is None
+
+
+# --- HTTP-triggered creation attribution (MVP-16B) --------------------
+
+
+def test_http_created_creative_brief_is_attributed_to_the_real_user_not_system(
+    campaign_client_with_stages: dict,
+) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    response = fixtures["client"].post(
+        f"{_assets_path(fixtures, content_public_id)}/creative-brief",
+        json={"spec": {}},
+        headers={"X-CSRF-Token": fixtures["csrf_token"]},
+    )
+    assert response.status_code == 201, response.text
+
+    with OrmSession(bind=get_engine()) as session:
+        brief = session.execute(
+            select(CreativeBrief).where(CreativeBrief.content_piece_id.isnot(None))
+        ).scalars().all()
+        # Scoped precisely: the brief just created for this content piece.
+        piece = ContentService(session).pieces.get_by_public_id(content_public_id)
+        matching = [b for b in brief if b.content_piece_id == piece.id]
+        assert len(matching) == 1
+        events = session.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "assets.creative_brief.recorded", AuditEvent.creative_brief_id == matching[0].id
+            )
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None
+
+
+def test_http_created_asset_is_attributed_to_the_real_user_not_system(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    response = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    assert response.status_code == 201, response.text
+    asset_public_id = response.json()["assets"][0]["id"]
+
+    with OrmSession(bind=get_engine()) as session:
+        asset = session.execute(select(Asset).where(Asset.public_id == asset_public_id)).scalar_one()
+        events = session.execute(
+            select(AuditEvent).where(AuditEvent.event_type == "assets.asset.recorded", AuditEvent.asset_id == asset.id)
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None
+
+
+def test_http_appended_asset_version_is_attributed_to_the_real_user_not_system(
+    campaign_client_with_stages: dict,
+) -> None:
+    fixtures = campaign_client_with_stages
+    content_public_id = _record_content_piece(fixtures)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+    path = _assets_path(fixtures, content_public_id)
+    fixtures["client"].post(f"{path}/creative-brief", json={"spec": {}}, headers=headers)
+    created = fixtures["client"].post(path, json={"kind": "image"}, headers=headers)
+    asset_public_id = created.json()["assets"][0]["id"]
+
+    response = fixtures["client"].post(f"{path}/{asset_public_id}/versions", json={}, headers=headers)
+    assert response.status_code == 201, response.text
+
+    with OrmSession(bind=get_engine()) as session:
+        asset = session.execute(select(Asset).where(Asset.public_id == asset_public_id)).scalar_one()
+        versions = session.execute(select(AssetVersion).where(AssetVersion.asset_id == asset.id)).scalars().all()
+        assert len(versions) == 2
+        latest = max(versions, key=lambda v: (v.created_at, v.id))
+        events = session.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "assets.asset_version.recorded", AuditEvent.asset_version_id == latest.id
+            )
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None

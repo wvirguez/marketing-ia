@@ -13,14 +13,17 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased
 
 from app.campaigns.models import Campaign
+from app.content.models import ContentBrief, ContentDistribution, ContentPiece
 from app.core.ids import generate_public_id
+from app.planning.models import ContentPlan
 from app.measurement.models import (
     AnalysisResult,
     AnalysisResultSignal,
+    DistributionMetricEvidence,
     MeasurementAnalysisRun,
     MeasurementAnalysisRunMetricEntry,
     MeasurementAnalysisRunObservationUsage,
@@ -80,15 +83,41 @@ class MetricEntryRepository:
     def get_by_id(self, entry_id: uuid.UUID) -> MetricEntry | None:
         return self.session.get(MetricEntry, entry_id)
 
+    def list_for_ids(self, entry_ids: list[uuid.UUID]) -> list[MetricEntry]:
+        """MVP-22: batched lookup for the Campaign Distribution Evidence
+        Rollup, mirroring ``MetricValueRepository.list_for_entries``'s own
+        shape — avoids an Evidence-count-dependent per-row ``get_by_id``
+        loop once membership spans an entire Campaign rather than one
+        Distribution."""
+        if not entry_ids:
+            return []
+        return list(self.session.execute(select(MetricEntry).where(MetricEntry.id.in_(entry_ids))).scalars().all())
+
     def list_for_campaign(self, campaign_id: uuid.UUID) -> list[MetricEntry]:
         """Full history, every correction preserved — ordered so the
         caller can determine "current per grouping" itself, or the
         service layer can annotate ``is_current`` (Phase 1B §M: no
-        stored/mutable current pointer exists)."""
+        stored/mutable current pointer exists).
+
+        MVP-19B §37/§39 (mandatory aggregate/analysis isolation): excludes
+        any MetricEntry owned by a ``DistributionMetricEvidence`` row — this
+        is the single query both the ``GET /metrics`` aggregate listing and
+        the Measurement Analysis pipeline's ``_select_current_metric_
+        entries`` share, so filtering here closes both surfaces at once,
+        with no risk of the two drifting apart. A direct id/public_id/
+        request_id lookup (``get_by_id``/``get_by_public_id``/
+        ``get_by_workspace_and_request_id``) is deliberately NOT filtered —
+        Evidence's own idempotency/detail-fetch paths need to resolve their
+        own MetricEntry by id regardless of this exclusion."""
         return list(
             self.session.execute(
                 select(MetricEntry)
-                .where(MetricEntry.campaign_id == campaign_id)
+                .where(
+                    MetricEntry.campaign_id == campaign_id,
+                    ~select(DistributionMetricEvidence.id)
+                    .where(DistributionMetricEvidence.metric_entry_id == MetricEntry.id)
+                    .exists(),
+                )
                 .order_by(
                     MetricEntry.period_start.asc(),
                     MetricEntry.period_end.asc(),
@@ -497,3 +526,151 @@ class MeasurementAnalysisRunResultRepository:
         return self.session.execute(
             select(MeasurementAnalysisRunResult).where(MeasurementAnalysisRunResult.analysis_run_id == run_id)
         ).scalar_one_or_none()
+
+
+# --- Distribution-linked Measurement Evidence — MVP-19B --------------------
+
+
+class DistributionMetricEvidenceRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        distribution: ContentDistribution,
+        metric_entry: MetricEntry,
+        created_by_user_id: uuid.UUID,
+        source_reference: str | None = None,
+        supersedes: DistributionMetricEvidence | None = None,
+        correction_reason: str | None = None,
+    ) -> DistributionMetricEvidence:
+        row = DistributionMetricEvidence(
+            public_id=generate_public_id("DME"),
+            workspace_id=distribution.workspace_id,
+            distribution_id=distribution.id,
+            metric_entry_id=metric_entry.id,
+            supersedes_evidence_id=supersedes.id if supersedes is not None else None,
+            created_by_user_id=created_by_user_id,
+            source_reference=source_reference,
+            correction_reason=correction_reason,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_public_id(self, public_id: str, *, for_update: bool = False) -> DistributionMetricEvidence | None:
+        query = select(DistributionMetricEvidence).where(DistributionMetricEvidence.public_id == public_id)
+        if for_update:
+            query = query.with_for_update()
+        return self.session.execute(query).scalar_one_or_none()
+
+    def get_by_id(self, evidence_id: uuid.UUID) -> DistributionMetricEvidence | None:
+        return self.session.get(DistributionMetricEvidence, evidence_id)
+
+    def get_by_metric_entry_id(self, metric_entry_id: uuid.UUID) -> DistributionMetricEvidence | None:
+        return self.session.execute(
+            select(DistributionMetricEvidence).where(DistributionMetricEvidence.metric_entry_id == metric_entry_id)
+        ).scalar_one_or_none()
+
+    def get_successor(self, evidence_id: uuid.UUID) -> DistributionMetricEvidence | None:
+        """MVP-19B §56: "current" (no successor yet) is always derived at
+        read time from the ``UNIQUE(supersedes_evidence_id)`` relationship
+        itself, never a stored flag."""
+        return self.session.execute(
+            select(DistributionMetricEvidence).where(DistributionMetricEvidence.supersedes_evidence_id == evidence_id)
+        ).scalar_one_or_none()
+
+    def list_superseded_ids_for_distribution(self, distribution_id: uuid.UUID) -> set[uuid.UUID]:
+        """Every Evidence id, within this Distribution, that some other row
+        already supersedes — used to derive ``is_current`` for every row on
+        a listing page without an N+1 query per row."""
+        return set(
+            self.session.execute(
+                select(DistributionMetricEvidence.supersedes_evidence_id).where(
+                    DistributionMetricEvidence.distribution_id == distribution_id,
+                    DistributionMetricEvidence.supersedes_evidence_id.is_not(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_current_for_distribution(self, distribution_id: uuid.UUID) -> list[DistributionMetricEvidence]:
+        """MVP-21/MVP-21A-R1 §E/§F: the sole authoritative current-Evidence
+        primitive for the Distribution Evidence Summary — a single SELECT
+        with a correlated ``NOT EXISTS`` anti-join (the same shape as
+        ``MetricEntryRepository.list_for_campaign``'s own anti-join, applied
+        here to ``supersedes_evidence_id`` instead), so the entire
+        current-membership decision is resolved within one statement
+        snapshot. Unlike ``list_superseded_ids_for_distribution`` + a
+        separate item fetch, this cannot observe a hybrid state where a
+        concurrent correction's predecessor is excluded but its successor
+        was never fetched (MVP-21A-R1 §D). Unpaginated by design — the
+        summary must cover every current row, never one page."""
+        successor = aliased(DistributionMetricEvidence)
+        return list(
+            self.session.execute(
+                select(DistributionMetricEvidence)
+                .where(
+                    DistributionMetricEvidence.distribution_id == distribution_id,
+                    ~select(successor.id).where(successor.supersedes_evidence_id == DistributionMetricEvidence.id).exists(),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_current_for_campaign(
+        self, campaign_id: uuid.UUID
+    ) -> list[tuple[DistributionMetricEvidence, ContentDistribution, ContentPiece]]:
+        """MVP-22/MVP-22A §I: the sole authoritative Campaign-wide
+        current-Evidence primitive for the Campaign Distribution Evidence
+        Rollup — one SELECT, joined through the exact tenant-safe
+        traversal ``ContentPieceRepository.list_for_campaign`` already
+        established (``ContentPiece -> ContentBrief -> ContentPlan ->
+        Campaign``), with the identical correlated ``NOT EXISTS`` anti-join
+        ``list_current_for_distribution`` already uses. Selecting
+        ``ContentDistribution``/``ContentPiece`` alongside the Evidence row
+        in the same statement gives full provenance (public id, channel,
+        frozen content_version_id) at zero extra query cost — no
+        per-Distribution loop, no per-row provenance query, one statement
+        snapshot spanning every eligible Distribution in the Campaign."""
+        successor = aliased(DistributionMetricEvidence)
+        return list(
+            self.session.execute(
+                select(DistributionMetricEvidence, ContentDistribution, ContentPiece)
+                .join(ContentDistribution, ContentDistribution.id == DistributionMetricEvidence.distribution_id)
+                .join(ContentPiece, ContentPiece.id == ContentDistribution.content_piece_id)
+                .join(ContentBrief, ContentBrief.id == ContentPiece.content_brief_id)
+                .join(ContentPlan, ContentPlan.id == ContentBrief.content_plan_id)
+                .where(
+                    ContentPlan.campaign_id == campaign_id,
+                    ~select(successor.id)
+                    .where(successor.supersedes_evidence_id == DistributionMetricEvidence.id)
+                    .exists(),
+                )
+            )
+            .all()
+        )
+
+    def list_for_distribution(
+        self, *, distribution_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[DistributionMetricEvidence], int]:
+        total = self.session.execute(
+            select(func.count())
+            .select_from(DistributionMetricEvidence)
+            .where(DistributionMetricEvidence.distribution_id == distribution_id)
+        ).scalar_one()
+        items = list(
+            self.session.execute(
+                select(DistributionMetricEvidence)
+                .where(DistributionMetricEvidence.distribution_id == distribution_id)
+                .order_by(DistributionMetricEvidence.created_at.desc(), DistributionMetricEvidence.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .scalars()
+            .all()
+        )
+        return items, total

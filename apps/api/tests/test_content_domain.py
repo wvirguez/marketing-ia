@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.content.models import ContentApproval, ContentBrief, ContentPiece, ContentPieceStatus, ContentVersion, ContentApprovalStatus
@@ -194,9 +195,12 @@ def test_content_approval_status_enum_membership_is_exact() -> None:
 
 
 def test_request_approval_creates_requested_status(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    _piece, version = _record_piece(db_session, brief)
-    approval = ContentService(db_session).request_approval(content_version=version)
+    piece, version = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     assert approval.public_id.startswith("APR-")
     assert approval.status is ContentApprovalStatus.REQUESTED
     assert approval.content_version_id == version.id
@@ -271,21 +275,30 @@ def test_mark_produced_illegal_from_draft_is_rejected(content_campaign, db_sessi
         ContentService(db_session).mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
 
 
-def test_mark_in_production_legal_from_revision_requested(content_campaign, db_session) -> None:
-    """Governance Freeze §12: one method covers both DRAFT and
-    REVISION_REQUESTED sources, since both target IN_PRODUCTION."""
+def test_mark_in_production_forbidden_from_revision_requested(content_campaign, db_session) -> None:
+    """MVP-20A-R1 (CONTENT-P0-6): supersedes the prior Governance Freeze
+    §12 expectation. ``REVISION_REQUESTED -> IN_PRODUCTION`` remains a
+    legal edge in the transition graph (``create_revision_version`` uses
+    it), but the generic ``mark_in_production`` command is now
+    deliberately narrower than the graph and must reject this source —
+    otherwise a Piece could reach IN_PRODUCTION (and eventually
+    READY_FOR_REVIEW again) after CHANGES_REQUESTED without ever creating
+    a new ContentVersion, recreating the exact same-version-reapproval
+    defect MVP-20 exists to close."""
     campaign, _run, _stages, _plan, _item = content_campaign
     brief = _record_brief(db_session, content_campaign)
     piece, _v = _record_piece(db_session, brief)
     # Force the piece into REVISION_REQUESTED by direct mutation for this
-    # narrow test — no code path in this codebase reaches it automatically
-    # (Governance Freeze §13/§25).
+    # narrow test — the only production path there is via CHANGES_REQUESTED,
+    # exercised end-to-end in test_content_api.py's HTTP-level regression.
     piece.status = ContentPieceStatus.REVISION_REQUESTED
     db_session.flush()
-    updated = ContentService(db_session).mark_in_production(
-        workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id
-    )
-    assert updated.status is ContentPieceStatus.IN_PRODUCTION
+    with pytest.raises(InvalidLifecycleTransitionError):
+        ContentService(db_session).mark_in_production(
+            workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id
+        )
+    db_session.refresh(piece)
+    assert piece.status is ContentPieceStatus.REVISION_REQUESTED
 
 
 def test_transition_of_unknown_piece_is_forbidden(content_campaign, db_session) -> None:
@@ -334,7 +347,7 @@ def test_archive_illegal_from_draft(content_campaign, db_session) -> None:
 def test_content_service_exposes_no_decision_making_or_deferred_methods() -> None:
     forbidden_methods = (
         "decide_approval", "resolve_approval",
-        "mark_ready_for_distribution", "mark_distributed", "set_ready_for_distribution", "set_distributed",
+        "mark_distributed", "set_ready_for_distribution", "set_distributed",
         "is_content_approver", "approval_role", "governance_role", "agent_00_role",
     )
     for method in forbidden_methods:
@@ -372,12 +385,19 @@ def test_plan_item_and_content_plan_are_structurally_unchanged() -> None:
 # --- approval review-state bookkeeping ------------------------------------
 
 
+def _bring_piece_to_ready_for_review(service: ContentService, *, workspace_id, piece: ContentPiece) -> None:
+    service.mark_in_production(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_produced(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
+
+
 def test_mark_under_review_legal_from_requested(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    _piece, version = _record_piece(db_session, brief)
+    piece, _v = _record_piece(db_session, brief)
     service = ContentService(db_session)
-    approval = service.request_approval(content_version=version)
+    _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     updated = service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     assert updated.status is ContentApprovalStatus.UNDER_REVIEW
 
@@ -385,9 +405,10 @@ def test_mark_under_review_legal_from_requested(content_campaign, db_session) ->
 def test_mark_under_review_illegal_from_under_review(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    _piece, version = _record_piece(db_session, brief)
+    piece, _v = _record_piece(db_session, brief)
     service = ContentService(db_session)
-    approval = service.request_approval(content_version=version)
+    _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     with pytest.raises(InvalidLifecycleTransitionError):
         service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
@@ -396,19 +417,13 @@ def test_mark_under_review_illegal_from_under_review(content_campaign, db_sessio
 # --- APPROVED coupling: required and atomic -------------------------------
 
 
-def _bring_piece_to_ready_for_review(service: ContentService, *, workspace_id, piece: ContentPiece) -> None:
-    service.mark_in_production(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
-    service.mark_produced(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
-    service.mark_ready_for_review(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
-
-
 def test_approved_decision_couples_piece_status_atomically(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
     _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
-    approval = service.request_approval(content_version=version)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -424,16 +439,23 @@ def test_approved_decision_couples_piece_status_atomically(content_campaign, db_
     assert piece.status is ContentPieceStatus.APPROVED
 
 
-def test_approved_decision_requires_piece_to_be_ready_for_review(content_campaign, db_session) -> None:
-    """A Content Piece stuck at DRAFT (never brought through the
-    bookkeeping chain) cannot be coupled to APPROVED — the piece-side
-    transition is validated against the real state machine, not assumed."""
+def test_approved_decision_requires_piece_to_still_be_ready_for_review(content_campaign, db_session) -> None:
+    """MVP-20A-R1: request_approval now requires READY_FOR_REVIEW itself,
+    so a Piece stuck at DRAFT can no longer even get an Approval opened
+    (that gap is closed at the source). The Piece-side legality re-check
+    in ``record_authorized_approval_decision`` is still independently
+    required, though: archiving a Piece does not check for an open
+    Approval, so archiving while an Approval is UNDER_REVIEW is a real,
+    reachable way for the coupled APPROVED transition to become illegal
+    by the time the decision is recorded."""
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
-    approval = service.request_approval(content_version=version)
+    _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
+    service.archive_piece(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     reviewer = make_user(db_session)
 
     with pytest.raises(InvalidLifecycleTransitionError):
@@ -443,13 +465,17 @@ def test_approved_decision_requires_piece_to_be_ready_for_review(content_campaig
         )
 
 
-def test_changes_requested_does_not_mutate_piece_status(content_campaign, db_session) -> None:
+def test_changes_requested_couples_piece_status_to_revision_requested(content_campaign, db_session) -> None:
+    """MVP-20: closes the same-version-reapproval defect — CHANGES_REQUESTED
+    now atomically moves the Piece to REVISION_REQUESTED (previously left
+    it at READY_FOR_REVIEW, which let the same unrevised Version be
+    resubmitted for approval)."""
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
     _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
-    approval = service.request_approval(content_version=version)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -460,16 +486,16 @@ def test_changes_requested_does_not_mutate_piece_status(content_campaign, db_ses
     assert resolved.status is ContentApprovalStatus.CHANGES_REQUESTED
 
     db_session.refresh(piece)
-    assert piece.status is ContentPieceStatus.READY_FOR_REVIEW
+    assert piece.status is ContentPieceStatus.REVISION_REQUESTED
 
 
 def test_rejected_does_not_mutate_piece_status(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
     _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
-    approval = service.request_approval(content_version=version)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -486,9 +512,10 @@ def test_rejected_does_not_mutate_piece_status(content_campaign, db_session) -> 
 def test_expired_is_not_an_authorized_decision_value(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    _piece, version = _record_piece(db_session, brief)
+    piece, _v = _record_piece(db_session, brief)
     service = ContentService(db_session)
-    approval = service.request_approval(content_version=version)
+    _bring_piece_to_ready_for_review(service, workspace_id=campaign.workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -503,6 +530,156 @@ def test_no_automatic_expiration_mechanism_exists() -> None:
     forbidden_methods = ("expire_approval", "check_expiration", "run_expiration_sweep")
     for method in forbidden_methods:
         assert not hasattr(ContentService, method), f"unexpected method {method!r} on ContentService"
+
+
+# --- revision loop (MVP-20) -------------------------------------------------
+
+
+def _open_changes_requested_cycle(service: ContentService, *, workspace_id, piece: ContentPiece):
+    """Brings a fresh Piece through one full request->review->CHANGES_REQUESTED
+    cycle, leaving it at REVISION_REQUESTED. Returns the closed Approval."""
+    _bring_piece_to_ready_for_review(service, workspace_id=workspace_id, piece=piece)
+    approval = service.request_approval(workspace_id=workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_under_review(workspace_id=workspace_id, content_approval_public_id=approval.public_id)
+    reviewer = make_user(service.session)
+    return service.record_authorized_approval_decision(
+        workspace_id=workspace_id, content_approval_public_id=approval.public_id,
+        decision=ContentApprovalStatus.CHANGES_REQUESTED, actor_user_id=reviewer.id,
+    )
+
+
+def test_create_revision_version_happy_path(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    _open_changes_requested_cycle(service, workspace_id=campaign.workspace_id, piece=piece)
+
+    v2 = service.create_revision_version(
+        workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+        payload=default_version_payload(hook="Revised hook."),
+    )
+    assert v2.id != v1.id
+    assert v2.payload["hook"] == "Revised hook."
+
+    db_session.refresh(piece)
+    assert piece.status is ContentPieceStatus.IN_PRODUCTION
+
+    db_session.refresh(v1)
+    assert v1.payload["hook"] != "Revised hook.", "V1 must remain unmutated"
+
+    latest = service.get_latest_version_for_piece(piece.id)
+    assert latest.id == v2.id
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ContentPieceStatus.DRAFT,
+        ContentPieceStatus.IN_PRODUCTION,
+        ContentPieceStatus.PRODUCED,
+        ContentPieceStatus.READY_FOR_REVIEW,
+        ContentPieceStatus.APPROVED,
+        ContentPieceStatus.READY_FOR_DISTRIBUTION,
+        ContentPieceStatus.DISTRIBUTED,
+        ContentPieceStatus.ARCHIVED,
+    ],
+)
+def test_create_revision_version_forbidden_outside_revision_requested(content_campaign, db_session, state) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, _v1 = _record_piece(db_session, brief)
+    piece.status = state
+    db_session.flush()
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        ContentService(db_session).create_revision_version(
+            workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+            payload=default_version_payload(),
+        )
+    db_session.refresh(piece)
+    assert piece.status is state
+
+
+def test_same_version_reapproval_blocked_after_changes_requested(content_campaign, db_session) -> None:
+    """The critical MVP-20 regression: without creating a new Version, no
+    normal lifecycle route can move a REVISION_REQUESTED Piece back to
+    READY_FOR_REVIEW, so the exact unrevised Version can never be
+    resubmitted for approval."""
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    _open_changes_requested_cycle(service, workspace_id=campaign.workspace_id, piece=piece)
+    db_session.refresh(piece)
+    assert piece.status is ContentPieceStatus.REVISION_REQUESTED
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    with pytest.raises(InvalidLifecycleTransitionError):
+        service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    with pytest.raises(InvalidLifecycleTransitionError):
+        service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    with pytest.raises(InvalidLifecycleTransitionError):
+        service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+
+    db_session.refresh(piece)
+    assert piece.status is ContentPieceStatus.REVISION_REQUESTED
+    latest = service.get_latest_version_for_piece(piece.id)
+    assert latest.id == v1.id
+    approvals = db_session.execute(
+        select(ContentApproval).where(ContentApproval.content_version_id == v1.id)
+    ).scalars().all()
+    assert len(approvals) == 1, "no second Approval against V1 must ever be created"
+
+
+def test_multiple_revision_cycles_preserve_immutable_lineage(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+
+    a1 = _open_changes_requested_cycle(service, workspace_id=campaign.workspace_id, piece=piece)
+    v2 = service.create_revision_version(
+        workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+        payload=default_version_payload(hook="Second draft."),
+    )
+    service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    a2_open = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=a2_open.public_id)
+    reviewer = make_user(db_session)
+    a2 = service.record_authorized_approval_decision(
+        workspace_id=campaign.workspace_id, content_approval_public_id=a2_open.public_id,
+        decision=ContentApprovalStatus.CHANGES_REQUESTED, actor_user_id=reviewer.id,
+    )
+
+    v3 = service.create_revision_version(
+        workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+        payload=default_version_payload(hook="Third draft."),
+    )
+    service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    a3_open = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=a3_open.public_id)
+    a3 = service.record_authorized_approval_decision(
+        workspace_id=campaign.workspace_id, content_approval_public_id=a3_open.public_id,
+        decision=ContentApprovalStatus.APPROVED, actor_user_id=reviewer.id,
+    )
+
+    assert len({v1.id, v2.id, v3.id}) == 3, "V1/V2/V3 must be distinct"
+    assert a1.content_version_id == v1.id
+    assert a2.content_version_id == v2.id
+    assert a3.content_version_id == v3.id
+
+    db_session.refresh(a1)
+    db_session.refresh(a2)
+    assert a1.status is ContentApprovalStatus.CHANGES_REQUESTED
+    assert a2.status is ContentApprovalStatus.CHANGES_REQUESTED
+    assert a3.status is ContentApprovalStatus.APPROVED
+
+    db_session.refresh(piece)
+    assert piece.status is ContentPieceStatus.APPROVED
 
 
 # --- stage-lifecycle non-mutation -----------------------------------------

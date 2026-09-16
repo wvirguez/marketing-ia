@@ -8,13 +8,26 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session as OrmSession
 
-from app.audit.models import AuditEvent
+from app.audit.models import ActorType, AuditEvent
 from app.audit.repository import AuditEventRepository
-from app.content.models import ContentApprovalStatus, ContentBrief, ContentPiece, ContentVersion
+from app.content.models import ContentApproval, ContentApprovalStatus, ContentBrief, ContentPiece, ContentPieceStatus, ContentVersion
 from app.content.repository import ContentVersionRepository
 from app.content.service import ContentService
+from app.persistence.session import get_engine
+from app.users.models import User
 from tests.contenttest import build_plan_with_item, default_piece_fields, default_version_payload, make_user
+from tests.test_content_domain import _open_changes_requested_cycle
+from tests.test_content_api import (
+    _advance_to_ready_for_review,
+    _lifecycle_path,
+    _post,
+    _record_content_piece,
+    _request_approval_id,
+    _under_review_approval_id,
+    campaign_client_with_stages,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -89,12 +102,12 @@ def test_two_pieces_created_close_together_are_never_confused(content_campaign, 
 def test_approved_transaction_records_both_decision_and_status_change_attribution(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
     service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
-    approval = service.request_approval(content_version=version)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -184,15 +197,22 @@ def test_audit_failure_rolls_back_a_new_version(content_campaign, db_session) ->
 
 def test_piece_transition_failure_rolls_back_the_approval_decision(content_campaign, db_session) -> None:
     """If the Piece-side transition were to fail, the Approval decision
-    must not survive either — one transaction, both writes or neither."""
+    must not survive either — one transaction, both writes or neither.
+    MVP-20A-R1: request_approval now requires READY_FOR_REVIEW itself, so
+    a Piece stuck at DRAFT can no longer even get an Approval opened —
+    the illegal-coupling scenario is instead reached by archiving the
+    Piece (legal from READY_FOR_REVIEW, does not check for an open
+    Approval) while its Approval is still UNDER_REVIEW."""
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
-    # Deliberately leave the Piece at DRAFT (never brought to
-    # READY_FOR_REVIEW) so the coupled Piece transition is illegal.
-    approval = service.request_approval(content_version=version)
+    service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
+    service.archive_piece(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     reviewer = make_user(db_session)
 
     from app.core.api_errors import InvalidLifecycleTransitionError
@@ -215,12 +235,12 @@ def test_piece_transition_failure_rolls_back_the_approval_decision(content_campa
 def test_audit_failure_rolls_back_the_approved_coupling(content_campaign, db_session) -> None:
     campaign, *_ = content_campaign
     brief = _record_brief(db_session, content_campaign)
-    piece, version = _record_piece(db_session, brief)
+    piece, _version = _record_piece(db_session, brief)
     service = ContentService(db_session)
     service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
-    approval = service.request_approval(content_version=version)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
     service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
     reviewer = make_user(db_session)
 
@@ -238,3 +258,157 @@ def test_audit_failure_rolls_back_the_approved_coupling(content_campaign, db_ses
     reloaded_piece = db_session.execute(select(ContentPiece).where(ContentPiece.id == piece.id)).scalar_one()
     assert reloaded_approval.status is ContentApprovalStatus.UNDER_REVIEW
     assert reloaded_piece.status.value == "READY_FOR_REVIEW"
+
+
+# --- revision loop audit + atomicity (MVP-20) -------------------------------
+
+
+def test_audit_failure_rolls_back_the_changes_requested_coupling(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, _version = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    approval = service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_under_review(workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id)
+    reviewer = make_user(db_session)
+
+    with patch.object(AuditEventRepository, "record", side_effect=RuntimeError("simulated audit failure")):
+        with pytest.raises(RuntimeError, match="simulated audit failure"):
+            service.record_authorized_approval_decision(
+                workspace_id=campaign.workspace_id, content_approval_public_id=approval.public_id,
+                decision=ContentApprovalStatus.CHANGES_REQUESTED, actor_user_id=reviewer.id,
+            )
+    db_session.rollback()
+
+    reloaded_approval = db_session.execute(select(ContentApproval).where(ContentApproval.id == approval.id)).scalar_one()
+    reloaded_piece = db_session.execute(select(ContentPiece).where(ContentPiece.id == piece.id)).scalar_one()
+    assert reloaded_approval.status is ContentApprovalStatus.UNDER_REVIEW, "the decision must not survive a failed coupling"
+    assert reloaded_piece.status is ContentPieceStatus.READY_FOR_REVIEW, "the piece must not move to REVISION_REQUESTED either"
+
+
+def test_audit_failure_rolls_back_the_revision_version_and_piece_transition(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, _v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    _open_changes_requested_cycle(service, workspace_id=campaign.workspace_id, piece=piece)
+    versions_before = _total_count(db_session, ContentVersion)
+
+    with patch.object(AuditEventRepository, "record", side_effect=RuntimeError("simulated audit failure")):
+        with pytest.raises(RuntimeError, match="simulated audit failure"):
+            service.create_revision_version(
+                workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+                payload=default_version_payload(),
+            )
+    db_session.rollback()
+
+    assert _total_count(db_session, ContentVersion) == versions_before, "no orphan Version may survive"
+    reloaded_piece = db_session.execute(select(ContentPiece).where(ContentPiece.id == piece.id)).scalar_one()
+    assert reloaded_piece.status is ContentPieceStatus.REVISION_REQUESTED, "the piece must not move to IN_PRODUCTION either"
+
+
+def test_audit_failure_rolls_back_request_approval(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, _v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    service.mark_in_production(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_produced(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    service.mark_ready_for_review(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    approvals_before = _total_count(db_session, ContentApproval)
+
+    with patch.object(AuditEventRepository, "record", side_effect=RuntimeError("simulated audit failure")):
+        with pytest.raises(RuntimeError, match="simulated audit failure"):
+            service.request_approval(workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id)
+    db_session.rollback()
+
+    assert _total_count(db_session, ContentApproval) == approvals_before, "no orphan Approval may survive"
+
+
+def test_create_revision_version_records_expected_audit_events(content_campaign, db_session) -> None:
+    campaign, *_ = content_campaign
+    brief = _record_brief(db_session, content_campaign)
+    piece, v1 = _record_piece(db_session, brief)
+    service = ContentService(db_session)
+    _open_changes_requested_cycle(service, workspace_id=campaign.workspace_id, piece=piece)
+    reviewer = make_user(db_session)
+
+    v2 = service.create_revision_version(
+        workspace_id=campaign.workspace_id, content_piece_public_id=piece.public_id,
+        payload=default_version_payload(), actor_user_id=reviewer.id,
+    )
+
+    version_events = db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "content.version.recorded", AuditEvent.content_version_id == v2.id
+        )
+    ).scalars().all()
+    assert len(version_events) == 1
+    assert version_events[0].actor_type is ActorType.USER
+    assert version_events[0].actor_user_id == reviewer.id
+    assert version_events[0].content_piece_id == piece.id
+
+    status_events = db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "content.piece.status_changed",
+            AuditEvent.content_piece_id == piece.id,
+            AuditEvent.content_version_id == v2.id,
+        )
+    ).scalars().all()
+    assert len(status_events) == 1
+    assert status_events[0].previous_state == "REVISION_REQUESTED"
+    assert status_events[0].new_state == "IN_PRODUCTION"
+    assert status_events[0].actor_user_id == reviewer.id
+
+
+# --- HTTP-triggered attribution (MVP-17B §34/§63) --------------------------
+
+
+def test_http_request_approval_is_attributed_to_the_real_user_not_system(campaign_client_with_stages: dict) -> None:
+    fixtures = campaign_client_with_stages
+    content_id = _record_content_piece(fixtures)
+    _advance_to_ready_for_review(fixtures, content_id)
+    approval_id = _request_approval_id(fixtures, content_id)
+
+    with OrmSession(bind=get_engine()) as session:
+        approval = session.execute(select(ContentApproval).where(ContentApproval.public_id == approval_id)).scalar_one()
+        events = session.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "content.approval.recorded", AuditEvent.content_approval_id == approval.id
+            )
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id is not None
+
+
+def test_http_decision_is_attributed_to_the_real_authenticated_reviewer_never_agent_or_system(
+    campaign_client_with_stages: dict,
+) -> None:
+    fixtures = campaign_client_with_stages
+    content_id = _record_content_piece(fixtures)
+    _advance_to_ready_for_review(fixtures, content_id)
+    approval_id = _under_review_approval_id(fixtures, content_id)
+    me = fixtures["client"].get("/api/v1/users/me").json()
+
+    response = _post(
+        fixtures, _lifecycle_path(fixtures, content_id, f"/approvals/{approval_id}/decision"), {"decision": "APPROVED"}
+    )
+    assert response.status_code == 200, response.text
+
+    with OrmSession(bind=get_engine()) as session:
+        user = session.execute(select(User).where(User.public_id == me["id"])).scalar_one()
+        approval = session.execute(select(ContentApproval).where(ContentApproval.public_id == approval_id)).scalar_one()
+        assert approval.reviewer_user_id == user.id
+
+        events = session.execute(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "content.approval.decision_recorded", AuditEvent.content_approval_id == approval.id
+            )
+        ).scalars().all()
+        assert len(events) == 1
+        assert events[0].actor_type is ActorType.USER
+        assert events[0].actor_user_id == user.id

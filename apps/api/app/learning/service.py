@@ -112,12 +112,18 @@ class LearningService:
         request_id: str | None = None,
     ) -> LearningCandidate:
         """One generic transition command, validated against the frozen
-        graph (Governance Freeze §J/§10) — no separate validate/reject/
-        provisional methods. Service-layer only; no public route."""
+        graph (Governance Freeze §J/§10). Public callers authorize roles
+        before this command. MVP-25 validates fresh qualification under lock."""
+        # Re-read even for service callers that already loaded this instance.
+        # populate_existing prevents the identity map from retaining pre-lock state.
+        learning_candidate = self.candidates.get_by_id(learning_candidate.id, for_update=True)
         if not is_legal_learning_candidate_transition(learning_candidate.status, target_status):
             raise InvalidLifecycleTransitionError(
                 f"Cannot transition a learning candidate from {learning_candidate.status.value} to {target_status.value}."
             )
+        if target_status == LearningCandidateStatus.VALIDATED:
+            from app.learning.qualification import QualificationService
+            QualificationService(self.session).require_sufficient(learning_candidate)
         previous = learning_candidate.status
         learning_candidate.status = target_status
 

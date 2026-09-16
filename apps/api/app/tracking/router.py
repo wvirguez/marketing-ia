@@ -29,7 +29,9 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_workspace, require_csrf
 from app.campaigns.service import CampaignAccessService
+from app.content.repository import ContentDistributionRepository, ContentDistributionTrackingRequirementRepository
 from app.core.api_errors import ForbiddenError
+from app.tracking.models import TrackingRequirement
 from app.tracking.schemas import (
     CreateTrackingRequirementRequest,
     TrackingPatchRequest,
@@ -45,6 +47,25 @@ from app.workspaces.models import Workspace
 router = APIRouter(prefix="/campaigns/{campaign_public_id}/tracking", tags=["tracking"])
 
 
+def _associated_distribution_ids_by_requirement_id(
+    db: Session, requirements: list[TrackingRequirement]
+) -> dict:
+    """MVP-24: identity-only (MVP-24A-R1) cross-domain read — resolves
+    each Requirement's associated ContentDistribution *public* ids via
+    the association table, never reading/copying any ContentDistribution
+    field beyond its id. Cross-domain resolution happens here, in the
+    router, matching this codebase's own established convention (e.g.
+    ``app/learning/router.py`` resolving AnalysisResult public ids)."""
+    association_repo = ContentDistributionTrackingRequirementRepository(db)
+    distribution_repo = ContentDistributionRepository(db)
+    result: dict = {}
+    for requirement in requirements:
+        distribution_ids = association_repo.list_distribution_ids_for_requirement(requirement.id)
+        distributions = distribution_repo.list_for_ids(distribution_ids)
+        result[requirement.id] = [d.public_id for d in distributions]
+    return result
+
+
 def _current_tracking_response(service: TrackingService, *, campaign_id) -> TrackingResponse:
     plan = service.get_plan_for_campaign(campaign_id=campaign_id)
     if plan is None:
@@ -53,7 +74,10 @@ def _current_tracking_response(service: TrackingService, *, campaign_id) -> Trac
         # defensive only, mirrors patch_tracking's own guard.
         raise ForbiddenError()
     requirements = service.list_requirements_for_plan(tracking_plan_id=plan.id)
-    return TrackingResponse(plan=tracking_plan_to_public(plan, requirements=requirements))
+    by_id = _associated_distribution_ids_by_requirement_id(service.session, requirements)
+    return TrackingResponse(
+        plan=tracking_plan_to_public(plan, requirements=requirements, associated_distribution_ids_by_requirement_id=by_id)
+    )
 
 
 @router.get("", response_model=TrackingResponse)
@@ -71,7 +95,10 @@ async def get_tracking(
         return TrackingResponse(plan=None)
 
     requirements = service.list_requirements_for_plan(tracking_plan_id=plan.id)
-    return TrackingResponse(plan=tracking_plan_to_public(plan, requirements=requirements))
+    by_id = _associated_distribution_ids_by_requirement_id(db, requirements)
+    return TrackingResponse(
+        plan=tracking_plan_to_public(plan, requirements=requirements, associated_distribution_ids_by_requirement_id=by_id)
+    )
 
 
 @router.post("", response_model=TrackingResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_csrf)])
