@@ -8,7 +8,13 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.learning.models import StrategicRecommendationDecision
+from app.learning.service import LearningService
+from app.orchestration.models import StrategicDecisionType
+from app.orchestration.service import StrategicDecisionService
 from tests.campaignstest import campaign_payload, register_and_get_csrf
+from tests.contenttest import make_user
+from tests.learningtest import build_recommendation
 
 
 @pytest.fixture()
@@ -42,3 +48,44 @@ def start_run(fixtures: dict) -> dict:
     response = fixtures["client"].post(run_path(fixtures, "/start"), headers={"X-CSRF-Token": fixtures["csrf_token"]})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def build_accepted_recommendation(session, **overrides: object):
+    """MVP-28B: the sole implemented origin for a StrategicDecision (Model
+    C) — a StrategicRecommendationCandidate whose own ``decision`` is
+    already ACCEPTED. Builds on ``tests/learningtest.py::build_recommendation``
+    (which itself builds the full Learning/Implication ancestry) and drives
+    it to ACCEPTED via the real, production ``LearningService`` — no
+    production bypass. Returns ``(campaign, recommendation, actor)``."""
+    campaign, _analysis_result, _candidate, recommendation = build_recommendation(session, **overrides)
+    actor = make_user(session)
+    session.flush()
+    recommendation = LearningService(session).decide_strategic_recommendation_candidate(
+        campaign=campaign,
+        recommendation_public_id=recommendation.public_id,
+        decision=StrategicRecommendationDecision.ACCEPTED,
+        actor_user_id=actor.id,
+    )
+    return campaign, recommendation, actor
+
+
+def build_strategic_decision(
+    session,
+    *,
+    decision_type=StrategicDecisionType.ADOPT,
+    statement="Adopt shorter hooks across the campaign.",
+    **overrides: object,
+):
+    """Builds one accepted Recommendation and records a current
+    StrategicDecision for it via the real, production
+    ``StrategicDecisionService``. Returns ``(campaign, recommendation,
+    decision, actor)``."""
+    campaign, recommendation, actor = build_accepted_recommendation(session, **overrides)
+    decision = StrategicDecisionService(session).record_decision(
+        campaign=campaign,
+        recommendation_public_id=recommendation.public_id,
+        decision_type=decision_type,
+        statement=statement,
+        actor_user_id=actor.id,
+    )
+    return campaign, recommendation, decision, actor

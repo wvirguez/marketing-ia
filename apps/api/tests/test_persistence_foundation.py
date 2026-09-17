@@ -105,9 +105,14 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     TrackingRequirement identity-only association table
     (content_distribution_tracking_requirements — MVP-24A-R1: no
     Requirement/Plan status snapshot column, no version column, no
-    history table), plus the BACKEND-03 infrastructure probe. No
-    Content Revision Request/Distribution/Paid Media/Measurement Cycle/
-    Performance Snapshot/Strategic Decision/Agent Run/Handoff/Return/Gate
+    history table), plus the BACKEND-03 infrastructure probe, plus the
+    MVP-27 Commercial persistence contracts — CommercialObjective, Offer
+    — and the MVP-28B Strategic Decision persistence contract (frozen
+    MVP-28A/-R1/-R2 contract; owned by ``orchestration`` per MVP-28A-R2
+    §D, not ``learning``/``strategy`` — both of those modules explicitly
+    disclaim it in their own docstrings). No Content Revision Request/
+    Distribution/Paid Media/Measurement Cycle/Performance Snapshot/
+    Strategic Approval/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
     Subscription/CreativeBriefVersion/CampaignVersion/TrackingStatus/
     TrackingReadiness/Channel table has been prematurely introduced —
@@ -180,6 +185,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "content_distribution_tracking_requirements",
         "commercial_objectives",
         "offers",
+        "strategic_decisions",
     }
 
 

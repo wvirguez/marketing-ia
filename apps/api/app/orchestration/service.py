@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.models import ActorType
@@ -31,7 +32,12 @@ from app.core.api_errors import (
     ForbiddenError,
     InvalidLifecycleTransitionError,
     OrchestrationNotInitializedError,
+    StrategicDecisionAlreadyExistsError,
+    StrategicDecisionAlreadySupersededError,
+    StrategicRecommendationNotAcceptedError,
 )
+from app.learning.models import StrategicRecommendationDecision
+from app.learning.repository import StrategicRecommendationCandidateRepository
 from app.orchestration import bootstrap as bootstrap_content
 from app.orchestration.models import (
     BusinessStage,
@@ -40,16 +46,22 @@ from app.orchestration.models import (
     HumanDecisionResponse,
     RunStageExecution,
     StageExecutionStatus,
+    StrategicDecision,
+    StrategicDecisionType,
 )
 from app.orchestration.repository import (
     HumanDecisionRequestRepository,
     HumanDecisionResponseRepository,
     RunStageExecutionRepository,
+    StrategicDecisionRepository,
 )
 from app.orchestration.transitions import is_legal_run_transition, is_legal_stage_transition
 from app.planning.service import PlanningService
 from app.research.service import ResearchService
 from app.strategy.service import StrategyService
+
+EVENT_STRATEGIC_DECISION_RECORDED = "orchestration.strategic_decision.recorded"
+EVENT_STRATEGIC_DECISION_SUPERSEDED = "orchestration.strategic_decision.superseded"
 
 EVENT_ORCHESTRATION_INITIALIZED = "orchestration.initialized"
 EVENT_RUN_TRANSITIONED = "orchestration.run.transitioned"
@@ -710,3 +722,176 @@ class OrchestrationService:
 
         self.session.commit()
         return response
+
+
+class StrategicDecisionService:
+    """MVP-28B — implements the MVP-28A/-R1/-R2 frozen StrategicDecision
+    contract. Transaction ownership: load/validate, mutate, audit, commit
+    once — no intermediate commits (mirrors ``CommercialService``/
+    ``LearningService`` exactly, BACKEND-06 §28's own discipline applied to
+    this bounded context's newest entity).
+
+    Deliberately a separate class from ``OrchestrationService`` above:
+    StrategicDecision has no relationship to CampaignRun/RunStageExecution
+    lifecycle — it is a standalone entity within the same bounded context,
+    the same "separate class, shared module" shape ``CommercialService``
+    uses for CommercialObjective/Offer.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.decisions = StrategicDecisionRepository(session)
+        self.recommendations = StrategicRecommendationCandidateRepository(session)
+        self.events = AuditEventRepository(session)
+
+    def record_decision(
+        self,
+        *,
+        campaign: Campaign,
+        recommendation_public_id: str,
+        decision_type: StrategicDecisionType,
+        statement: str,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> StrategicDecision:
+        """MVP-28A-R2 §11/§M: campaign-scoped resource integrity — the
+        Recommendation must resolve, tenant-safely, under this exact
+        Campaign (never merely the same Workspace), then must already be
+        ACCEPTED (Model C's own gate: a Decision requires an ACCEPTED
+        Recommendation, never a still-undecided or REJECTED one).
+
+        Canonical application serialization point (MVP-28A-R2 §M): locks
+        the accepted Recommendation row itself, since there is no Decision
+        row yet to lock for a first creation. The partial unique index
+        (``uq_strategic_decisions_current_recommendation``) remains the
+        actual, unconditional DB-level backstop for the "at most one
+        current Decision per Recommendation" invariant — never relied on
+        as merely an application-level guard (MVP-28A-R2 §14)."""
+        recommendation = self.recommendations.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=recommendation_public_id, for_update=True
+        )
+        if recommendation is None:
+            raise ForbiddenError()
+        if recommendation.decision is not StrategicRecommendationDecision.ACCEPTED:
+            raise StrategicRecommendationNotAcceptedError()
+        if self.decisions.get_current_for_recommendation(recommendation_id=recommendation.id) is not None:
+            raise StrategicDecisionAlreadyExistsError()
+
+        try:
+            with self.session.begin_nested():
+                decision = self.decisions.create(
+                    campaign=campaign,
+                    recommendation_id=recommendation.id,
+                    decision_type=decision_type,
+                    statement=statement,
+                )
+        except IntegrityError:
+            # A genuinely concurrent first-creation attempt that reached
+            # this point despite the Recommendation-row lock above (e.g. a
+            # caller that bypassed the service layer) is rejected by the
+            # partial unique index itself — the same "DB backstop, not just
+            # an application guard" discipline TrackingPlanAlreadyExistsError
+            # already establishes (app/tracking/service.py).
+            raise StrategicDecisionAlreadyExistsError()
+
+        self.events.record(
+            workspace_id=decision.workspace_id,
+            campaign_id=campaign.id,
+            event_type=EVENT_STRATEGIC_DECISION_RECORDED,
+            actor_type=ActorType.USER,
+            strategic_decision_id=decision.id,
+            new_state=decision_type.value,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return decision
+
+    def supersede_decision(
+        self,
+        *,
+        campaign: Campaign,
+        decision_public_id: str,
+        decision_type: StrategicDecisionType,
+        statement: str,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> StrategicDecision:
+        """Atomic supersession (MVP-28A-R2 §F/§G/§I — Model B direction,
+        Model II content-immutable/metadata-mutable-once): locks the
+        specific original Decision row (never the whole Recommendation or
+        Campaign — different Decisions remain independently supersedable),
+        creates a fresh replacement in the same transaction, sets the
+        original's supersession metadata exactly once, records both audit
+        events, commits once. Mirrors
+        ``CommercialService.supersede_commercial_objective`` exactly — reused
+        because it is a proven, already-tested mechanism for the same "at
+        most one current, atomic supersession" invariant, not merely copied
+        for convenience (MVP-28A-R2 §11)."""
+        original = self.decisions.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=decision_public_id, for_update=True
+        )
+        if original is None:
+            raise ForbiddenError()
+        if original.superseded_at is not None:
+            raise StrategicDecisionAlreadySupersededError()
+
+        # Ordering conflict between two constraints that both apply here
+        # (see the "DEFERRABLE" docstring note on
+        # StrategicDecision.superseded_by_strategic_decision_id): the
+        # `disposition_complete` CHECK constraint requires `original`'s two
+        # disposition columns to be set together in one statement, but that
+        # needs the replacement's id before the replacement row exists;
+        # `uq_strategic_decisions_current_recommendation` requires
+        # `original` to already be excluded (superseded_at set) before the
+        # replacement is inserted. Resolved by pre-assigning the
+        # replacement's id in Python, setting both of `original`'s columns
+        # together (satisfying the CHECK; the now-deferred FK does not
+        # validate the reference until commit), THEN inserting the
+        # replacement (now the only NULL-superseded_at row for this
+        # Recommendation).
+        replacement_id = uuid.uuid4()
+        original.superseded_at = datetime.now(timezone.utc)
+        original.superseded_by_strategic_decision_id = replacement_id
+        self.session.flush()
+
+        try:
+            with self.session.begin_nested():
+                replacement = self.decisions.create(
+                    campaign=campaign,
+                    recommendation_id=original.strategic_recommendation_candidate_id,
+                    decision_type=decision_type,
+                    statement=statement,
+                    decision_id=replacement_id,
+                )
+        except IntegrityError:
+            raise StrategicDecisionAlreadySupersededError()
+
+        self.events.record(
+            workspace_id=replacement.workspace_id,
+            campaign_id=campaign.id,
+            event_type=EVENT_STRATEGIC_DECISION_RECORDED,
+            actor_type=ActorType.USER,
+            strategic_decision_id=replacement.id,
+            new_state=f"supersedes:{original.public_id}",
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.events.record(
+            workspace_id=original.workspace_id,
+            campaign_id=campaign.id,
+            event_type=EVENT_STRATEGIC_DECISION_SUPERSEDED,
+            actor_type=ActorType.USER,
+            strategic_decision_id=original.id,
+            new_state=f"superseded_by:{replacement.public_id}",
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return replacement
+
+    def get_decision_for_campaign(self, *, campaign: Campaign, decision_public_id: str) -> StrategicDecision | None:
+        return self.decisions.get_for_campaign_by_public_id(campaign_id=campaign.id, public_id=decision_public_id)
+
+    def list_decisions_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicDecision]:
+        return self.decisions.list_for_campaign(campaign_id)

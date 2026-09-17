@@ -332,3 +332,47 @@ class OfferAlreadySupersededError(ApiError):
 
     def __init__(self, message: str = "This Offer has already been superseded.") -> None:
         super().__init__(message, status_code=409, code="OFFER_ALREADY_SUPERSEDED")
+
+
+class StrategicRecommendationNotAcceptedError(ApiError):
+    """MVP-28B (frozen MVP-28A/-R1/-R2 contract, Model C): a StrategicDecision
+    may be recorded only against a StrategicRecommendationCandidate whose own
+    ``decision`` is ACCEPTED — recording one against a still-undecided or a
+    REJECTED Recommendation would either anticipate a workflow judgment that
+    hasn't happened yet or duplicate what REJECTED already means. A plain DB
+    FK cannot enforce a parent status-value invariant, so this is the
+    mapped, deterministic surface for that explicit service-layer check —
+    the same role ``LearningCandidateNotValidatedError`` already plays one
+    context up."""
+
+    def __init__(self, message: str = "A Strategic Decision requires an ACCEPTED Strategic Recommendation Candidate.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_RECOMMENDATION_NOT_ACCEPTED")
+
+
+class StrategicDecisionAlreadyExistsError(ApiError):
+    """MVP-28A-R2 §H/§L: at most one *current* StrategicDecision
+    (``superseded_at IS NULL``) may exist per StrategicRecommendationCandidate
+    at a time — recording a "first" Decision against a Recommendation that
+    already has a current one is a deterministic conflict (the caller should
+    supersede the existing current Decision instead), never a silent second
+    current row. The database's own partial unique index
+    (``uq_strategic_decisions_current_recommendation``) is the actual
+    backstop; this is the mapped, deterministic surface for the resulting
+    ``IntegrityError`` or for the equivalent pre-check under row lock."""
+
+    def __init__(self, message: str = "This Strategic Recommendation Candidate already has a current Strategic Decision.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_DECISION_ALREADY_EXISTS")
+
+
+class StrategicDecisionAlreadySupersededError(ApiError):
+    """MVP-28A-R2 §G: a StrategicDecision's supersession is one-shot — the
+    one invariant that is not structurally impossible by construction
+    (self-supersession/cycles/cross-tenant replacement are, since the
+    replacement is always a freshly-created row). A second attempt to
+    supersede an already-superseded original, whether sequential or
+    genuinely concurrent, is a deterministic conflict, never a silent
+    second replacement — mirrors ``CommercialObjectiveAlreadySupersededError``
+    exactly."""
+
+    def __init__(self, message: str = "This Strategic Decision has already been superseded.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_DECISION_ALREADY_SUPERSEDED")

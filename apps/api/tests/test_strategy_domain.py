@@ -495,14 +495,16 @@ def test_no_version_content_or_media_placeholder_field_exists_on_experiment() ->
 
 def test_no_strategic_decision_or_approval_table_was_introduced() -> None:
     """BACKEND-14 has since authorized learning_candidates/
-    strategic_recommendation_candidates (see tests/test_learning_domain.py)
-    — this guard now covers only the tables that remain out of scope for
-    every stage through BACKEND-14."""
+    strategic_recommendation_candidates (see tests/test_learning_domain.py),
+    and MVP-28B (frozen MVP-28A/-R1/-R2 contract) has since authorized
+    strategic_decisions — owned by ``orchestration``, never by this module
+    (``app/strategy/models.py`` explicitly disclaims it) — so this guard now
+    covers only the tables that remain out of scope."""
     from app.persistence.base import metadata
 
     table_names = set(metadata.tables.keys())
     for forbidden_table in (
-        "strategic_decisions", "strategy_approvals", "gate_decisions", "target_maturities", "positioning_maturities",
+        "strategy_approvals", "gate_decisions", "target_maturities", "positioning_maturities",
     ):
         assert forbidden_table not in table_names
 

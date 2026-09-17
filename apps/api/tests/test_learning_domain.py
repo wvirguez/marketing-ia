@@ -265,9 +265,14 @@ def test_decision_starts_null(db_session) -> None:
 
 
 def test_governance_no_forbidden_tables_or_methods() -> None:
+    """MVP-28B (frozen MVP-28A/-R1/-R2 contract) has since authorized
+    strategic_decisions — owned by ``orchestration``, never by this module
+    (this module's own top docstring explicitly disclaims it) — so this
+    guard now covers only the tables that remain out of scope for
+    ``learning`` specifically."""
     from app.persistence.base import metadata
 
-    for forbidden_table in ("strategic_decisions", "learning_candidate_versions", "learning_approvals"):
+    for forbidden_table in ("learning_candidate_versions", "learning_approvals"):
         assert forbidden_table not in metadata.tables.keys()
 
     forbidden_methods = ("create_campaign_version", "update", "delete", "patch", "validate_learning", "reject_learning_candidate")

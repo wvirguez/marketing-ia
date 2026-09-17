@@ -31,7 +31,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -178,3 +178,151 @@ class HumanDecisionResponse(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     decision_request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("human_decision_requests.id"), index=True)
     responded_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     response_text: Mapped[str] = mapped_column(Text)
+
+
+class StrategicDecisionType(str, enum.Enum):
+    """Exact MVP-28A/-R1/-R2 frozen vocabulary — no fourth value. A
+    StrategicDecision may only be recorded against a Recommendation whose
+    own ``decision`` is ACCEPTED (enforced in
+    ``app/orchestration/service.py``), so there is no ``REJECT`` type here:
+    that would duplicate ``StrategicRecommendationDecision.REJECTED``
+    rather than add new governance information (MVP-28A-R2 §J)."""
+
+    ADOPT = "ADOPT"
+    DEFER = "DEFER"
+    DECLINE = "DECLINE"
+
+
+class StrategicDecision(Base, UUIDPrimaryKeyMixin):
+    """MVP-28A/-R1/-R2 frozen contract — a durable, higher-order governance
+    record that a specific accepted ``StrategicRecommendationCandidate``'s
+    proposed campaign-direction change has been ADOPTed, DEFERred, or
+    DECLINEd. Never itself a Strategy mutation, a StrategicApproval, or an
+    execution authorization (see ``app/orchestration/service.py``).
+
+    STORAGE OWNERSHIP (MVP-28A-R2 §D, reversing MVP-28A-R1's own ``learning``
+    freeze): this table lives in ``orchestration``, not ``learning`` or
+    ``strategy`` — both of those modules' own docstrings explicitly disclaim
+    Strategic Decision, and ``orchestration`` is the one bounded context
+    positioned to absorb both this MVP's implemented origin (an accepted
+    Learning Recommendation) and the documented, not-yet-implemented future
+    origin (a Gate Decision) without asking either origin module to depend
+    on the other.
+
+    ORIGIN (Model C, frozen MVP-28A-R1 §E): ``strategic_recommendation_candidate_id``
+    is nullable at the schema level, for the same reason
+    ``StrategicRecommendationCandidate.strategic_implication_id`` is nullable
+    — to leave room for a future, separately-authorized alternate origin
+    (a Gate Decision) without a schema change — but is REQUIRED by the
+    service/API layer for every MVP-28B write (no GateDecision origin, no
+    manual origin, no generic polymorphic origin implemented here).
+
+    TENANCY: this FK is a plain, single-column reference, not a composite
+    tenant-safe FK — ``strategic_recommendation_candidates`` deliberately
+    has no ``UNIQUE(id, workspace_id)`` candidate key (BACKEND-14 Governance
+    Freeze §30: "no speculative candidate key"), and adding one is out of
+    this MVP's authorized scope (it would mean modifying ``learning``'s own
+    frozen model). Tenant-safety is instead proven entirely at the service
+    layer: the Recommendation is always resolved through
+    ``StrategicRecommendationCandidateRepository.get_for_campaign_by_public_id``
+    (already campaign-scoped, non-leaky) before its internal UUID is ever
+    used to populate this column — a raw client-supplied UUID is never
+    trusted (``app/orchestration/service.py::StrategicDecisionService``).
+
+    IMMUTABILITY (MVP-28A-R2 §E/§J, Model II): DECISION CONTENT (every
+    column except the two below) is immutable after insert — no generic
+    update service, no PATCH, no DELETE. SUPERSESSION METADATA
+    (``superseded_at``/``superseded_by_strategic_decision_id``) is the one
+    permitted mutation, exactly once, only inside the dedicated governed
+    ``supersede`` transaction (``StrategicDecisionService.supersede``) —
+    never reset, reversed, or re-pointed. "Current" = ``superseded_at IS
+    NULL``, never inferred from ``MAX(created_at)``.
+
+    SUPERSESSION DIRECTION (MVP-28A-R2 §F, Model B): OLD -> NEW only — the
+    original row carries the forward pointer, mirroring
+    ``app/commercial/models.py``'s own ``CommercialObjective``/``Offer``
+    disposition pattern exactly, reused here because it is a proven,
+    already-tested mechanism for the same "at most one current, atomic
+    supersession" invariant, not merely copied for convenience. No reverse
+    ``supersedes_strategic_decision_id`` on the replacement (MVP-28A-R2 §F:
+    "do not store both directions merely for convenience").
+
+    CURRENT-DECISION INVARIANT (MVP-28A-R2 §H): at most one current
+    StrategicDecision per StrategicRecommendationCandidate, enforced by the
+    partial unique index below — the actual, unconditional DB-level
+    backstop, never relied on as merely an application-level guard.
+    """
+
+    __tablename__ = "strategic_decisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["campaign_id", "workspace_id"],
+            ["campaigns.id", "campaigns.workspace_id"],
+            name="fk_strategic_decisions_campaign_workspace",
+        ),
+        # Explicit, shortened FK name — the naming convention's own derived
+        # name for this self-FK exceeds PostgreSQL's 63-character identifier
+        # limit, the same repair BACKEND-14/MVP-27A-R1 already applied to
+        # strategic_recommendation_candidate_id/superseded_by_offer_id.
+        #
+        # DEFERRABLE INITIALLY DEFERRED (unlike every other FK in this
+        # codebase): the atomic supersession transaction
+        # (StrategicDecisionService.supersede_decision) must set
+        # ``original``'s two disposition columns together, in one UPDATE,
+        # to satisfy ``disposition_complete`` below (a CHECK constraint
+        # cannot itself be deferred in PostgreSQL) — which requires the
+        # replacement's id before the replacement row exists yet, to keep
+        # ``original`` correctly excluded from the partial unique index
+        # below *before* the replacement is inserted (the partial index
+        # cannot be made deferrable either, since PostgreSQL constraints
+        # only support DEFERRABLE for FK/UNIQUE/PK/EXCLUDE, and a partial
+        # UNIQUE INDEX is not itself a table constraint). Deferring only
+        # this FK to end-of-transaction resolves the ordering conflict
+        # without weakening either invariant: by commit time the
+        # replacement row exists, so the reference is always valid.
+        ForeignKeyConstraint(
+            ["superseded_by_strategic_decision_id"],
+            ["strategic_decisions.id"],
+            name="fk_strategic_decisions_superseded_by_id",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "(superseded_at IS NULL AND superseded_by_strategic_decision_id IS NULL) OR "
+            "(superseded_at IS NOT NULL AND superseded_by_strategic_decision_id IS NOT NULL)",
+            name="disposition_complete",
+        ),
+        # MVP-28A-R2 §H/§14: the actual DB-level backstop for "at most one
+        # current Decision per Recommendation" — never relied on as merely
+        # an application-level guard. NULL strategic_recommendation_candidate_id
+        # rows (none exist yet, reserved for a future alternate origin) are
+        # not constrained by this index (Postgres partial-unique semantics:
+        # a NULL indexed column never participates in the uniqueness check).
+        Index(
+            "uq_strategic_decisions_current_recommendation",
+            "strategic_recommendation_candidate_id",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # Plain FK, deliberately not composite — see class docstring "TENANCY".
+    strategic_recommendation_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategic_recommendation_candidates.id"), default=None, index=True
+    )
+    decision_type: Mapped[StrategicDecisionType] = mapped_column(
+        Enum(StrategicDecisionType, name="strategic_decision_type", native_enum=True)
+    )
+    # The governance judgment/context and the proposed campaign-direction
+    # change it addresses — one narrative field, the same "canonical
+    # silence beyond that" precedent already used throughout the learning/
+    # commercial chains (MVP-28A-R2 §I: this is where the "Strategic
+    # Decision Subject" — distinct from the origin artifact above — is
+    # actually recorded; no separate structured Strategy linkage exists).
+    statement: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    superseded_by_strategic_decision_id: Mapped[uuid.UUID | None] = mapped_column(default=None)

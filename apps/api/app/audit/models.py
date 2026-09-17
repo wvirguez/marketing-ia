@@ -238,6 +238,15 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         ForeignKey("commercial_objectives.id"), default=None, index=True
     )
     offer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("offers.id"), default=None, index=True)
+    # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
+    # orchestration.strategic_decision.recorded/...superseded event must
+    # identify its exact StrategicDecision row. Nullable, single-column,
+    # matching every other AuditEvent subject FK exactly (MVP-28A-R2 §N:
+    # the authoritative replacement link is the row's own
+    # superseded_by_strategic_decision_id, never a new audit-table column).
+    strategic_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategic_decisions.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

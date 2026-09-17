@@ -51,10 +51,10 @@ def test_qualification_migration_round_trip(monkeypatch):
             assert len([n for n in enums if n.startswith("learning_qualification_")]) == 4
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from learning_qualifications")) == 0
-                # MVP-26 and MVP-27 each added one additive migration after
-                # this one — "head" now means 5236a613ef1a, not this
-                # migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "5236a613ef1a"
+                # MVP-26, MVP-27, and MVP-28B each added one additive
+                # migration after this one — "head" now means
+                # 7b4151d4cf64, not this migration's own revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "7b4151d4cf64"
             if cycle == 0:
                 # Explicit target, not a relative "-1": MVP-26 added a
                 # further migration on top of this one, so "one step down"

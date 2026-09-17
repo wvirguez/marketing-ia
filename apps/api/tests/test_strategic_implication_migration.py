@@ -62,9 +62,10 @@ def test_strategic_implication_migration_round_trip(monkeypatch):
 
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from strategic_implications")) == 0
-                # MVP-27 added one additive migration after this one — "head"
-                # now means 5236a613ef1a, not this migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "5236a613ef1a"
+                # MVP-27 and MVP-28B each added one additive migration after
+                # this one — "head" now means 7b4151d4cf64, not this
+                # migration's own revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "7b4151d4cf64"
 
             if cycle == 0:
                 # Explicit target, not a relative "-1": MVP-27 added a

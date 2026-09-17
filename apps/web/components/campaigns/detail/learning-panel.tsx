@@ -46,6 +46,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { LearningQualification, type QualificationMutation } from "./learning-qualification";
+import { StrategicDecisionSection } from "./strategic-decision-section";
 import { updateLearningQualification, attachLearningEvidence, disposeLearningEvidence } from "@/lib/api/learning";
 import { Icon } from "@/components/ui/icon";
 import {
@@ -322,6 +323,7 @@ const RECOMMENDATION_DECISION_LABELS: Record<StrategicRecommendationDecision, st
 };
 
 function RecommendationCard({
+  campaignId,
   recommendation,
   role,
   pending,
@@ -329,6 +331,7 @@ function RecommendationCard({
   onArm,
   onDecide,
 }: {
+  campaignId: string;
   recommendation: StrategicRecommendationCandidatePublic;
   role: string | null;
   pending: boolean;
@@ -378,12 +381,16 @@ function RecommendationCard({
             })}
           </div>
         )}
+        {recommendation.decision === "ACCEPTED" && (
+          <StrategicDecisionSection campaignId={campaignId} recommendationId={recommendation.id} role={role} />
+        )}
       </div>
     </article>
   );
 }
 
 function CandidateCard({
+  campaignId,
   candidate,
   onQualification,
   recommendations,
@@ -398,6 +405,7 @@ function CandidateCard({
   onCreateRecommendation,
   onDecideRecommendation,
 }: {
+  campaignId: string;
   candidate: LearningCandidatePublic;
   recommendations: StrategicRecommendationCandidatePublic[];
   onQualification: (candidateId: string, mutation: QualificationMutation) => void;
@@ -452,6 +460,7 @@ function CandidateCard({
         {recommendations.map((recommendation) => (
           <RecommendationCard
             key={recommendation.id}
+            campaignId={campaignId}
             recommendation={recommendation}
             role={role}
             pending={pending}
@@ -466,6 +475,7 @@ function CandidateCard({
 }
 
 function LearningEvidence({
+  campaignId,
   data,
   onQualification,
   showCompletedEmptyCopy,
@@ -480,6 +490,7 @@ function LearningEvidence({
   onCreateRecommendation,
   onDecideRecommendation,
 }: {
+  campaignId: string;
   data: LearningResponse;
   showCompletedEmptyCopy: boolean;
   onQualification: (candidateId: string, mutation: QualificationMutation) => void;
@@ -524,6 +535,7 @@ function LearningEvidence({
         {data.learning_candidates.map((candidate) => (
           <CandidateCard
             key={candidate.id}
+            campaignId={campaignId}
             candidate={candidate}
             onQualification={onQualification}
             recommendations={data.strategic_recommendation_candidates.filter((r) => r.learning_candidate_id === candidate.id)}
@@ -840,6 +852,7 @@ export function LearningPanel({
 
       {learningState.status === "ready" && (
         <LearningEvidence
+          campaignId={campaignId}
           onQualification={handleQualification}
           data={learningState.data}
           showCompletedEmptyCopy={showCompletedEmptyCopy}

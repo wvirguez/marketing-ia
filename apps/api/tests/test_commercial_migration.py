@@ -101,10 +101,18 @@ def test_commercial_objective_offer_migration_round_trip(monkeypatch):
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from commercial_objectives")) == 0
                 assert connection.scalar(text("select count(*) from offers")) == 0
-                assert connection.scalar(text("select version_num from alembic_version")) == "5236a613ef1a"
+                # MVP-28B added one additive migration after this one —
+                # "head" now means 7b4151d4cf64, not this migration's own
+                # revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "7b4151d4cf64"
 
             if cycle == 0:
-                command.downgrade(config, "-1")
+                # MVP-28B added one additive migration after this one, so
+                # "-1" from head would only undo that migration, not
+                # Commercial's own — target Commercial's predecessor
+                # revision explicitly instead, matching the same absolute
+                # target already used above.
+                command.downgrade(config, "d82530f9e7b0")
                 inspector = inspect(engine)
                 assert "commercial_objectives" not in inspector.get_table_names()
                 assert "offers" not in inspector.get_table_names()
