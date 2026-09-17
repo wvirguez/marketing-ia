@@ -13,6 +13,17 @@ export interface LearningCandidatePublic {
   summary: string;
   created_at: string;
   qualification: LearningQualificationPublic | null;
+  strategic_implications: StrategicImplicationPublic[];
+}
+
+// MVP-26: a bounded, human-governed interpretation of a VALIDATED,
+// sufficiently-qualified Learning. Not a Recommendation, Decision,
+// Approval, or a causal/commercial claim.
+export interface StrategicImplicationPublic {
+  id: string;
+  learning_candidate_id: string;
+  statement: string;
+  created_at: string;
 }
 
 export type StrategicRecommendationDecision = "ACCEPTED" | "REJECTED";
@@ -20,6 +31,9 @@ export type StrategicRecommendationDecision = "ACCEPTED" | "REJECTED";
 export interface StrategicRecommendationCandidatePublic {
   id: string;
   learning_candidate_id: string;
+  // MVP-26/26A-R1: nullable only for rows created before this linkage was
+  // required — every new Recommendation always has one.
+  strategic_implication_id: string | null;
   summary: string;
   decision: StrategicRecommendationDecision | null;
   created_at: string;

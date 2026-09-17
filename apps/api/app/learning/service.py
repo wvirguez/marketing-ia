@@ -47,9 +47,9 @@ from sqlalchemy.orm import Session
 from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign
-from app.core.api_errors import ForbiddenError, InvalidLifecycleTransitionError, LearningCandidateNotValidatedError, RecommendationAlreadyDecidedError
-from app.learning.models import LearningCandidate, LearningCandidateStatus, StrategicRecommendationCandidate, StrategicRecommendationDecision
-from app.learning.repository import LearningCandidateRepository, LearningDerivationRepository, StrategicRecommendationCandidateRepository
+from app.core.api_errors import ForbiddenError, InvalidLifecycleTransitionError, LearningCandidateNotValidatedError, RecommendationAlreadyDecidedError, StrategicImplicationMismatchError
+from app.learning.models import LearningCandidate, LearningCandidateStatus, StrategicImplication, StrategicRecommendationCandidate, StrategicRecommendationDecision
+from app.learning.repository import LearningCandidateRepository, LearningDerivationRepository, StrategicImplicationRepository, StrategicRecommendationCandidateRepository
 from app.learning.transitions import is_legal_learning_candidate_transition
 from app.measurement.models import AnalysisResult
 from app.measurement.repository import AnalysisResultRepository
@@ -58,6 +58,7 @@ EVENT_CANDIDATE_RECORDED = "learning.candidate.recorded"
 EVENT_CANDIDATE_STATUS_CHANGED = "learning.candidate.status_changed"
 EVENT_RECOMMENDATION_RECORDED = "learning.recommendation.recorded"
 EVENT_RECOMMENDATION_DECIDED = "learning.recommendation.decided"
+EVENT_STRATEGIC_IMPLICATION_RECORDED = "learning.strategic_implication.recorded"
 
 
 class LearningService:
@@ -65,6 +66,7 @@ class LearningService:
         self.session = session
         self.candidates = LearningCandidateRepository(session)
         self.recommendations = StrategicRecommendationCandidateRepository(session)
+        self.implications = StrategicImplicationRepository(session)
         self.derivations = LearningDerivationRepository(session)
         self.analysis_results = AnalysisResultRepository(session)
         self.events = AuditEventRepository(session)
@@ -141,24 +143,105 @@ class LearningService:
         self.session.commit()
         return learning_candidate
 
+    # --- StrategicImplication: service-layer creation (MVP-26) ----------
+
+    def record_strategic_implication(
+        self,
+        *,
+        learning_candidate: LearningCandidate,
+        statement: str,
+        actor_user_id: uuid.UUID | None = None,
+        request_id: str | None = None,
+    ) -> StrategicImplication:
+        """Canonical lock (MVP-26 §12): re-reads the candidate FOR UPDATE
+        even for callers that already loaded it, exactly like
+        ``transition_learning_candidate`` above — status and qualification
+        sufficiency are both evaluated fresh, under lock, never against
+        stale pre-lock state. Requires VALIDATED + a qualification that
+        still satisfies ``QualificationService.require_sufficient``
+        (MVP-26 §11) — this second check is intentionally defense-in-depth:
+        every currently reachable write path already guarantees it (MVP-25's
+        own unconditional gate on the VALIDATED transition), but an
+        anomalous historical/imported row must still fail safely rather
+        than silently produce an Implication (MVP-26A-R1 §21/§W). Never
+        repairs, backfills, or invents qualification/evidence for such a
+        row. Cardinality is deliberately 0..N (MVP-26 §7) — no uniqueness
+        constraint, two calls create two rows."""
+        learning_candidate = self.candidates.get_by_id(learning_candidate.id, for_update=True)
+        if learning_candidate.status is not LearningCandidateStatus.VALIDATED:
+            raise LearningCandidateNotValidatedError()
+        from app.learning.qualification import QualificationService
+
+        QualificationService(self.session).require_sufficient(learning_candidate)
+
+        implication = self.implications.create(learning_candidate=learning_candidate, statement=statement)
+
+        actor_type = ActorType.USER if actor_user_id is not None else ActorType.SYSTEM
+        self.events.record(
+            workspace_id=learning_candidate.workspace_id,
+            event_type=EVENT_STRATEGIC_IMPLICATION_RECORDED,
+            actor_type=actor_type,
+            learning_candidate_id=learning_candidate.id,
+            strategic_implication_id=implication.id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return implication
+
+    def list_implications_for_campaign(self, *, campaign_id: uuid.UUID) -> list[StrategicImplication]:
+        return self.implications.list_for_campaign(campaign_id)
+
     # --- StrategicRecommendationCandidate: service-layer creation -------
 
     def record_strategic_recommendation_candidate(
         self,
         *,
+        campaign: Campaign,
         learning_candidate: LearningCandidate,
+        strategic_implication_public_id: str,
         summary: str,
         actor_user_id: uuid.UUID | None = None,
         request_id: str | None = None,
     ) -> StrategicRecommendationCandidate:
         """Requires an already-VALIDATED parent (Governance Freeze §N) —
         a plain FK cannot enforce this status-value invariant, so it is
-        checked explicitly. Never mutates the parent LearningCandidate;
-        never creates a CampaignVersion; never touches Strategy."""
+        checked explicitly, and checked FIRST (MVP-26A-R1 §F/§22 defense-
+        in-depth), before the implication is even resolved — this
+        preserves the pre-existing ``LEARNING_CANDIDATE_NOT_VALIDATED``
+        contract for a too-early call exactly as MVP-23A established it,
+        rather than masking it behind an implication-not-found response.
+
+        MVP-26/26A-R1: ``strategic_implication_public_id`` is REQUIRED, no
+        default, and resolved here under the *same* Campaign scope as
+        ``learning_candidate`` — mirroring
+        ``decide_strategic_recommendation_candidate``'s own campaign-scoped
+        resolution exactly, never trusting a client-supplied internal
+        UUID. Nonexistent/wrong-workspace/wrong-campaign-same-workspace are
+        indistinguishable (``ForbiddenError``). A same-campaign Implication
+        belonging to a *different* LearningCandidate is a distinct,
+        same-tenant relational conflict (``StrategicImplicationMismatchError``,
+        MVP-26A-R1 §7/§H) — the caller already proved campaign-scoped
+        access to a real Implication, so revealing this specific mismatch
+        is not a cross-tenant leak. This is the sole production call site
+        of this method (``app/learning/router.py``); legacy rows created
+        before this requirement existed keep ``strategic_implication_id =
+        NULL`` untouched — no backfill, no synthetic Implication. Never
+        mutates the parent LearningCandidate; never creates a
+        CampaignVersion; never touches Strategy."""
         if learning_candidate.status is not LearningCandidateStatus.VALIDATED:
             raise LearningCandidateNotValidatedError()
+        strategic_implication = self.implications.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=strategic_implication_public_id
+        )
+        if strategic_implication is None:
+            raise ForbiddenError()
+        if strategic_implication.learning_candidate_id != learning_candidate.id:
+            raise StrategicImplicationMismatchError()
 
-        recommendation = self.recommendations.create(learning_candidate=learning_candidate, summary=summary)
+        recommendation = self.recommendations.create(
+            learning_candidate=learning_candidate, summary=summary, strategic_implication=strategic_implication
+        )
 
         actor_type = ActorType.USER if actor_user_id is not None else ActorType.SYSTEM
         self.events.record(
@@ -167,6 +250,7 @@ class LearningService:
             actor_type=actor_type,
             learning_candidate_id=learning_candidate.id,
             strategic_recommendation_candidate_id=recommendation.id,
+            strategic_implication_id=strategic_implication.id,
             actor_user_id=actor_user_id,
             request_id=request_id,
         )

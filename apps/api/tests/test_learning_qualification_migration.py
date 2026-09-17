@@ -51,9 +51,16 @@ def test_qualification_migration_round_trip(monkeypatch):
             assert len([n for n in enums if n.startswith("learning_qualification_")]) == 4
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from learning_qualifications")) == 0
-                assert connection.scalar(text("select version_num from alembic_version")) == "c6b92e815f40"
+                # MVP-26 added one additive migration after this one — "head"
+                # now means d82530f9e7b0, not this migration's own revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "d82530f9e7b0"
             if cycle == 0:
-                command.downgrade(config, "-1")
+                # Explicit target, not a relative "-1": MVP-26 added a
+                # further migration on top of this one, so "one step down"
+                # from head no longer removes learning_qualifications —
+                # the revision immediately before it, "5d213770c589", still
+                # does.
+                command.downgrade(config, "5d213770c589")
                 inspector = inspect(engine)
                 assert "learning_qualifications" not in inspector.get_table_names()
                 assert "learning_qualification_signals" not in inspector.get_table_names()

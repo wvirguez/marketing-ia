@@ -60,7 +60,11 @@ def _record_recommendation(campaign_public_id: str, *, validated: bool = True) -
         learning.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.PROVISIONAL)
         learning.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATION_PENDING)
         learning.transition_learning_candidate(learning_candidate=candidate, target_status=LearningCandidateStatus.VALIDATED)
-        recommendation = learning.record_strategic_recommendation_candidate(learning_candidate=candidate, summary="Shift toward shorter hooks.")
+        implication = learning.record_strategic_implication(learning_candidate=candidate, statement="Shorter hooks generalize here.")
+        recommendation = learning.record_strategic_recommendation_candidate(
+            campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id,
+            summary="Shift toward shorter hooks.",
+        )
         return candidate.public_id, recommendation.public_id
 
 
@@ -114,15 +118,20 @@ def test_get_returns_frozen_shape(campaign_run_client: dict) -> None:
     assert candidate["status"] == "VALIDATED"
     assert candidate["summary"]
     assert "created_at" in candidate
-    assert set(candidate.keys()) == {"id", "analysis_result_id", "status", "summary", "created_at", "qualification"}
+    assert set(candidate.keys()) == {"id", "analysis_result_id", "status", "summary", "created_at", "qualification", "strategic_implications"}
+    assert len(candidate["strategic_implications"]) == 1
+    assert candidate["strategic_implications"][0]["learning_candidate_id"] == lrn_id
 
     assert len(body["strategic_recommendation_candidates"]) == 1
     recommendation = body["strategic_recommendation_candidates"][0]
     assert recommendation["id"] == src_id
     assert recommendation["learning_candidate_id"] == lrn_id
+    assert recommendation["strategic_implication_id"] == candidate["strategic_implications"][0]["id"]
     assert recommendation["decision"] is None
     assert recommendation["decided_at"] is None
-    assert set(recommendation.keys()) == {"id", "learning_candidate_id", "summary", "decision", "created_at", "decided_at"}
+    assert set(recommendation.keys()) == {
+        "id", "learning_candidate_id", "strategic_implication_id", "summary", "decision", "created_at", "decided_at",
+    }
 
 
 # --- PATCH contract --------------------------------------------------------

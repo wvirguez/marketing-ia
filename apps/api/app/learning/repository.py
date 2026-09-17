@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.ids import generate_public_id
-from app.learning.models import LearningCandidate, LearningDerivation, StrategicRecommendationCandidate
+from app.learning.models import LearningCandidate, LearningDerivation, StrategicImplication, StrategicRecommendationCandidate
 from app.measurement.models import AnalysisResult
 
 
@@ -88,11 +88,18 @@ class StrategicRecommendationCandidateRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, *, learning_candidate: LearningCandidate, summary: str) -> StrategicRecommendationCandidate:
+    def create(
+        self,
+        *,
+        learning_candidate: LearningCandidate,
+        summary: str,
+        strategic_implication: StrategicImplication,
+    ) -> StrategicRecommendationCandidate:
         row = StrategicRecommendationCandidate(
             public_id=generate_public_id("SRC"),
             workspace_id=learning_candidate.workspace_id,
             learning_candidate_id=learning_candidate.id,
+            strategic_implication_id=strategic_implication.id,
             summary=summary,
         )
         self.session.add(row)
@@ -140,6 +147,81 @@ class StrategicRecommendationCandidateRepository:
                 .join(AnalysisResult, LearningCandidate.analysis_result_id == AnalysisResult.id)
                 .where(AnalysisResult.campaign_id == campaign_id)
                 .order_by(StrategicRecommendationCandidate.created_at.asc(), StrategicRecommendationCandidate.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+
+class StrategicImplicationRepository:
+    """Data access for StrategicImplication (MVP-26) — mirrors
+    ``StrategicRecommendationCandidateRepository`` exactly, one level
+    shallower in the chain. No method here calls ``session.commit()``,
+    same transaction-ownership convention as every repository in this
+    module. No update/delete method exists — StrategicImplication is
+    immutable from INSERT (MVP-26 §8)."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(self, *, learning_candidate: LearningCandidate, statement: str) -> StrategicImplication:
+        row = StrategicImplication(
+            public_id=generate_public_id("SIM"),
+            workspace_id=learning_candidate.workspace_id,
+            learning_candidate_id=learning_candidate.id,
+            statement=statement,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_for_campaign_by_public_id(
+        self, *, campaign_id: uuid.UUID, public_id: str
+    ) -> StrategicImplication | None:
+        """Non-leaky, campaign-scoped resource lookup (MVP-26 §10, mirrors
+        ``LearningCandidateRepository.get_for_campaign_by_public_id``
+        exactly): an implication that does not exist at all, that belongs
+        to a different workspace, or that belongs to a different Campaign
+        within the *same* workspace, is indistinguishable — all three
+        return ``None`` here. No ``for_update`` — StrategicImplication is
+        immutable, so no caller ever needs to lock this row itself (the
+        canonical serialization resource for every mutation that touches
+        it remains ``LearningCandidate``, per MVP-26 §12)."""
+        query = (
+            select(StrategicImplication)
+            .join(LearningCandidate, StrategicImplication.learning_candidate_id == LearningCandidate.id)
+            .join(AnalysisResult, LearningCandidate.analysis_result_id == AnalysisResult.id)
+            .where(AnalysisResult.campaign_id == campaign_id, StrategicImplication.public_id == public_id)
+        )
+        return self.session.execute(query).scalar_one_or_none()
+
+    def list_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicImplication]:
+        """Campaign-scoped, joined through LearningCandidate ->
+        AnalysisResult — never workspace-wide, matching every other
+        listing in this module. Used for the batched, N+1-avoiding
+        campaign-wide read (MVP-26 §26)."""
+        return list(
+            self.session.execute(
+                select(StrategicImplication)
+                .join(LearningCandidate, StrategicImplication.learning_candidate_id == LearningCandidate.id)
+                .join(AnalysisResult, LearningCandidate.analysis_result_id == AnalysisResult.id)
+                .where(AnalysisResult.campaign_id == campaign_id)
+                .order_by(StrategicImplication.created_at.asc(), StrategicImplication.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_for_candidate(self, learning_candidate_id: uuid.UUID) -> list[StrategicImplication]:
+        """Single-candidate accessor for callers that already resolved and
+        authorized exactly one LearningCandidate (e.g. after a mutation on
+        it) — never used for a campaign-wide listing, where
+        ``list_for_campaign`` above avoids N+1 instead."""
+        return list(
+            self.session.execute(
+                select(StrategicImplication)
+                .where(StrategicImplication.learning_candidate_id == learning_candidate_id)
+                .order_by(StrategicImplication.created_at.asc(), StrategicImplication.id.asc())
             )
             .scalars()
             .all()

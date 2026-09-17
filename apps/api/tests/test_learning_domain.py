@@ -13,6 +13,7 @@ from app.learning.service import LearningService
 from tests.learningtest import seed_sufficient_qualification
 from app.learning.transitions import LEARNING_CANDIDATE_TRANSITIONS, is_legal_learning_candidate_transition
 from app.workspaces.repository import OrganizationRepository, WorkspaceRepository
+from tests.contenttest import make_user
 from tests.learningtest import build_analysis_result, build_learning_candidate, build_recommendation, build_validated_learning_candidate
 
 pytestmark = pytest.mark.postgres
@@ -144,9 +145,14 @@ def test_invalid_transition_raises_and_causes_no_mutation(db_session) -> None:
 
 
 def test_recommendation_requires_validated_parent(db_session) -> None:
-    _campaign, _analysis_result, candidate = build_learning_candidate(db_session)
+    campaign, _analysis_result, candidate = build_learning_candidate(db_session)
+    # The VALIDATED check runs before implication resolution (MVP-26A-R1
+    # §F/§22 defense-in-depth ordering) — a bogus implication id never
+    # masks this error.
     with pytest.raises(LearningCandidateNotValidatedError):
-        LearningService(db_session).record_strategic_recommendation_candidate(learning_candidate=candidate, summary="x")
+        LearningService(db_session).record_strategic_recommendation_candidate(
+            campaign=campaign, learning_candidate=candidate, strategic_implication_public_id="SIM-BOGUSBOGUS01", summary="x"
+        )
 
 
 def test_recommendation_created_from_validated_parent(db_session) -> None:
@@ -156,6 +162,43 @@ def test_recommendation_created_from_validated_parent(db_session) -> None:
     assert recommendation.workspace_id == candidate.workspace_id
     assert recommendation.decision is None
     assert recommendation.decided_at is None
+    # MVP-26: every new write goes through build_recommendation's own
+    # implication-first helper — never NULL.
+    assert recommendation.strategic_implication_id is not None
+
+
+def test_legacy_recommendation_without_implication_remains_readable_and_decidable(db_session) -> None:
+    """MVP-26A-R1 §10/§I/§J: a row created before the StrategicImplication
+    linkage existed (constructed directly here, bypassing the service —
+    the only way such a row can exist, since every current write path now
+    requires the FK) must remain fully readable and decidable, with no
+    backfill and no synthetic Implication ever attached to it."""
+    campaign, _analysis_result, candidate, recommendation = build_recommendation(db_session)
+    # Simulate a genuinely pre-MVP-26 row: direct construction, no
+    # strategic_implication_id, exactly like the frozen schema permits.
+    legacy = StrategicRecommendationCandidate(
+        public_id="SRC-LEGACYNOIMPL", workspace_id=candidate.workspace_id,
+        learning_candidate_id=candidate.id, summary="Pre-MVP-26 recommendation.",
+    )
+    db_session.add(legacy)
+    db_session.commit()
+    assert legacy.strategic_implication_id is None
+
+    from app.learning.repository import StrategicRecommendationCandidateRepository
+
+    reread = StrategicRecommendationCandidateRepository(db_session).get_for_campaign_by_public_id(
+        campaign_id=campaign.id, public_id=legacy.public_id
+    )
+    assert reread is not None and reread.strategic_implication_id is None
+
+    user = make_user(db_session)
+    db_session.commit()
+    decided = LearningService(db_session).decide_strategic_recommendation_candidate(
+        campaign=campaign, recommendation_public_id=legacy.public_id,
+        decision=StrategicRecommendationDecision.ACCEPTED, actor_user_id=user.id,
+    )
+    assert decided.decision is StrategicRecommendationDecision.ACCEPTED
+    assert decided.strategic_implication_id is None
 
 
 def test_recommendation_workspace_mismatch_with_learning_candidate_rejected_at_db_level(db_session) -> None:
@@ -193,10 +236,15 @@ def test_recommendation_decision_enum_membership_is_exact() -> None:
 
 
 def test_learning_candidate_can_own_multiple_recommendations(db_session) -> None:
-    _campaign, _analysis_result, candidate = build_validated_learning_candidate(db_session)
+    campaign, _analysis_result, candidate = build_validated_learning_candidate(db_session)
     service = LearningService(db_session)
-    a = service.record_strategic_recommendation_candidate(learning_candidate=candidate, summary="Option A.")
-    b = service.record_strategic_recommendation_candidate(learning_candidate=candidate, summary="Option B.")
+    implication = service.record_strategic_implication(learning_candidate=candidate, statement="Shared implication.")
+    a = service.record_strategic_recommendation_candidate(
+        campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id, summary="Option A."
+    )
+    b = service.record_strategic_recommendation_candidate(
+        campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id, summary="Option B."
+    )
     assert a.id != b.id
     assert a.learning_candidate_id == b.learning_candidate_id == candidate.id
 

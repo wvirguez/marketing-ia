@@ -82,7 +82,9 @@ def _build_candidate(campaign_public_id: str, *, target_status: LearningCandidat
 
 def _record_recommendation(campaign_public_id: str) -> tuple[str, str]:
     """Same shape as ``test_learning_api.py``'s own helper — a VALIDATED
-    candidate with one recommendation already created. Returns
+    candidate with one recommendation already created. MVP-26: builds the
+    required StrategicImplication first via the same direct-service
+    pattern. Returns
     ``(learning_candidate_public_id, recommendation_public_id)``."""
     lrn_id = _build_candidate(campaign_public_id, target_status=LearningCandidateStatus.VALIDATED)
     engine = get_engine()
@@ -90,8 +92,22 @@ def _record_recommendation(campaign_public_id: str) -> tuple[str, str]:
         campaign = CampaignRepository(session).get_by_public_id(campaign_public_id)
         learning = LearningService(session)
         candidate = learning.candidates.get_for_campaign_by_public_id(campaign_id=campaign.id, public_id=lrn_id)
-        recommendation = learning.record_strategic_recommendation_candidate(learning_candidate=candidate, summary="Shift toward shorter hooks.")
+        implication = learning.record_strategic_implication(learning_candidate=candidate, statement="Shorter hooks generalize here.")
+        recommendation = learning.record_strategic_recommendation_candidate(
+            campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id,
+            summary="Shift toward shorter hooks.",
+        )
         return lrn_id, recommendation.public_id
+
+
+def _create_implication(fixtures: dict, lrn_id: str, statement: str = "Shorter hooks generalize within this audience and channel.") -> str:
+    """HTTP-based helper mirroring ``_post`` — creates one
+    StrategicImplication for ``lrn_id`` and returns its public_id, for
+    tests that exercise the full HTTP contract rather than the direct-
+    service pattern."""
+    response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": statement})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
 
 
 def _path(fixtures: dict, candidate_or_recommendation_id: str, action: str) -> str:
@@ -140,13 +156,71 @@ def test_reopen_from_insufficient_evidence(campaign_run_client: dict) -> None:
     assert response.json()["status"] == "VALIDATION_PENDING"
 
 
-def test_create_recommendation_happy_path(campaign_run_client: dict) -> None:
+def test_create_strategic_implication_happy_path(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
-    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Shift toward shorter hooks."})
+    response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Shorter hooks generalize here."})
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["learning_candidate_id"] == lrn_id
+    assert body["statement"] == "Shorter hooks generalize here."
+    assert set(body.keys()) == {"id", "learning_candidate_id", "statement", "created_at"}
+
+
+def test_create_strategic_implication_cardinality_0_to_n(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    first = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Angle A."})
+    second = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Angle B."})
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+
+
+def test_create_strategic_implication_requires_validated_parent(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATION_PENDING)
+    response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Too early."})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "LEARNING_CANDIDATE_NOT_VALIDATED"
+
+
+def test_create_strategic_implication_rejects_unqualified_validated(campaign_run_client: dict) -> None:
+    """MVP-26A-R1 §21/§W defense-in-depth: no *normal* write path can reach
+    VALIDATED without sufficient qualification (``transition_learning_candidate``
+    itself already blocks that, MVP-25) — so this anomaly can only be
+    produced by directly forcing the row, exactly mirroring an
+    unrepresented historical/imported state. ``record_strategic_implication``
+    must still reject it explicitly rather than silently succeed."""
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.CANDIDATE_IDENTIFIED, qualified=False)
+    engine = get_engine()
+    with OrmSession(bind=engine) as session:
+        campaign = CampaignRepository(session).get_by_public_id(fixtures["campaign_id"])
+        service = LearningService(session)
+        candidate = service.candidates.get_for_campaign_by_public_id(campaign_id=campaign.id, public_id=lrn_id, for_update=True)
+        # Force the anomalous state directly, bypassing
+        # transition_learning_candidate's own sufficiency gate entirely —
+        # never reachable through any route or service method.
+        candidate.status = LearningCandidateStatus.VALIDATED
+        session.commit()
+
+    response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Unsafe."})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "LEARNING_QUALIFICATION_CONFLICT"
+
+
+def test_create_recommendation_happy_path(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    implication_id = _create_implication(fixtures, lrn_id)
+    response = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": implication_id, "summary": "Shift toward shorter hooks."},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["learning_candidate_id"] == lrn_id
+    assert body["strategic_implication_id"] == implication_id
     assert body["summary"] == "Shift toward shorter hooks."
     assert body["decision"] is None
     assert body["decided_at"] is None
@@ -155,10 +229,44 @@ def test_create_recommendation_happy_path(campaign_run_client: dict) -> None:
 def test_create_recommendation_cardinality_0_to_n(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
-    first = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Option A."})
-    second = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Option B."})
+    implication_id = _create_implication(fixtures, lrn_id)
+    first = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"strategic_implication_id": implication_id, "summary": "Option A."})
+    second = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"strategic_implication_id": implication_id, "summary": "Option B."})
     assert first.status_code == 201 and second.status_code == 201
     assert first.json()["id"] != second.json()["id"]
+
+
+def test_create_recommendation_missing_implication_id_rejected(campaign_run_client: dict) -> None:
+    """MVP-26/26A-R1 §5: the new-write requirement is enforced at the API
+    layer — omitting the field entirely fails Pydantic validation before
+    the route body ever runs."""
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Missing implication."})
+    assert response.status_code == 422
+
+
+def test_create_recommendation_unknown_implication_rejected_non_leakily(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    response = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": "SIM-TOTALLYFAKE0", "summary": "x"},
+    )
+    assert response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_create_recommendation_wrong_learning_candidate_implication_rejected(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_a = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    lrn_b = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    implication_for_a = _create_implication(fixtures, lrn_a)
+    response = _post(
+        fixtures, _path(fixtures, lrn_b, "recommendations"),
+        {"strategic_implication_id": implication_for_a, "summary": "x"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "STRATEGIC_IMPLICATION_MISMATCH"
 
 
 # --- illegal transitions: deterministic 409, no state graph re-derivation --
@@ -198,9 +306,16 @@ def test_decision_rejects_arbitrary_status_string(campaign_run_client: dict) -> 
 
 
 def test_create_recommendation_requires_validated_parent(campaign_run_client: dict) -> None:
+    """MVP-26A-R1 §F/§22: the VALIDATED check runs before implication
+    resolution, so a placeholder (never-resolvable) implication id still
+    surfaces the original LEARNING_CANDIDATE_NOT_VALIDATED conflict, never
+    masked behind a FORBIDDEN implication-lookup failure."""
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATION_PENDING)
-    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Too early."})
+    response = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": "SIM-PLACEHOLDER0", "summary": "Too early."},
+    )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "LEARNING_CANDIDATE_NOT_VALIDATED"
 
@@ -208,7 +323,8 @@ def test_create_recommendation_requires_validated_parent(campaign_run_client: di
 def test_create_recommendation_rejects_empty_summary(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
-    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": ""})
+    implication_id = _create_implication(fixtures, lrn_id)
+    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"strategic_implication_id": implication_id, "summary": ""})
     assert response.status_code == 422
 
 
@@ -219,6 +335,14 @@ def test_new_routes_require_csrf(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.CANDIDATE_IDENTIFIED)
     response = fixtures["client"].post(_path(fixtures, lrn_id, "mark-provisional"), json={})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CSRF_INVALID"
+
+
+def test_strategic_implication_route_requires_csrf(campaign_run_client: dict) -> None:
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    response = fixtures["client"].post(_path(fixtures, lrn_id, "strategic-implications"), json={"statement": "x"})
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CSRF_INVALID"
 
@@ -257,7 +381,13 @@ def test_member_can_create_recommendation_but_not_decide_it(campaign_run_client:
     member_fixtures = {**fixtures, "client": member_client, "csrf_token": token}
 
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
-    response = _post(member_fixtures, _path(member_fixtures, lrn_id, "recommendations"), {"summary": "Member-proposed change."})
+    # MEMBER+ may also create the StrategicImplication itself (same
+    # authority as Recommendation creation, MVP-26 §37).
+    implication_id = _create_implication(member_fixtures, lrn_id)
+    response = _post(
+        member_fixtures, _path(member_fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": implication_id, "summary": "Member-proposed change."},
+    )
     assert response.status_code == 201, response.text
     src_id = response.json()["id"]
 
@@ -273,7 +403,11 @@ def test_owner_can_decide_learning_and_recommendation(campaign_run_client: dict)
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATION_PENDING)
     assert _post(fixtures, _path(fixtures, lrn_id, "decision"), {"decision": "VALIDATED"}).status_code == 200
 
-    src_response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Owner-proposed change."})
+    implication_id = _create_implication(fixtures, lrn_id)
+    src_response = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": implication_id, "summary": "Owner-proposed change."},
+    )
     src_id = src_response.json()["id"]
     decide_response = fixtures["client"].patch(
         f"/api/v1/campaigns/{fixtures['campaign_id']}/learning/{src_id}",
@@ -325,7 +459,11 @@ def test_learning_p3_1_member_cannot_patch_recommendation_decision(campaign_run_
 
 def test_unknown_candidate_is_forbidden_non_leakily(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
-    for action, payload in (("mark-provisional", None), ("decision", {"decision": "VALIDATED"}), ("recommendations", {"summary": "x"})):
+    for action, payload in (
+        ("mark-provisional", None),
+        ("decision", {"decision": "VALIDATED"}),
+        ("recommendations", {"strategic_implication_id": "SIM-PLACEHOLDER0", "summary": "x"}),
+    ):
         response = _post(fixtures, _path(fixtures, "LRN-TOTALLYFAKE0", action), payload)
         assert response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
 
@@ -379,6 +517,85 @@ def test_same_workspace_different_campaign_candidate_substitution_fails(campaign
     assert correct_b.status_code == 200
 
 
+def test_recommendation_rejects_same_workspace_different_campaign_implication(campaign_run_client: dict) -> None:
+    """MVP-26A-R1 §7/§H/§21: an Implication that is real and belongs to
+    the caller's own Workspace, but to a *different* Campaign, must be
+    just as non-leakily rejected as a wholly unknown one — never treated
+    as a lesser, "wrong candidate" conflict."""
+    fixtures = campaign_run_client  # Campaign A
+    lrn_a = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+
+    body_b = fixtures["client"].post(
+        "/api/v1/campaigns", json=campaign_payload(name="Campaign B"), headers={"X-CSRF-Token": fixtures["csrf_token"]}
+    ).json()
+    campaign_b_id = body_b["campaign"]["id"]
+    lrn_b = _build_candidate(campaign_b_id, target_status=LearningCandidateStatus.VALIDATED)
+    implication_b = _post(
+        fixtures, f"/api/v1/campaigns/{campaign_b_id}/learning/{lrn_b}/strategic-implications",
+        {"statement": "Campaign B's own implication."},
+    )
+    assert implication_b.status_code == 201, implication_b.text
+
+    response = _post(
+        fixtures, _path(fixtures, lrn_a, "recommendations"),
+        {"strategic_implication_id": implication_b.json()["id"], "summary": "Cross-campaign substitution attempt."},
+    )
+    assert response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_recommendation_rejects_cross_workspace_implication(auth_client: TestClient) -> None:
+    """MVP-26A-R1 §7/§H/§21: an Implication belonging to a wholly
+    different Workspace is non-leakily rejected exactly like an unknown
+    public_id — no distinguishing error, no leaked existence."""
+    client_a = auth_client
+    register_and_get_csrf(client_a, display_name="User A")
+    csrf_a = client_a.get("/api/v1/auth/csrf").json()["csrf_token"]
+    body_a = client_a.post("/api/v1/campaigns", json=campaign_payload(name="A"), headers={"X-CSRF-Token": csrf_a}).json()
+    campaign_a_id = body_a["campaign"]["id"]
+    lrn_a = _build_candidate(campaign_a_id, target_status=LearningCandidateStatus.VALIDATED)
+
+    client_b = TestClient(auth_client.app, raise_server_exceptions=False)
+    register_and_get_csrf(client_b, display_name="User B")
+    csrf_b = client_b.get("/api/v1/auth/csrf").json()["csrf_token"]
+    body_b = client_b.post("/api/v1/campaigns", json=campaign_payload(name="B"), headers={"X-CSRF-Token": csrf_b}).json()
+    campaign_b_id = body_b["campaign"]["id"]
+    lrn_b = _build_candidate(campaign_b_id, target_status=LearningCandidateStatus.VALIDATED)
+    implication_b = client_b.post(
+        f"/api/v1/campaigns/{campaign_b_id}/learning/{lrn_b}/strategic-implications",
+        json={"statement": "Workspace B's own implication."}, headers={"X-CSRF-Token": csrf_b},
+    )
+    assert implication_b.status_code == 201, implication_b.text
+
+    response = client_a.post(
+        f"/api/v1/campaigns/{campaign_a_id}/learning/{lrn_a}/recommendations",
+        json={"strategic_implication_id": implication_b.json()["id"], "summary": "Cross-workspace substitution attempt."},
+        headers={"X-CSRF-Token": csrf_a},
+    )
+    assert response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_strategic_implication_is_immutable_no_write_routes_beyond_create(campaign_run_client: dict) -> None:
+    """MVP-26 §8: create + read only. The collection path itself
+    (``.../strategic-implications``, where POST is registered) correctly
+    405s any other method; no route at all is registered for a single
+    implication's own path (``.../strategic-implications/{id}``), so
+    that path 404s for every method including GET — there is no way to
+    address one Implication directly outside the batched read model."""
+    fixtures = campaign_run_client
+    lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
+    implication_id = _create_implication(fixtures, lrn_id)
+    headers = {"X-CSRF-Token": fixtures["csrf_token"]}
+
+    collection_path = _path(fixtures, lrn_id, "strategic-implications")
+    assert fixtures["client"].patch(collection_path, json={"statement": "y"}, headers=headers).status_code == 405
+    assert fixtures["client"].put(collection_path, json={"statement": "y"}, headers=headers).status_code == 405
+    assert fixtures["client"].delete(collection_path, headers=headers).status_code == 405
+
+    single_path = f"/api/v1/campaigns/{fixtures['campaign_id']}/learning/{lrn_id}/strategic-implications/{implication_id}"
+    assert fixtures["client"].get(single_path).status_code == 404
+    assert fixtures["client"].patch(single_path, json={"statement": "y"}, headers=headers).status_code == 404
+
+
 # --- audit: reopen preserves history (MVP-23B §44) --------------------------
 
 
@@ -423,8 +640,13 @@ def test_no_forbidden_wording_in_any_new_response(campaign_run_client: dict) -> 
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATION_PENDING)
     response = _post(fixtures, _path(fixtures, lrn_id, "decision"), {"decision": "VALIDATED"})
-    src_response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Shift toward shorter hooks."})
-    lowered = (response.text + src_response.text).lower()
+    implication_response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Shorter hooks generalize here."})
+    implication_id = implication_response.json()["id"]
+    src_response = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": implication_id, "summary": "Shift toward shorter hooks."},
+    )
+    lowered = (response.text + implication_response.text + src_response.text).lower()
     for forbidden in (
         "caused", "causad", "generad", "atribuid", "mejor", "peor", "ganador", "rendimiento",
         "significan", "probado", "comprobado",
@@ -459,8 +681,11 @@ def test_accepted_recommendation_does_not_touch_strategy_tables(campaign_run_cli
 def test_recommendation_response_has_no_forbidden_fields(campaign_run_client: dict) -> None:
     fixtures = campaign_run_client
     lrn_id = _build_candidate(fixtures["campaign_id"], target_status=LearningCandidateStatus.VALIDATED)
-    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "x"})
-    assert set(response.json().keys()) == {"id", "learning_candidate_id", "summary", "decision", "created_at", "decided_at"}
+    implication_id = _create_implication(fixtures, lrn_id)
+    response = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"strategic_implication_id": implication_id, "summary": "x"})
+    assert set(response.json().keys()) == {
+        "id", "learning_candidate_id", "strategic_implication_id", "summary", "decision", "created_at", "decided_at",
+    }
 
 
 # --- MVP-23B §61: full end-to-end journey via real HTTP, entirely through
@@ -517,8 +742,14 @@ def test_full_derive_to_accepted_recommendation_journey_via_http(campaign_run_cl
     r3 = _post(fixtures, _path(fixtures, lrn_id, "decision"), {"decision": "VALIDATED"})
     assert r3.status_code == 200 and r3.json()["status"] == "VALIDATED"
 
-    # VALIDATED -> StrategicRecommendationCandidate -> ACCEPTED.
-    r4 = _post(fixtures, _path(fixtures, lrn_id, "recommendations"), {"summary": "Shift creative brief toward shorter hooks."})
+    # VALIDATED -> StrategicImplication -> StrategicRecommendationCandidate -> ACCEPTED.
+    implication_response = _post(fixtures, _path(fixtures, lrn_id, "strategic-implications"), {"statement": "Shorter hooks generalize here."})
+    assert implication_response.status_code == 201, implication_response.text
+    implication_id = implication_response.json()["id"]
+    r4 = _post(
+        fixtures, _path(fixtures, lrn_id, "recommendations"),
+        {"strategic_implication_id": implication_id, "summary": "Shift creative brief toward shorter hooks."},
+    )
     assert r4.status_code == 201, r4.text
     src_id = r4.json()["id"]
     r5 = fixtures["client"].patch(

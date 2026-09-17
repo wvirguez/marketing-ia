@@ -1,7 +1,8 @@
 // Typed service functions for the Learning contract. Mirrors
-// apps/api/app/learning/router.py exactly (MVP-12C, extended by MVP-23B):
-// GET /learning, POST /learning/derive, POST /learning/{id}/mark-provisional,
-// POST /learning/{id}/mark-validation-pending, POST /learning/{id}/decision,
+// apps/api/app/learning/router.py exactly (MVP-12C, extended by MVP-23B,
+// MVP-25, MVP-26): GET /learning, POST /learning/derive,
+// POST /learning/{id}/mark-provisional, POST /learning/{id}/mark-validation-pending,
+// POST /learning/{id}/decision, POST /learning/{id}/strategic-implications,
 // POST /learning/{id}/recommendations, PATCH /learning/{recommendation_id}.
 
 import { request } from "@/lib/api/client";
@@ -12,6 +13,7 @@ import type {
   LearningCandidatePublic,
   LearningCandidateStatus,
   LearningResponse,
+  StrategicImplicationPublic,
   StrategicRecommendationCandidatePublic,
   StrategicRecommendationDecision,
 } from "@/types/learning";
@@ -59,14 +61,26 @@ export async function decideLearningCandidate(
   );
 }
 
+export async function createStrategicImplication(
+  campaignPublicId: string,
+  learningCandidatePublicId: string,
+  statement: string,
+): Promise<StrategicImplicationPublic> {
+  return request<StrategicImplicationPublic>(
+    learningPath(campaignPublicId, `/${encodeURIComponent(learningCandidatePublicId)}/strategic-implications`),
+    { method: "POST", body: { statement } },
+  );
+}
+
 export async function createStrategicRecommendation(
   campaignPublicId: string,
   learningCandidatePublicId: string,
+  strategicImplicationId: string,
   summary: string,
 ): Promise<StrategicRecommendationCandidatePublic> {
   return request<StrategicRecommendationCandidatePublic>(
     learningPath(campaignPublicId, `/${encodeURIComponent(learningCandidatePublicId)}/recommendations`),
-    { method: "POST", body: { summary } },
+    { method: "POST", body: { strategic_implication_id: strategicImplicationId, summary } },
   );
 }
 

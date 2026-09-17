@@ -163,6 +163,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "asset_versions",
         "learning_candidates",
         "strategic_recommendation_candidates",
+        "strategic_implications",
         "learning_derivations",
         "learning_qualifications",
         "learning_qualification_signals",

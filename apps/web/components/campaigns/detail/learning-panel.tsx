@@ -49,6 +49,7 @@ import { LearningQualification, type QualificationMutation } from "./learning-qu
 import { updateLearningQualification, attachLearningEvidence, disposeLearningEvidence } from "@/lib/api/learning";
 import { Icon } from "@/components/ui/icon";
 import {
+  createStrategicImplication,
   createStrategicRecommendation,
   decideLearningCandidate,
   decideStrategicRecommendation,
@@ -64,6 +65,7 @@ import type {
   LearningCandidatePublic,
   LearningCandidateStatus,
   LearningResponse,
+  StrategicImplicationPublic,
   StrategicRecommendationCandidatePublic,
   StrategicRecommendationDecision,
 } from "@/types/learning";
@@ -188,31 +190,92 @@ function CandidateActions({
   return null;
 }
 
-function RecommendationForm({
+// MVP-26: an implication is a bounded, human-governed interpretation of a
+// validated Learning — never itself a decision, never a Strategy mutation,
+// never a causal or commercial claim. This copy is required to accompany
+// every implication surface (MVP-26 §36).
+const IMPLICATION_GOVERNANCE_NOTE =
+  "Una implicación estratégica es una interpretación de gobernanza humana sobre un aprendizaje validado y suficientemente calificado. No es una decisión estratégica, no modifica la Estrategia por sí sola, no establece causalidad y no establece atribución comercial.";
+
+const LEGACY_RECOMMENDATION_NOTE =
+  "Recomendación histórica, creada antes de que se exigiera vincularla a una implicación estratégica.";
+
+function StrategicImplicationForm({
   candidateId,
   pending,
   onCreate,
 }: {
   candidateId: string;
   pending: boolean;
-  onCreate: (candidateId: string, summary: string) => void;
+  onCreate: (candidateId: string, statement: string) => void;
 }) {
-  const [summary, setSummary] = useState("");
+  const [statement, setStatement] = useState("");
 
   function handleSubmit() {
-    const trimmed = summary.trim();
+    const trimmed = statement.trim();
     if (!trimmed) return;
     onCreate(candidateId, trimmed);
-    setSummary("");
+    setStatement("");
   }
 
   return (
     <div style={{ marginTop: 8 }}>
-      <label htmlFor={`recommendation-summary-${candidateId}`} className="muted small-text">
-        Proponer una recomendación estratégica a partir de este aprendizaje validado
+      <p className="muted small-text">{IMPLICATION_GOVERNANCE_NOTE}</p>
+      <label htmlFor={`implication-statement-${candidateId}`} className="muted small-text">
+        ¿Qué implica este aprendizaje validado para la estrategia, dentro de su alcance y límite de generalización?
       </label>
       <textarea
-        id={`recommendation-summary-${candidateId}`}
+        id={`implication-statement-${candidateId}`}
+        value={statement}
+        onChange={(event) => setStatement(event.target.value)}
+        disabled={pending}
+        rows={2}
+        style={{ width: "100%", marginTop: 4 }}
+      />
+      <button type="button" className="button" disabled={pending || statement.trim().length === 0} onClick={handleSubmit} style={{ marginTop: 6 }}>
+        Registrar implicación estratégica
+      </button>
+    </div>
+  );
+}
+
+function RecommendationFromImplicationForm({
+  candidateId,
+  implication,
+  pending,
+  onCreate,
+}: {
+  candidateId: string;
+  implication: StrategicImplicationPublic;
+  pending: boolean;
+  onCreate: (candidateId: string, implicationId: string, summary: string) => void;
+}) {
+  const [summary, setSummary] = useState("");
+  const [expanded, setExpanded] = useState(false);
+
+  function handleSubmit() {
+    const trimmed = summary.trim();
+    if (!trimmed) return;
+    onCreate(candidateId, implication.id, trimmed);
+    setSummary("");
+    setExpanded(false);
+  }
+
+  if (!expanded) {
+    return (
+      <button type="button" className="auth-text-button" disabled={pending} onClick={() => setExpanded(true)} style={{ marginTop: 6 }}>
+        Crear recomendación a partir de esta implicación
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <label htmlFor={`recommendation-summary-${implication.id}`} className="muted small-text">
+        Proponer una recomendación estratégica a partir de esta implicación
+      </label>
+      <textarea
+        id={`recommendation-summary-${implication.id}`}
         value={summary}
         onChange={(event) => setSummary(event.target.value)}
         disabled={pending}
@@ -223,6 +286,33 @@ function RecommendationForm({
         Proponer recomendación
       </button>
     </div>
+  );
+}
+
+function StrategicImplicationCard({
+  candidateId,
+  implication,
+  pending,
+  onCreateRecommendation,
+}: {
+  candidateId: string;
+  implication: StrategicImplicationPublic;
+  pending: boolean;
+  onCreateRecommendation: (candidateId: string, implicationId: string, summary: string) => void;
+}) {
+  return (
+    <article className="panel deliverable-card" style={{ marginTop: 8 }}>
+      <div>
+        <p>{implication.statement}</p>
+        <p className="muted small-text">{formatCampaignDate(implication.created_at)}</p>
+        <RecommendationFromImplicationForm
+          candidateId={candidateId}
+          implication={implication}
+          pending={pending}
+          onCreate={onCreateRecommendation}
+        />
+      </div>
+    </article>
   );
 }
 
@@ -256,6 +346,9 @@ function RecommendationCard({
             ? "Recomendación estratégica candidata, pendiente de decisión"
             : `Recomendación ${recommendation.decision === "ACCEPTED" ? "aceptada" : "rechazada"}`}
         </p>
+        {recommendation.strategic_implication_id === null && (
+          <p className="muted small-text">{LEGACY_RECOMMENDATION_NOTE}</p>
+        )}
         <p className="muted small-text">{formatCampaignDate(recommendation.created_at)}</p>
         {recommendation.decision === null && canDecide && (
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
@@ -301,6 +394,7 @@ function CandidateCard({
   onMarkProvisional,
   onMarkValidationPending,
   onDecideCandidate,
+  onCreateImplication,
   onCreateRecommendation,
   onDecideRecommendation,
 }: {
@@ -314,7 +408,8 @@ function CandidateCard({
   onMarkProvisional: (candidateId: string) => void;
   onMarkValidationPending: (candidateId: string) => void;
   onDecideCandidate: (candidateId: string, decision: keyof typeof CANDIDATE_DECISION_LABELS) => void;
-  onCreateRecommendation: (candidateId: string, summary: string) => void;
+  onCreateImplication: (candidateId: string, statement: string) => void;
+  onCreateRecommendation: (candidateId: string, implicationId: string, summary: string) => void;
   onDecideRecommendation: (recommendationId: string, decision: StrategicRecommendationDecision) => void;
 }) {
   return (
@@ -340,7 +435,18 @@ function CandidateCard({
         />
 
         {candidate.status === "VALIDATED" && (
-          <RecommendationForm candidateId={candidate.id} pending={pending} onCreate={onCreateRecommendation} />
+          <>
+            <StrategicImplicationForm candidateId={candidate.id} pending={pending} onCreate={onCreateImplication} />
+            {candidate.strategic_implications.map((implication) => (
+              <StrategicImplicationCard
+                key={implication.id}
+                candidateId={candidate.id}
+                implication={implication}
+                pending={pending}
+                onCreateRecommendation={onCreateRecommendation}
+              />
+            ))}
+          </>
         )}
 
         {recommendations.map((recommendation) => (
@@ -370,6 +476,7 @@ function LearningEvidence({
   onMarkProvisional,
   onMarkValidationPending,
   onDecideCandidate,
+  onCreateImplication,
   onCreateRecommendation,
   onDecideRecommendation,
 }: {
@@ -383,7 +490,8 @@ function LearningEvidence({
   onMarkProvisional: (candidateId: string) => void;
   onMarkValidationPending: (candidateId: string) => void;
   onDecideCandidate: (candidateId: string, decision: keyof typeof CANDIDATE_DECISION_LABELS) => void;
-  onCreateRecommendation: (candidateId: string, summary: string) => void;
+  onCreateImplication: (candidateId: string, statement: string) => void;
+  onCreateRecommendation: (candidateId: string, implicationId: string, summary: string) => void;
   onDecideRecommendation: (recommendationId: string, decision: StrategicRecommendationDecision) => void;
 }) {
   if (data.learning_candidates.length === 0) {
@@ -426,6 +534,7 @@ function LearningEvidence({
             onMarkProvisional={onMarkProvisional}
             onMarkValidationPending={onMarkValidationPending}
             onDecideCandidate={onDecideCandidate}
+            onCreateImplication={onCreateImplication}
             onCreateRecommendation={onCreateRecommendation}
             onDecideRecommendation={onDecideRecommendation}
           />
@@ -578,13 +687,41 @@ export function LearningPanel({
     }
   }
 
-  async function runRecommendationCreation(candidateId: string, summary: string) {
+  async function runImplicationCreation(candidateId: string, statement: string) {
     if (mutationLock.current) return;
     mutationLock.current = true;
     setPending(true);
     setMutationError("");
     try {
-      const created = await createStrategicRecommendation(campaignId, candidateId, summary);
+      const created = await createStrategicImplication(campaignId, candidateId, statement);
+      setLearningState((prev) =>
+        prev.status === "ready"
+          ? {
+              status: "ready",
+              data: {
+                ...prev.data,
+                learning_candidates: prev.data.learning_candidates.map((c) =>
+                  c.id === candidateId ? { ...c, strategic_implications: [...c.strategic_implications, created] } : c,
+                ),
+              },
+            }
+          : prev,
+      );
+    } catch (error) {
+      setMutationError(describeCampaignError(error));
+    } finally {
+      mutationLock.current = false;
+      setPending(false);
+    }
+  }
+
+  async function runRecommendationCreation(candidateId: string, implicationId: string, summary: string) {
+    if (mutationLock.current) return;
+    mutationLock.current = true;
+    setPending(true);
+    setMutationError("");
+    try {
+      const created = await createStrategicRecommendation(campaignId, candidateId, implicationId, summary);
       setLearningState((prev) =>
         prev.status === "ready"
           ? {
@@ -713,6 +850,7 @@ export function LearningPanel({
           onMarkProvisional={handleMarkProvisional}
           onMarkValidationPending={handleMarkValidationPending}
           onDecideCandidate={handleDecideCandidate}
+          onCreateImplication={runImplicationCreation}
           onCreateRecommendation={runRecommendationCreation}
           onDecideRecommendation={handleDecideRecommendation}
         />

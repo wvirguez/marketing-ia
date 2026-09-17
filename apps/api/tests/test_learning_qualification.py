@@ -50,7 +50,15 @@ def test_lazy_qualification_and_bounded_validation(subject, confidence):
     assert q["replication_status"] == "REPLICATION_NOT_ESTABLISHED"
     assert not q["validation_blockers"]
     assert validate(f, cid).status_code == 200
-    assert _post(f, _path(f, cid, "recommendations"), {"summary": "Bounded recommendation"}).status_code == 201
+    # MVP-26: a new Recommendation now requires a StrategicImplication,
+    # which itself requires the same sufficiency this qualification just
+    # satisfied.
+    implication = _post(f, _path(f, cid, "strategic-implications"), {"statement": "Bounded implication"})
+    assert implication.status_code == 201, implication.text
+    assert _post(
+        f, _path(f, cid, "recommendations"),
+        {"strategic_implication_id": implication.json()["id"], "summary": "Bounded recommendation"},
+    ).status_code == 201
 
 @pytest.mark.parametrize("missing", ["confidence", "scope", "generalization_boundary"])
 def test_required_qualification_fields(subject, missing):
@@ -144,7 +152,19 @@ def test_primary_evidence_cannot_be_reused(subject):
     assert attach(f, cid, sid, "SUPPORTING").status_code == 409
 
 
-def test_legacy_eligible_without_backfill(subject):
+def test_legacy_unqualified_validated_cannot_create_new_implication_or_recommendation(subject):
+    """MVP-26/26A-R1 §21/§W: superseded expectation, corrected. Under
+    MVP-25 alone, a VALIDATED-but-unqualified row (forced directly here —
+    no normal write path produces one, MVP-26A-R1 §U) could still create a
+    Recommendation directly, since recommendation creation only checked
+    ``status == VALIDATED``. Under MVP-26, every NEW Recommendation
+    requires a StrategicImplication, and StrategicImplication creation
+    re-checks qualification sufficiency as defense-in-depth — so this
+    exact anomaly can no longer produce a NEW Recommendation at all. This
+    is the intended effect of closing the new-write bypass (MVP-26A-R1
+    §C), not a regression: the qualification PATCH itself remains 409
+    because the candidate is still terminal (VALIDATED), exactly as
+    before."""
     f, cid = subject
     with Session(get_engine()) as s:
         candidate = s.scalar(select(LearningCandidate).where(LearningCandidate.public_id == cid))
@@ -152,7 +172,13 @@ def test_legacy_eligible_without_backfill(subject):
         s.commit()
     body = f["client"].get(f"/api/v1/campaigns/{f['campaign_id']}/learning").json()
     assert body["learning_candidates"][0]["qualification"] is None
-    assert _post(f, _path(f, cid, "recommendations"), {"summary": "Legacy eligibility"}).status_code == 201
+    implication = _post(f, _path(f, cid, "strategic-implications"), {"statement": "Legacy eligibility"})
+    assert implication.status_code == 409
+    assert implication.json()["error"]["code"] == "LEARNING_QUALIFICATION_CONFLICT"
+    assert _post(
+        f, _path(f, cid, "recommendations"),
+        {"strategic_implication_id": "SIM-PLACEHOLDER0", "summary": "Legacy eligibility"},
+    ).status_code == 403  # no such implication was ever created
     assert patch(f, cid, SUFFICIENT).status_code == 409
 
 

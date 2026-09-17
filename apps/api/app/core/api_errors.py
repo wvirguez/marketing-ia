@@ -186,6 +186,19 @@ class RecommendationAlreadyDecidedError(ApiError):
         super().__init__(message, status_code=409, code="RECOMMENDATION_ALREADY_DECIDED")
 
 
+class StrategicImplicationMismatchError(ApiError):
+    """MVP-26A-R1 §H: a StrategicImplication resolved under the caller's
+    own Campaign scope (so already proven non-leaky/accessible) but
+    belonging to a *different* LearningCandidate than the Recommendation
+    being created must never be silently accepted — revealing that this
+    same-tenant relationship does not hold is not a cross-tenant leak, the
+    same reasoning ``RecommendationAlreadyDecidedError`` already applies
+    to a same-tenant state conflict."""
+
+    def __init__(self, message: str = "This Strategic Implication does not belong to the target Learning Candidate.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_IMPLICATION_MISMATCH")
+
+
 class TrackingPlanAlreadyExistsError(ApiError):
     """BACKEND-15 Governance Freeze TRK-D01/TRK-D33: Campaign 1 -> 0..1
     TrackingPlan — a Campaign that already has a Tracking Plan may not

@@ -6,7 +6,7 @@ import { CampaignDetail } from "@/components/campaigns/detail/campaign-detail";
 import { ApiError } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { AuthContextValue } from "@/lib/auth/auth-context";
-import type { LearningQualificationPublic, LearningCandidatePublic, LearningCandidateStatus, LearningResponse, StrategicRecommendationCandidatePublic } from "@/types/learning";
+import type { LearningQualificationPublic, LearningCandidatePublic, LearningCandidateStatus, LearningResponse, StrategicImplicationPublic, StrategicRecommendationCandidatePublic } from "@/types/learning";
 
 vi.mock("@/lib/api/learning", () => ({
   updateLearningQualification: vi.fn(),
@@ -17,6 +17,7 @@ vi.mock("@/lib/api/learning", () => ({
   markLearningCandidateProvisional: vi.fn(),
   markLearningCandidateValidationPending: vi.fn(),
   decideLearningCandidate: vi.fn(),
+  createStrategicImplication: vi.fn(),
   createStrategicRecommendation: vi.fn(),
   decideStrategicRecommendation: vi.fn(),
 }));
@@ -32,6 +33,7 @@ import {
   updateLearningQualification,
   attachLearningEvidence,
   disposeLearningEvidence,
+  createStrategicImplication,
   createStrategicRecommendation,
   decideLearningCandidate,
   decideStrategicRecommendation,
@@ -47,6 +49,7 @@ const mockDeriveCampaignLearning = vi.mocked(deriveCampaignLearning);
 const mockMarkProvisional = vi.mocked(markLearningCandidateProvisional);
 const mockMarkValidationPending = vi.mocked(markLearningCandidateValidationPending);
 const mockDecideLearningCandidate = vi.mocked(decideLearningCandidate);
+const mockCreateStrategicImplication = vi.mocked(createStrategicImplication);
 const mockCreateStrategicRecommendation = vi.mocked(createStrategicRecommendation);
 const mockDecideStrategicRecommendation = vi.mocked(decideStrategicRecommendation);
 const mockGetCampaign = vi.mocked(getCampaign);
@@ -102,8 +105,19 @@ function makeCandidate(overrides: Partial<LearningCandidatePublic> = {}): Learni
     id: "LRN-1",
     analysis_result_id: "ANL-1",
     qualification: overrides.status === "VALIDATION_PENDING" ? makeQualification() : null,
+    strategic_implications: [],
     status: "CANDIDATE_IDENTIFIED",
     summary: "clicks increased for Instagram: 100 to 150.",
+    created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeImplication(overrides: Partial<StrategicImplicationPublic> = {}): StrategicImplicationPublic {
+  return {
+    id: "SIM-1",
+    learning_candidate_id: "LRN-1",
+    statement: "Shorter hooks generalize within this audience and channel.",
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -370,6 +384,7 @@ function makeRecommendation(overrides: Partial<StrategicRecommendationCandidateP
   return {
     id: "SRC-1",
     learning_candidate_id: "LRN-1",
+    strategic_implication_id: "SIM-1",
     summary: "Shift creative brief toward shorter hooks.",
     decision: null,
     created_at: "2026-01-01T00:00:00Z",
@@ -528,31 +543,114 @@ describe("LearningPanel — candidate maturation actions (MVP-23B)", () => {
   });
 });
 
-describe("LearningPanel — strategic recommendation creation (MVP-23B)", () => {
-  it("shows a recommendation form only for VALIDATED, and MEMBER may submit it", async () => {
+describe("LearningPanel — strategic implication creation (MVP-26)", () => {
+  it("shows an implication form only for VALIDATED, and MEMBER may submit it", async () => {
     mockUseAuth.mockReturnValue(makeAuth("MEMBER"));
     mockGetCampaignLearning.mockResolvedValue({
       learning_candidates: [makeCandidate({ id: "LRN-1", status: "VALIDATED" })],
       strategic_recommendation_candidates: [],
     });
-    mockCreateStrategicRecommendation.mockResolvedValue(makeRecommendation({ id: "SRC-9", learning_candidate_id: "LRN-1", summary: "Try shorter hooks." }));
+    mockCreateStrategicImplication.mockResolvedValue(
+      makeImplication({ id: "SIM-9", learning_candidate_id: "LRN-1", statement: "Shorter hooks generalize here." }),
+    );
     const user = userEvent.setup();
     render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
-    const textarea = await screen.findByLabelText("Proponer una recomendación estratégica a partir de este aprendizaje validado");
-    await user.type(textarea, "Try shorter hooks.");
-    await user.click(screen.getByRole("button", { name: "Proponer recomendación" }));
-    expect(mockCreateStrategicRecommendation).toHaveBeenCalledWith("campaign-1", "LRN-1", "Try shorter hooks.");
-    expect(await screen.findByText("Try shorter hooks.")).toBeInTheDocument();
+    const textarea = await screen.findByLabelText(
+      "¿Qué implica este aprendizaje validado para la estrategia, dentro de su alcance y límite de generalización?",
+    );
+    await user.type(textarea, "Shorter hooks generalize here.");
+    await user.click(screen.getByRole("button", { name: "Registrar implicación estratégica" }));
+    expect(mockCreateStrategicImplication).toHaveBeenCalledWith("campaign-1", "LRN-1", "Shorter hooks generalize here.");
+    expect(await screen.findByText("Shorter hooks generalize here.")).toBeInTheDocument();
   });
 
-  it("does not show a recommendation form for a non-VALIDATED candidate", async () => {
+  it("does not show an implication form for a non-VALIDATED candidate", async () => {
     mockGetCampaignLearning.mockResolvedValue({
       learning_candidates: [makeCandidate({ id: "LRN-1", status: "CANDIDATE_IDENTIFIED" })],
       strategic_recommendation_candidates: [],
     });
     render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
     await screen.findByText("Candidato de aprendizaje");
-    expect(screen.queryByLabelText("Proponer una recomendación estratégica a partir de este aprendizaje validado")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("¿Qué implica este aprendizaje validado para la estrategia, dentro de su alcance y límite de generalización?"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders required governance copy alongside the implication form", async () => {
+    mockGetCampaignLearning.mockResolvedValue({
+      learning_candidates: [makeCandidate({ id: "LRN-1", status: "VALIDATED" })],
+      strategic_recommendation_candidates: [],
+    });
+    render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
+    await screen.findByText("Aprendizaje validado");
+    expect(screen.getByText(/no es una decisión estratégica/i)).toBeInTheDocument();
+    expect(screen.getByText(/no establece atribución comercial/i)).toBeInTheDocument();
+  });
+});
+
+describe("LearningPanel — strategic recommendation creation from an implication (MVP-26)", () => {
+  it("creates a Recommendation from an existing implication with its own summary, sending the implication id", async () => {
+    mockUseAuth.mockReturnValue(makeAuth("MEMBER"));
+    mockGetCampaignLearning.mockResolvedValue({
+      learning_candidates: [
+        makeCandidate({ id: "LRN-1", status: "VALIDATED", strategic_implications: [makeImplication({ id: "SIM-1", learning_candidate_id: "LRN-1" })] }),
+      ],
+      strategic_recommendation_candidates: [],
+    });
+    mockCreateStrategicRecommendation.mockResolvedValue(
+      makeRecommendation({ id: "SRC-9", learning_candidate_id: "LRN-1", strategic_implication_id: "SIM-1", summary: "Try shorter hooks." }),
+    );
+    const user = userEvent.setup();
+    render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
+    await user.click(await screen.findByRole("button", { name: "Crear recomendación a partir de esta implicación" }));
+    const textarea = await screen.findByLabelText("Proponer una recomendación estratégica a partir de esta implicación");
+    await user.type(textarea, "Try shorter hooks.");
+    await user.click(screen.getByRole("button", { name: "Proponer recomendación" }));
+    expect(mockCreateStrategicRecommendation).toHaveBeenCalledWith("campaign-1", "LRN-1", "SIM-1", "Try shorter hooks.");
+    expect(await screen.findByText("Try shorter hooks.")).toBeInTheDocument();
+  });
+
+  it("does not offer recommendation creation when no implication exists yet for a VALIDATED candidate", async () => {
+    mockGetCampaignLearning.mockResolvedValue({
+      learning_candidates: [makeCandidate({ id: "LRN-1", status: "VALIDATED", strategic_implications: [] })],
+      strategic_recommendation_candidates: [],
+    });
+    render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
+    await screen.findByText("Aprendizaje validado");
+    expect(screen.queryByRole("button", { name: "Crear recomendación a partir de esta implicación" })).not.toBeInTheDocument();
+  });
+});
+
+describe("LearningPanel — legacy recommendations without an implication (MVP-26A-R1)", () => {
+  it("renders a legacy recommendation (strategic_implication_id null) with neutral historical copy, never as invalid", async () => {
+    mockGetCampaignLearning.mockResolvedValue({
+      learning_candidates: [makeCandidate({ id: "LRN-1", status: "VALIDATED" })],
+      strategic_recommendation_candidates: [makeRecommendation({ learning_candidate_id: "LRN-1", strategic_implication_id: null })],
+    });
+    render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
+    expect(await screen.findByText("Shift creative brief toward shorter hooks.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Recomendación histórica, creada antes de que se exigiera vincularla a una implicación estratégica."),
+    ).toBeInTheDocument();
+    for (const forbidden of ["inválida", "invalido", "incompleta", "sin gobernanza", "rota"]) {
+      expect(screen.queryByText(new RegExp(forbidden, "i"))).not.toBeInTheDocument();
+    }
+  });
+
+  it("still permits deciding a legacy recommendation under OWNER/ADMIN authority", async () => {
+    mockGetCampaignLearning.mockResolvedValue({
+      learning_candidates: [makeCandidate({ id: "LRN-1", status: "VALIDATED" })],
+      strategic_recommendation_candidates: [makeRecommendation({ id: "SRC-1", learning_candidate_id: "LRN-1", strategic_implication_id: null })],
+    });
+    mockDecideStrategicRecommendation.mockResolvedValue(
+      makeRecommendation({ id: "SRC-1", learning_candidate_id: "LRN-1", strategic_implication_id: null, decision: "ACCEPTED", decided_at: "2026-01-02T00:00:00Z" }),
+    );
+    const user = userEvent.setup();
+    render(<LearningPanel campaignId="campaign-1" active refreshToken={0} />);
+    await user.click(await screen.findByRole("button", { name: "Aceptar" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar" }));
+    expect(mockDecideStrategicRecommendation).toHaveBeenCalledWith("campaign-1", "SRC-1", "ACCEPTED");
+    expect(await screen.findByText("Recomendación aceptada")).toBeInTheDocument();
   });
 });
 

@@ -132,6 +132,17 @@ class StrategicRecommendationCandidate(Base, UUIDPrimaryKeyMixin):
             # (verified empirically: 67 chars). No other convention change.
             name="fk_strategic_recommendation_candidates_learning_candidate_ws",
         ),
+        # MVP-26/26A-R1: nullable — existing rows predate StrategicImplication
+        # and must never be backfilled with an invented one. Nullability is a
+        # legacy-storage fact only; new-write governance (every production
+        # Recommendation must reference an Implication) is enforced in the
+        # service/API layers (app/learning/service.py, schemas.py), never here
+        # — a NOT NULL constraint would make every legacy row unrepresentable.
+        ForeignKeyConstraint(
+            ["strategic_implication_id", "workspace_id"],
+            ["strategic_implications.id", "strategic_implications.workspace_id"],
+            name="fk_strategic_recommendation_candidates_strategic_implication_ws",
+        ),
         # No UNIQUE(id, workspace_id) here — no concrete FK in this domain
         # targets it (Governance Freeze §30: no speculative candidate key,
         # the same discipline BACKEND-13 Phase 2R applied to Asset).
@@ -140,6 +151,12 @@ class StrategicRecommendationCandidate(Base, UUIDPrimaryKeyMixin):
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     learning_candidate_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # MVP-26/26A-R1: nullable for legacy rows only (see __table_args__ note
+    # above) — every new write is required, at the service/API layer, to
+    # supply a real StrategicImplication belonging to the same
+    # LearningCandidate; this column being nullable is a storage fact, not
+    # a new-write permission.
+    strategic_implication_id: Mapped[uuid.UUID | None] = mapped_column(default=None, index=True)
     # No canonical field structure beyond "a proposed strategy change" is
     # named anywhere — same narrative-field precedent as
     # LearningCandidate.summary above. No Strategy FK, no CampaignVersion
@@ -155,6 +172,48 @@ class StrategicRecommendationCandidate(Base, UUIDPrimaryKeyMixin):
     # Set exactly when `decision` moves from NULL to a terminal value — a
     # direct structural analog to ContentApproval.decided_at.
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class StrategicImplication(Base, UUIDPrimaryKeyMixin):
+    """MVP-26/26A-R1: a bounded, human-authored interpretation of what one
+    specific VALIDATED, sufficiently-qualified LearningCandidate means for
+    strategic consideration within that Learning's own scope/
+    generalization boundary — never itself a StrategicRecommendationCandidate,
+    a Strategic Decision, a Strategic Approval, a Strategy mutation, a
+    Strategic Maturity change, or a causal/commercial/experimental claim.
+
+    Immutable from INSERT (no PATCH/PUT/DELETE, no status column) — the
+    same "one narrative field, canonical silence beyond that" precedent
+    already used by LearningCandidate.summary/StrategicRecommendationCandidate.summary.
+    References LearningCandidate only; LearningQualification is reached by
+    traversal and is already frozen once the candidate is VALIDATED
+    (QualificationService.lock()), so no field is copied/snapshotted here
+    (MVP-26A §I, proven, not merely asserted).
+
+    Cardinality: LearningCandidate 1 -> 0..N StrategicImplication — no
+    UNIQUE(learning_candidate_id), mirroring the identical, already-
+    established StrategicRecommendationCandidate cardinality exactly.
+    """
+
+    __tablename__ = "strategic_implications"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["learning_candidate_id", "workspace_id"],
+            ["learning_candidates.id", "learning_candidates.workspace_id"],
+            name="fk_strategic_implications_learning_candidate_ws",
+        ),
+        # Candidate key required so StrategicRecommendationCandidate can
+        # declare a composite, tenant-safe FK on
+        # (strategic_implication_id, workspace_id) — identical reasoning to
+        # LearningCandidate's own uq_learning_candidates_id_workspace_id.
+        UniqueConstraint("id", "workspace_id", name="uq_strategic_implications_id_workspace_id"),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    learning_candidate_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    statement: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LearningDerivation(Base, UUIDPrimaryKeyMixin):

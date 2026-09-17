@@ -66,10 +66,27 @@ def build_validated_learning_candidate(session, **overrides: object):
     return campaign, analysis_result, candidate
 
 
-def build_recommendation(session, **overrides: object):
+def build_strategic_implication(session, **overrides: object):
+    """MVP-26: drives a candidate to VALIDATED (with sufficient
+    qualification, per ``build_validated_learning_candidate`` above) and
+    records one StrategicImplication for it. Returns
+    ``(campaign, analysis_result, candidate, implication)``."""
     campaign, analysis_result, candidate = build_validated_learning_candidate(session, **overrides)
+    implication = LearningService(session).record_strategic_implication(
+        learning_candidate=candidate, statement="Shorter hooks generalize within this audience and channel."
+    )
+    return campaign, analysis_result, candidate, implication
+
+
+def build_recommendation(session, **overrides: object):
+    """MVP-26/26A-R1: every new StrategicRecommendationCandidate requires
+    a StrategicImplication belonging to the same LearningCandidate — this
+    helper builds one first, mirroring ``seed_sufficient_qualification``'s
+    own "explicit fixture, no production bypass" convention."""
+    campaign, analysis_result, candidate, implication = build_strategic_implication(session, **overrides)
     recommendation = LearningService(session).record_strategic_recommendation_candidate(
-        learning_candidate=candidate, summary="Shift creative brief toward shorter hooks."
+        campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id,
+        summary="Shift creative brief toward shorter hooks.",
     )
     return campaign, analysis_result, candidate, recommendation
 

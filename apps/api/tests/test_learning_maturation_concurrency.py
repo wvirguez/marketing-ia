@@ -192,7 +192,11 @@ def test_recommendation_decision_race_accepted_vs_rejected(postgres_engine):
         campaign = CampaignRepository(session).get_by_public_id(campaign_id)
         service = LearningService(session)
         candidate = service.candidates.get_for_campaign_by_public_id(campaign_id=campaign.id, public_id=candidate_public_id)
-        recommendation = service.record_strategic_recommendation_candidate(learning_candidate=candidate, summary="Race fixture recommendation.")
+        implication = service.record_strategic_implication(learning_candidate=candidate, statement="Race fixture implication.")
+        recommendation = service.record_strategic_recommendation_candidate(
+            campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id,
+            summary="Race fixture recommendation.",
+        )
         recommendation_public_id = recommendation.public_id
         user = make_user(session)
         session.commit()
@@ -234,6 +238,15 @@ def test_recommendation_creation_race_both_succeed(postgres_engine):
     succeed as two distinct rows — proving this is not accidentally
     serialized/blocked by any lock (there is none, by design, MVP-23A §AK)."""
     campaign_id, candidate_public_id, _workspace_id = _candidate_at(postgres_engine, LearningCandidateStatus.VALIDATED)
+    with Session(postgres_engine) as session:
+        campaign = CampaignRepository(session).get_by_public_id(campaign_id)
+        candidate = LearningService(session).candidates.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=candidate_public_id
+        )
+        implication = LearningService(session).record_strategic_implication(
+            learning_candidate=candidate, statement="Shared race fixture implication."
+        )
+        implication_public_id = implication.public_id
     created_ids: list[str] = []
     ids_lock = threading.Lock()
 
@@ -242,7 +255,8 @@ def test_recommendation_creation_race_both_succeed(postgres_engine):
         service = LearningService(session)
         candidate = service.candidates.get_for_campaign_by_public_id(campaign_id=campaign.id, public_id=candidate_public_id)
         recommendation = service.record_strategic_recommendation_candidate(
-            learning_candidate=candidate, summary=f"Concurrent option {which}."
+            campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication_public_id,
+            summary=f"Concurrent option {which}.",
         )
         with ids_lock:
             created_ids.append(recommendation.public_id)

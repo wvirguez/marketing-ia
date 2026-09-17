@@ -169,6 +169,16 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # MVP-26: same reasoning as learning_candidate_id/
+    # strategic_recommendation_candidate_id above — a
+    # learning.strategic_implication.recorded event must identify its
+    # exact row. Nullable, single-column, matching every other AuditEvent
+    # subject FK exactly. Auto-derived FK/index name fits within
+    # PostgreSQL's 63-character limit (verified: 40 chars) — no explicit
+    # shortening needed.
+    strategic_implication_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategic_implications.id"), default=None, index=True
+    )
     # BACKEND-15 §21: same reasoning as learning_candidate_id/
     # strategic_recommendation_candidate_id above — a
     # tracking.plan.recorded/tracking.plan.status_changed/

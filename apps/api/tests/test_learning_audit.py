@@ -10,13 +10,19 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import func, select
 
-from app.audit.models import AuditEvent
+from app.audit.models import ActorType, AuditEvent
 from app.audit.repository import AuditEventRepository
 from app.core.api_errors import RecommendationAlreadyDecidedError
 from app.learning.models import LearningCandidate, LearningCandidateStatus, StrategicRecommendationCandidate, StrategicRecommendationDecision
 from app.learning.service import LearningService
 from tests.contenttest import make_user
-from tests.learningtest import build_analysis_result, build_learning_candidate, build_recommendation, build_validated_learning_candidate
+from tests.learningtest import (
+    build_analysis_result,
+    build_learning_candidate,
+    build_recommendation,
+    build_strategic_implication,
+    build_validated_learning_candidate,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -77,6 +83,36 @@ def test_recommendation_recorded_event_identifies_exact_rows(db_session) -> None
     ).scalars().all()
     assert len(events) == 1
     assert events[0].learning_candidate_id == candidate.id
+    # MVP-26: the recommendation audit event also carries the
+    # StrategicImplication FK it was created from, proving the new-write
+    # bridge, never inferred positionally.
+    assert events[0].strategic_implication_id == recommendation.strategic_implication_id
+    assert events[0].strategic_implication_id is not None
+
+
+def test_strategic_implication_recorded_event_identifies_exact_row(db_session) -> None:
+    """MVP-26 §29/§39: creation is attributed to ActorType.USER when an
+    actor_user_id is supplied, and the event names the exact Implication
+    and its parent Learning Candidate — never inferred positionally."""
+    _campaign, _analysis_result, candidate, implication = build_strategic_implication(db_session)
+    user = make_user(db_session)
+    db_session.commit()
+    LearningService(db_session).record_strategic_implication(
+        learning_candidate=candidate, statement="Second angle.", actor_user_id=user.id,
+    )
+    events = db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "learning.strategic_implication.recorded",
+            AuditEvent.learning_candidate_id == candidate.id,
+        )
+    ).scalars().all()
+    assert len(events) == 2  # one from build_strategic_implication (SYSTEM), one above (USER)
+    system_event = next(e for e in events if e.actor_user_id is None)
+    user_event = next(e for e in events if e.actor_user_id == user.id)
+    assert system_event.actor_type is ActorType.SYSTEM
+    assert user_event.actor_type is ActorType.USER
+    assert system_event.strategic_implication_id == implication.id
+    assert user_event.strategic_implication_id is not None and user_event.strategic_implication_id != implication.id
 
 
 def test_recommendation_decided_event_carries_new_state(db_session) -> None:
@@ -168,12 +204,15 @@ def test_audit_failure_rolls_back_a_transition(db_session) -> None:
 
 
 def test_audit_failure_rolls_back_the_recommendation(db_session) -> None:
-    _campaign, _analysis_result, candidate = build_validated_learning_candidate(db_session)
+    campaign, _analysis_result, candidate = build_validated_learning_candidate(db_session)
+    implication = LearningService(db_session).record_strategic_implication(learning_candidate=candidate, statement="x")
     recommendations_before = _total_count(db_session, StrategicRecommendationCandidate)
 
     with patch.object(AuditEventRepository, "record", side_effect=RuntimeError("simulated audit failure")):
         with pytest.raises(RuntimeError, match="simulated audit failure"):
-            LearningService(db_session).record_strategic_recommendation_candidate(learning_candidate=candidate, summary="x")
+            LearningService(db_session).record_strategic_recommendation_candidate(
+                campaign=campaign, learning_candidate=candidate, strategic_implication_public_id=implication.public_id, summary="x"
+            )
 
     db_session.rollback()
     assert _total_count(db_session, StrategicRecommendationCandidate) == recommendations_before

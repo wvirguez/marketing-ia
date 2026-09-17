@@ -1,13 +1,27 @@
 """Learning API surface (BACKEND-14 Governance Freeze §S/§T, repaired by
-Freeze-R GF-D26; extended by MVP-12B-A/-R1/-R2, MVP-23B) — exactly:
+Freeze-R GF-D26; extended by MVP-12B-A/-R1/-R2, MVP-23B, MVP-25, MVP-26) —
+exactly:
 
     GET   /api/v1/campaigns/{campaign_id}/learning
     POST  /api/v1/campaigns/{campaign_id}/learning/derive
     POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/mark-provisional
     POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/mark-validation-pending
     POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/decision
+    POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/strategic-implications
     POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/recommendations
     PATCH /api/v1/campaigns/{campaign_id}/learning/{recommendation_id}
+    PATCH /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/qualification
+    POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/qualification/signals
+    POST  /api/v1/campaigns/{campaign_id}/learning/{learning_candidate_id}/qualification/signals/{signal_id}/dispose
+
+MVP-26/MVP-26A-R1: ``strategic-implications`` creates a bounded, immutable,
+human-authored interpretation of a VALIDATED + sufficiently-qualified
+LearningCandidate — never itself a Recommendation, Decision, or Approval.
+``recommendations`` now REQUIRES ``strategic_implication_id`` for every
+new write (no bypass), resolved server-side under the same Campaign scope
+as the target LearningCandidate; existing rows created before this
+requirement keep ``strategic_implication_id = NULL`` unchanged, remain
+readable and decidable, and are never backfilled.
 
 POST /derive is the explicit, deterministic Measurement -> Learning bridge
 (MVP-12B): it takes no request body, derives (or safely reuses) a
@@ -48,16 +62,19 @@ from app.auth.dependencies import get_current_user, get_current_workspace, requi
 from app.campaigns.models import Campaign
 from app.campaigns.service import CampaignAccessService
 from app.core.api_errors import ForbiddenError
-from app.learning.models import LearningCandidate, LearningCandidateStatus
+from app.learning.models import LearningCandidate, LearningCandidateStatus, StrategicImplication
 from app.learning.schemas import (
     CreateRecommendationRequest,
+    CreateStrategicImplicationRequest,
     LearningCandidateDecisionRequest,
     LearningCandidatePublic,
     LearningResponse,
     RecommendationDecisionRequest,
+    StrategicImplicationPublic,
     StrategicRecommendationCandidatePublic,
     learning_candidate_to_public,
     recommendation_to_public,
+    strategic_implication_to_public,
 )
 from app.learning.service import LearningService
 from app.learning.qualification import QualificationService
@@ -92,12 +109,23 @@ def _candidate_to_public(db: Session, candidate: LearningCandidate) -> LearningC
     analysis_result = db.get(AnalysisResult, candidate.analysis_result_id)
     if analysis_result is None:  # pragma: no cover - would mean an orphaned FK, never expected
         raise ForbiddenError()
-    return learning_candidate_to_public(candidate, analysis_result_public_id=analysis_result.public_id, qualification=QualificationService(db).public(candidate))
+    service = LearningService(db)
+    implications = [
+        strategic_implication_to_public(implication, learning_candidate_public_id=candidate.public_id)
+        for implication in service.implications.list_for_candidate(candidate.id)
+    ]
+    return learning_candidate_to_public(
+        candidate,
+        analysis_result_public_id=analysis_result.public_id,
+        qualification=QualificationService(db).public(candidate),
+        strategic_implications=implications,
+    )
 
 
 def _learning_response_for_campaign(service: LearningService, db: Session, campaign: Campaign) -> LearningResponse:
     candidates = service.list_candidates_for_campaign(campaign_id=campaign.id)
     recommendations = service.list_recommendations_for_campaign(campaign_id=campaign.id)
+    implications = service.list_implications_for_campaign(campaign_id=campaign.id)
 
     # Cross-reference public IDs only — never an internal UUID (mirrors
     # app/measurement/router.py's own `entries_by_id`/`observations_by_id`
@@ -105,12 +133,24 @@ def _learning_response_for_campaign(service: LearningService, db: Session, campa
     analysis_results = AnalysisResultRepository(db).list_for_campaign(campaign.id)
     analysis_result_public_id_by_id = {a.id: a.public_id for a in analysis_results}
     candidate_public_id_by_id = {c.id: c.public_id for c in candidates}
+    implication_public_id_by_id = {i.id: i.public_id for i in implications}
+
+    # Batched: one query already fetched every implication for the whole
+    # campaign above (list_implications_for_campaign) — grouped here in
+    # memory, never one query per candidate (MVP-26 §26, avoids N+1).
+    implications_by_candidate_id: dict = {}
+    for implication in implications:
+        implications_by_candidate_id.setdefault(implication.learning_candidate_id, []).append(implication)
 
     return LearningResponse(
         learning_candidates=[
             learning_candidate_to_public(
                 candidate, analysis_result_public_id=analysis_result_public_id_by_id[candidate.analysis_result_id],
-                qualification=QualificationService(db).public(candidate)
+                qualification=QualificationService(db).public(candidate),
+                strategic_implications=[
+                    strategic_implication_to_public(implication, learning_candidate_public_id=candidate.public_id)
+                    for implication in implications_by_candidate_id.get(candidate.id, [])
+                ],
             )
             for candidate in candidates
         ],
@@ -118,6 +158,7 @@ def _learning_response_for_campaign(service: LearningService, db: Session, campa
             recommendation_to_public(
                 recommendation,
                 learning_candidate_public_id=candidate_public_id_by_id[recommendation.learning_candidate_id],
+                strategic_implication_public_id=implication_public_id_by_id.get(recommendation.strategic_implication_id),
             )
             for recommendation in recommendations
         ],
@@ -266,6 +307,45 @@ async def decide_learning_candidate(
 
 
 @router.post(
+    "/{learning_candidate_public_id}/strategic-implications",
+    response_model=StrategicImplicationPublic,
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_strategic_implication(
+    campaign_public_id: str,
+    learning_candidate_public_id: str,
+    payload: CreateStrategicImplicationRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> StrategicImplicationPublic:
+    """Creates a StrategicImplication from a VALIDATED, sufficiently-
+    qualified LearningCandidate (MVP-26) — requires only active membership
+    (proposing an interpretation is not deciding anything, mirrors
+    Recommendation creation's own authority). Cardinality is deliberately
+    0..N; no uniqueness constraint — two calls create two rows.
+    ``record_strategic_implication`` re-locks and re-reads the candidate
+    (canonical lock, MVP-26 §12) and re-checks qualification sufficiency
+    as intentional defense-in-depth (MVP-26A-R1 §21)."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    service = LearningService(db)
+    candidate = _authorized_candidate(
+        service, campaign=campaign, learning_candidate_public_id=learning_candidate_public_id, for_update=False
+    )
+    implication = service.record_strategic_implication(
+        learning_candidate=candidate,
+        statement=payload.statement,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return strategic_implication_to_public(implication, learning_candidate_public_id=candidate.public_id)
+
+
+@router.post(
     "/{learning_candidate_public_id}/recommendations",
     response_model=StrategicRecommendationCandidatePublic,
     status_code=201,
@@ -284,24 +364,44 @@ async def create_recommendation(
     LearningCandidate — requires only active membership (proposing is not
     deciding, MVP-23A §AC). Cardinality is deliberately 0..N; no
     idempotency key, no uniqueness constraint (MVP-23A §AH/§AI) — two
-    calls create two rows."""
+    calls create two rows.
+
+    MVP-26/26A-R1: ``strategic_implication_id`` is resolved server-side,
+    under the *same* Campaign scope as ``learning_candidate_public_id``
+    (never trusting a client-supplied internal UUID, MVP-26A-R1 §21) —
+    nonexistent, wrong-workspace, and wrong-campaign-same-workspace are
+    all indistinguishable, the same non-leaky ``ForbiddenError`` every
+    other campaign-scoped lookup in this router already uses. A
+    same-campaign Implication that belongs to a *different*
+    LearningCandidate is a distinct, same-tenant relational conflict,
+    raised by the service as ``StrategicImplicationMismatchError``
+    (MVP-26A-R1 §H) rather than folded into the same not-found response."""
     campaign = CampaignAccessService(db).get_authorized_campaign(
         workspace_id=workspace.id, campaign_public_id=campaign_public_id
     )
     service = LearningService(db)
     # No lock needed here: recording a recommendation never mutates the
     # parent candidate's row, so a concurrent transition/decision on the
-    # same candidate cannot conflict with it (MVP-23A §AK).
+    # same candidate cannot conflict with it (MVP-23A §AK). Both
+    # StrategicImplication and LearningCandidate are read, not locked —
+    # the Implication is immutable and the candidate is terminal
+    # (VALIDATED) by the time any valid Implication for it can exist.
     candidate = _authorized_candidate(
         service, campaign=campaign, learning_candidate_public_id=learning_candidate_public_id, for_update=False
     )
     recommendation = service.record_strategic_recommendation_candidate(
+        campaign=campaign,
         learning_candidate=candidate,
+        strategic_implication_public_id=payload.strategic_implication_id,
         summary=payload.summary,
         actor_user_id=user.id,
         request_id=request.state.request_id,
     )
-    return recommendation_to_public(recommendation, learning_candidate_public_id=candidate.public_id)
+    return recommendation_to_public(
+        recommendation,
+        learning_candidate_public_id=candidate.public_id,
+        strategic_implication_public_id=payload.strategic_implication_id,
+    )
 
 
 @router.patch(
@@ -332,7 +432,15 @@ async def decide_recommendation(
         # Cannot happen given the tenant-safe composite FK — defensive
         # only, never expected to actually raise.
         raise ForbiddenError()
-    return recommendation_to_public(recommendation, learning_candidate_public_id=candidate.public_id)
+    strategic_implication_public_id = None
+    if recommendation.strategic_implication_id is not None:
+        implication = db.get(StrategicImplication, recommendation.strategic_implication_id)
+        strategic_implication_public_id = implication.public_id if implication else None
+    return recommendation_to_public(
+        recommendation,
+        learning_candidate_public_id=candidate.public_id,
+        strategic_implication_public_id=strategic_implication_public_id,
+    )
 
 
 @router.patch("/{learning_candidate_public_id}/qualification", response_model=LearningCandidatePublic, dependencies=[Depends(require_csrf)])
