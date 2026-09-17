@@ -222,6 +222,22 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # MVP-27: same reasoning as learning_candidate_id/
+    # strategic_recommendation_candidate_id above — a
+    # commercial.objective.recorded/commercial.objective.superseded/
+    # commercial.offer.recorded/commercial.offer.superseded event must
+    # identify its exact CommercialObjective/Offer row. Both nullable,
+    # single-column, matching every other AuditEvent subject FK exactly —
+    # no composite audit FK, no AuditEvent-specific candidate key
+    # (MVP-27A-R2 §I/§J: the authoritative replacement link is each row's
+    # own superseded_by_commercial_objective_id/superseded_by_offer_id,
+    # never a new audit-table column; new_state carries a human-legible
+    # counterpart public_id reference only, mirroring the existing
+    # f"v{version}" convention).
+    commercial_objective_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("commercial_objectives.id"), default=None, index=True
+    )
+    offer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("offers.id"), default=None, index=True)
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

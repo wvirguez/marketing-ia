@@ -178,6 +178,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "measurement_analysis_run_results",
         "distribution_metric_evidence",
         "content_distribution_tracking_requirements",
+        "commercial_objectives",
+        "offers",
     }
 
 

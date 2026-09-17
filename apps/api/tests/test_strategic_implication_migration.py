@@ -62,10 +62,16 @@ def test_strategic_implication_migration_round_trip(monkeypatch):
 
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from strategic_implications")) == 0
-                assert connection.scalar(text("select version_num from alembic_version")) == "d82530f9e7b0"
+                # MVP-27 added one additive migration after this one — "head"
+                # now means 5236a613ef1a, not this migration's own revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "5236a613ef1a"
 
             if cycle == 0:
-                command.downgrade(config, "-1")
+                # Explicit target, not a relative "-1": MVP-27 added a
+                # further migration on top of this one, so "one step down"
+                # from head no longer removes strategic_implications — the
+                # revision immediately before it, "c6b92e815f40", still does.
+                command.downgrade(config, "c6b92e815f40")
                 inspector = inspect(engine)
                 assert "strategic_implications" not in inspector.get_table_names()
                 remaining_src_columns = {c["name"] for c in inspector.get_columns("strategic_recommendation_candidates")}

@@ -722,6 +722,7 @@ describe("LearningPanel integration inside CampaignDetail", () => {
       "Investigación",
       "Audiencia",
       "Estrategia",
+      "Comercial",
       "Plan",
       "Contenido",
       "Creatividades",

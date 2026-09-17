@@ -310,3 +310,25 @@ class TrackingRequirementNotAssociatedError(ApiError):
 
     def __init__(self, message: str = "This Tracking Requirement is not associated with this Distribution.") -> None:
         super().__init__(message, status_code=409, code="TRACKING_REQUIREMENT_NOT_ASSOCIATED")
+
+
+class CommercialObjectiveAlreadySupersededError(ApiError):
+    """MVP-27A-R1 §F: a CommercialObjective's supersession is one-shot —
+    the one invariant that is not structurally impossible by construction
+    (self-supersession/cycles/cross-tenant replacement are, since the
+    replacement is always a freshly-created row). A second attempt to
+    supersede an already-superseded original, whether sequential or
+    genuinely concurrent, is a deterministic conflict, never a silent
+    second replacement — mirrors ``EvidenceCorrectionTargetStaleError``'s
+    own "may only target the current leaf of its chain" precedent."""
+
+    def __init__(self, message: str = "This Commercial Objective has already been superseded.") -> None:
+        super().__init__(message, status_code=409, code="COMMERCIAL_OBJECTIVE_ALREADY_SUPERSEDED")
+
+
+class OfferAlreadySupersededError(ApiError):
+    """MVP-27A-R1 §F: the identical one-shot supersession invariant as
+    ``CommercialObjectiveAlreadySupersededError``, applied to Offer."""
+
+    def __init__(self, message: str = "This Offer has already been superseded.") -> None:
+        super().__init__(message, status_code=409, code="OFFER_ALREADY_SUPERSEDED")

@@ -11,6 +11,7 @@ import { AnalysisPanel } from "./analysis-panel";
 import { AudiencePanel } from "./audience-panel";
 import { CampaignDistributionEvidenceRollupPanel } from "./campaign-distribution-evidence-rollup-panel";
 import { CampaignRuns } from "./campaign-runs";
+import { CommercialPanel } from "./commercial-panel";
 import { ContentPanel } from "./content-panel";
 import { GenerateDraftAction } from "./generate-draft-action";
 import { LearningPanel } from "./learning-panel";
@@ -26,6 +27,7 @@ const TABS: { id: string; label: string }[] = [
   { id: "research", label: "Investigación" },
   { id: "audience", label: "Audiencia" },
   { id: "strategy", label: "Estrategia" },
+  { id: "commercial", label: "Comercial" },
   { id: "plan", label: "Plan" },
   { id: "content", label: "Contenido" },
   { id: "creatives", label: "Creatividades" },
@@ -145,6 +147,9 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
       {tab.id === "strategy" && (
         <StrategyPanel key={campaignId} campaignId={campaignId} active={active === "strategy"} refreshToken={draftVersion} />
       )}
+      {tab.id === "commercial" && (
+        <CommercialPanel key={campaignId} campaignId={campaignId} active={active === "commercial"} refreshToken={draftVersion} />
+      )}
       {tab.id === "plan" && (
         <PlanPanel key={campaignId} campaignId={campaignId} active={active === "plan"} refreshToken={draftVersion} />
       )}
@@ -173,6 +178,7 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
         tab.id !== "research" &&
         tab.id !== "audience" &&
         tab.id !== "strategy" &&
+        tab.id !== "commercial" &&
         tab.id !== "plan" &&
         tab.id !== "content" &&
         tab.id !== "tracking" &&

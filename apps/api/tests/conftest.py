@@ -21,6 +21,7 @@ pytest_plugins = [
     "tests.assetstest",
     "tests.learningtest",
     "tests.trackingtest",
+    "tests.commercialtest",
 ]
 
 
