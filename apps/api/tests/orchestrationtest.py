@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from app.learning.models import StrategicRecommendationDecision
 from app.learning.service import LearningService
-from app.orchestration.models import StrategicDecisionType
-from app.orchestration.service import StrategicDecisionService
+from app.orchestration.models import StrategicApprovalOutcome, StrategicDecisionType
+from app.orchestration.service import StrategicApprovalService, StrategicDecisionService
 from tests.campaignstest import campaign_payload, register_and_get_csrf
 from tests.contenttest import make_user
 from tests.learningtest import build_recommendation
@@ -89,3 +89,25 @@ def build_strategic_decision(
         actor_user_id=actor.id,
     )
     return campaign, recommendation, decision, actor
+
+
+def build_strategic_approval(
+    session,
+    *,
+    outcome=StrategicApprovalOutcome.APPROVED,
+    **overrides: object,
+):
+    """MVP-29B: builds one ADOPT StrategicDecision (via
+    ``build_strategic_decision`` above) and records a StrategicApproval
+    for it via the real, production ``StrategicApprovalService``. Returns
+    ``(campaign, recommendation, decision, approval, actor)``."""
+    campaign, recommendation, decision, actor = build_strategic_decision(
+        session, decision_type=StrategicDecisionType.ADOPT, **overrides
+    )
+    approval = StrategicApprovalService(session).record_approval(
+        campaign=campaign,
+        decision_public_id=decision.public_id,
+        outcome=outcome,
+        actor_user_id=actor.id,
+    )
+    return campaign, recommendation, decision, approval, actor

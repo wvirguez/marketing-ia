@@ -86,7 +86,10 @@ def test_strategic_decision_migration_round_trip(monkeypatch):
 
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from strategic_decisions")) == 0
-                assert connection.scalar(text("select version_num from alembic_version")) == "7b4151d4cf64"
+                # MVP-29B added one additive migration after this one —
+                # "head" now means eae9bb978d9c, not this migration's own
+                # revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "eae9bb978d9c"
 
             if cycle == 0:
                 command.downgrade(config, "5236a613ef1a")

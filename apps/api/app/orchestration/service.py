@@ -32,8 +32,10 @@ from app.core.api_errors import (
     ForbiddenError,
     InvalidLifecycleTransitionError,
     OrchestrationNotInitializedError,
+    StrategicApprovalAlreadyExistsError,
     StrategicDecisionAlreadyExistsError,
     StrategicDecisionAlreadySupersededError,
+    StrategicDecisionNotEligibleForApprovalError,
     StrategicRecommendationNotAcceptedError,
 )
 from app.learning.models import StrategicRecommendationDecision
@@ -46,6 +48,8 @@ from app.orchestration.models import (
     HumanDecisionResponse,
     RunStageExecution,
     StageExecutionStatus,
+    StrategicApproval,
+    StrategicApprovalOutcome,
     StrategicDecision,
     StrategicDecisionType,
 )
@@ -53,6 +57,7 @@ from app.orchestration.repository import (
     HumanDecisionRequestRepository,
     HumanDecisionResponseRepository,
     RunStageExecutionRepository,
+    StrategicApprovalRepository,
     StrategicDecisionRepository,
 )
 from app.orchestration.transitions import is_legal_run_transition, is_legal_stage_transition
@@ -62,6 +67,7 @@ from app.strategy.service import StrategyService
 
 EVENT_STRATEGIC_DECISION_RECORDED = "orchestration.strategic_decision.recorded"
 EVENT_STRATEGIC_DECISION_SUPERSEDED = "orchestration.strategic_decision.superseded"
+EVENT_STRATEGIC_APPROVAL_RECORDED = "orchestration.strategic_approval.recorded"
 
 EVENT_ORCHESTRATION_INITIALIZED = "orchestration.initialized"
 EVENT_RUN_TRANSITIONED = "orchestration.run.transitioned"
@@ -895,3 +901,94 @@ class StrategicDecisionService:
 
     def list_decisions_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicDecision]:
         return self.decisions.list_for_campaign(campaign_id)
+
+
+class StrategicApprovalService:
+    """MVP-29B — implements the MVP-29A frozen StrategicApproval contract.
+    Transaction ownership: load/validate, mutate, audit, commit once — no
+    intermediate commits (mirrors ``StrategicDecisionService`` exactly).
+
+    Deliberately a separate class from ``StrategicDecisionService``:
+    StrategicApproval is a distinct entity with its own strictly
+    insert-only lifecycle (MVP-29A §G/§K) — never a generic update path
+    shared with StrategicDecision's own one-shot supersession mutation.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.approvals = StrategicApprovalRepository(session)
+        self.decisions = StrategicDecisionRepository(session)
+        self.events = AuditEventRepository(session)
+
+    def record_approval(
+        self,
+        *,
+        campaign: Campaign,
+        decision_public_id: str,
+        outcome: StrategicApprovalOutcome,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> StrategicApproval:
+        """MVP-29A §T: canonical serialization point — locks the specific
+        StrategicDecision row itself (never the whole Campaign, and never a
+        StrategicApproval row, since none may yet exist), the SAME row
+        ``StrategicDecisionService.supersede_decision`` locks, so an
+        Approval attempt and a concurrent supersession attempt against the
+        same Decision always serialize through PostgreSQL's own row-lock
+        queueing rather than racing (MVP-29B §14). Re-reads
+        ``decision_type``/``superseded_at`` fresh under that lock
+        (``populate_existing=True``) before deciding eligibility — never
+        trusts a caller-supplied or previously-loaded snapshot.
+
+        Eligibility (MVP-29A §F/§X, frozen): ``decision_type`` must be
+        ADOPT and ``superseded_at`` must still be NULL at this exact
+        moment — DEFER, DECLINE, and any already-superseded Decision
+        (including one superseded by a genuinely concurrent operation
+        that commits first) are all deterministically rejected, never
+        silently accepted.
+
+        The plain ``UNIQUE(strategic_decision_id)`` constraint
+        (``app/orchestration/models.py::StrategicApproval``) remains the
+        actual, unconditional DB-level backstop for "at most one Approval
+        per Decision" — never relied on as merely an application-level
+        guard (MVP-29B §16)."""
+        decision = self.decisions.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=decision_public_id, for_update=True
+        )
+        if decision is None:
+            raise ForbiddenError()
+        if decision.decision_type is not StrategicDecisionType.ADOPT or decision.superseded_at is not None:
+            raise StrategicDecisionNotEligibleForApprovalError()
+        if self.approvals.get_for_decision(decision_id=decision.id) is not None:
+            raise StrategicApprovalAlreadyExistsError()
+
+        try:
+            with self.session.begin_nested():
+                approval = self.approvals.create(campaign=campaign, decision_id=decision.id, outcome=outcome)
+        except IntegrityError:
+            # A genuinely concurrent first-Approval attempt that reached
+            # this point despite the Decision-row lock above (e.g. a
+            # caller that bypassed the service layer) is rejected by the
+            # plain UNIQUE constraint itself — the same "DB backstop, not
+            # just an application guard" discipline
+            # StrategicDecisionAlreadyExistsError already establishes.
+            raise StrategicApprovalAlreadyExistsError()
+
+        self.events.record(
+            workspace_id=approval.workspace_id,
+            campaign_id=campaign.id,
+            event_type=EVENT_STRATEGIC_APPROVAL_RECORDED,
+            actor_type=ActorType.USER,
+            strategic_approval_id=approval.id,
+            new_state=outcome.value,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return approval
+
+    def get_approval_for_decision(self, *, decision_id: uuid.UUID) -> StrategicApproval | None:
+        return self.approvals.get_for_decision(decision_id=decision_id)
+
+    def list_approvals_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicApproval]:
+        return self.approvals.list_for_campaign(campaign_id)

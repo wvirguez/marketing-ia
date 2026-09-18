@@ -27,6 +27,8 @@ from app.orchestration.models import (
     HumanDecisionResponse,
     RunStageExecution,
     StageExecutionStatus,
+    StrategicApproval,
+    StrategicApprovalOutcome,
     StrategicDecision,
     StrategicDecisionType,
 )
@@ -230,6 +232,62 @@ class StrategicDecisionRepository:
                 select(StrategicDecision)
                 .where(StrategicDecision.campaign_id == campaign_id)
                 .order_by(StrategicDecision.created_at.asc(), StrategicDecision.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+
+class StrategicApprovalRepository:
+    """Data access for StrategicApproval — MVP-29B (frozen MVP-29A
+    contract). No method here calls ``session.commit()`` — see
+    ``app/orchestration/service.py::StrategicApprovalService`` for the
+    transaction-ownership boundary. No ``update``/``delete`` method exists
+    anywhere in this class — StrategicApproval is strictly insert-only
+    (MVP-29A §K).
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, *, campaign: Campaign, decision_id: uuid.UUID, outcome: StrategicApprovalOutcome
+    ) -> StrategicApproval:
+        row = StrategicApproval(
+            public_id=generate_public_id("SAP"),
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.id,
+            strategic_decision_id=decision_id,
+            outcome=outcome,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_for_decision(self, *, decision_id: uuid.UUID) -> StrategicApproval | None:
+        """The MVP-29A §J cardinality query rule: at most one row per
+        Decision — this is the DB-backed read; ``uq``-equivalent
+        ``unique=True`` on the column is the actual, unconditional
+        backstop (see ``app/orchestration/models.py::StrategicApproval``)."""
+        return self.session.execute(
+            select(StrategicApproval).where(StrategicApproval.strategic_decision_id == decision_id)
+        ).scalar_one_or_none()
+
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> StrategicApproval | None:
+        """Non-leaky, campaign-scoped resource lookup — identical
+        discipline to ``StrategicDecisionRepository.get_for_campaign_by_public_id``."""
+        return self.session.execute(
+            select(StrategicApproval).where(
+                StrategicApproval.campaign_id == campaign_id, StrategicApproval.public_id == public_id
+            )
+        ).scalar_one_or_none()
+
+    def list_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicApproval]:
+        return list(
+            self.session.execute(
+                select(StrategicApproval)
+                .where(StrategicApproval.campaign_id == campaign_id)
+                .order_by(StrategicApproval.created_at.asc(), StrategicApproval.id.asc())
             )
             .scalars()
             .all()

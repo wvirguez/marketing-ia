@@ -107,12 +107,14 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     Requirement/Plan status snapshot column, no version column, no
     history table), plus the BACKEND-03 infrastructure probe, plus the
     MVP-27 Commercial persistence contracts — CommercialObjective, Offer
-    — and the MVP-28B Strategic Decision persistence contract (frozen
+    — the MVP-28B Strategic Decision persistence contract (frozen
     MVP-28A/-R1/-R2 contract; owned by ``orchestration`` per MVP-28A-R2
     §D, not ``learning``/``strategy`` — both of those modules explicitly
-    disclaim it in their own docstrings). No Content Revision Request/
-    Distribution/Paid Media/Measurement Cycle/Performance Snapshot/
-    Strategic Approval/Agent Run/Handoff/Return/Gate
+    disclaim it in their own docstrings) — and the MVP-29B Strategic
+    Approval persistence contract (frozen MVP-29A contract; also owned by
+    ``orchestration``, for the identical reason). No Content Revision
+    Request/Distribution/Paid Media/Measurement Cycle/Performance
+    Snapshot/Governed Strategy Revision/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
     Subscription/CreativeBriefVersion/CampaignVersion/TrackingStatus/
     TrackingReadiness/Channel table has been prematurely introduced —
@@ -186,6 +188,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "commercial_objectives",
         "offers",
         "strategic_decisions",
+        "strategic_approvals",
     }
 
 

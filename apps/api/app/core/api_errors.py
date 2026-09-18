@@ -376,3 +376,34 @@ class StrategicDecisionAlreadySupersededError(ApiError):
 
     def __init__(self, message: str = "This Strategic Decision has already been superseded.") -> None:
         super().__init__(message, status_code=409, code="STRATEGIC_DECISION_ALREADY_SUPERSEDED")
+
+
+class StrategicDecisionNotEligibleForApprovalError(ApiError):
+    """MVP-29A §F/§X/§T (frozen contract, implemented MVP-29B): a
+    StrategicApproval may be recorded only against a StrategicDecision
+    whose own ``decision_type`` is ADOPT and whose own ``superseded_at`` is
+    still NULL at commit time — DEFER/DECLINE decisions and any
+    already-superseded Decision (including one superseded by a genuinely
+    concurrent operation) are all deterministically ineligible. A plain DB
+    FK cannot enforce a sibling table's own column-value invariant, so
+    this is the mapped, deterministic surface for that explicit
+    service-layer check — the same role ``StrategicRecommendationNotAcceptedError``
+    already plays one context up."""
+
+    def __init__(self, message: str = "This Strategic Decision is not eligible for Strategic Approval.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_DECISION_NOT_ELIGIBLE_FOR_APPROVAL")
+
+
+class StrategicApprovalAlreadyExistsError(ApiError):
+    """MVP-29A §J (frozen contract, implemented MVP-29B): StrategicDecision
+    1 -> 0..1 StrategicApproval, with no supersession of its own — a second
+    Approval attempt against a Decision that already has one, whether
+    sequential or genuinely concurrent, is a deterministic conflict, never
+    a silent second row. The database's own plain ``UNIQUE`` constraint on
+    ``strategic_decision_id`` is the actual backstop; this is the mapped,
+    deterministic surface for the resulting ``IntegrityError`` or for the
+    equivalent pre-check under row lock — mirrors
+    ``StrategicDecisionAlreadyExistsError`` exactly, one level down."""
+
+    def __init__(self, message: str = "This Strategic Decision already has a Strategic Approval.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_APPROVAL_ALREADY_EXISTS")

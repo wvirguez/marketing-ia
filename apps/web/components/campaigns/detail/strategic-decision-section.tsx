@@ -23,6 +23,7 @@
 // (non-OWNER/ADMIN) users see status only, never a mutation control.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getStrategicApprovals, recordStrategicApproval } from "@/lib/api/strategic-approvals";
 import {
   getStrategicDecisions,
   recordStrategicDecision,
@@ -30,12 +31,18 @@ import {
 } from "@/lib/api/strategic-decisions";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import { formatCampaignDate } from "@/lib/campaigns/status";
+import type { StrategicApprovalOutcome, StrategicApprovalPublic } from "@/types/strategic-approvals";
 import type { StrategicDecisionPublic, StrategicDecisionType } from "@/types/strategic-decisions";
 
 type Result =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; decisions: StrategicDecisionPublic[] };
+  | { status: "ready"; decisions: StrategicDecisionPublic[]; approvals: StrategicApprovalPublic[] };
+
+const APPROVAL_OUTCOME_LABELS: Record<StrategicApprovalOutcome, string> = {
+  APPROVED: "Aprobada",
+  REJECTED: "Rechazada",
+};
 
 const DECISION_TYPE_LABELS: Record<StrategicDecisionType, string> = {
   ADOPT: "Adoptar",
@@ -111,6 +118,71 @@ function DecisionForm({
   );
 }
 
+function ApprovalStatus({
+  campaignId,
+  decision,
+  approval,
+  canDecide,
+  isCurrent,
+  onRecorded,
+}: {
+  campaignId: string;
+  decision: StrategicDecisionPublic;
+  approval: StrategicApprovalPublic | null;
+  canDecide: boolean;
+  isCurrent: boolean;
+  onRecorded: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function decide(outcome: StrategicApprovalOutcome) {
+    if (pending) return;
+    setPending(true);
+    setError("");
+    try {
+      await recordStrategicApproval(campaignId, decision.id, outcome);
+      onRecorded();
+    } catch (err) {
+      setError(describeCampaignError(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (approval) {
+    return (
+      <p className="muted small-text">
+        Aprobación estratégica: {APPROVAL_OUTCOME_LABELS[approval.outcome]} ·{" "}
+        {formatCampaignDate(approval.created_at)}
+      </p>
+    );
+  }
+
+  const canRecordApproval = canDecide && isCurrent && decision.decision_type === "ADOPT";
+
+  return (
+    <div>
+      <p className="muted small-text">Sin aprobación estratégica registrada.</p>
+      {canRecordApproval && (
+        <div className="settings-form-actions" style={{ marginTop: 4 }}>
+          <button type="button" className="button primary" disabled={pending} onClick={() => decide("APPROVED")}>
+            Aprobar
+          </button>
+          <button type="button" className="button" disabled={pending} onClick={() => decide("REJECTED")}>
+            Rechazar
+          </button>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="settings-feedback">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function StrategicDecisionSection({
   campaignId,
   recommendationId,
@@ -129,11 +201,12 @@ export function StrategicDecisionSection({
 
   const load = useCallback(() => {
     requestedRef.current = recommendationId;
-    getStrategicDecisions(campaignId)
-      .then((decisions) =>
+    Promise.all([getStrategicDecisions(campaignId), getStrategicApprovals(campaignId)])
+      .then(([decisions, approvals]) =>
         setResult({
           status: "ready",
           decisions: decisions.filter((d) => d.strategic_recommendation_candidate_id === recommendationId),
+          approvals,
         }),
       )
       .catch((error) => setResult({ status: "error", message: describeCampaignError(error) }));
@@ -180,6 +253,7 @@ export function StrategicDecisionSection({
 
   const current = result.decisions.find((d) => d.current) ?? null;
   const historical = result.decisions.filter((d) => !d.current);
+  const approvalByDecisionId = new Map(result.approvals.map((approval) => [approval.strategic_decision_id, approval]));
 
   return (
     <div className="panel" style={{ marginTop: 8 }}>
@@ -205,6 +279,14 @@ export function StrategicDecisionSection({
             {DECISION_TYPE_LABELS[current.decision_type]}: {current.statement}
           </p>
           <p className="muted small-text">Vigente · Registrada {formatCampaignDate(current.created_at)}</p>
+          <ApprovalStatus
+            campaignId={campaignId}
+            decision={current}
+            approval={approvalByDecisionId.get(current.id) ?? null}
+            canDecide={canDecide}
+            isCurrent
+            onRecorded={load}
+          />
           {canDecide && !replacing && (
             <div className="settings-form-actions" style={{ marginTop: 8 }}>
               <button type="button" className="button" disabled={pending} onClick={() => setReplacing(true)}>
@@ -236,6 +318,14 @@ export function StrategicDecisionSection({
                   <p className="muted small-text">
                     Reemplazada el {decision.superseded_at ? formatCampaignDate(decision.superseded_at) : ""}
                   </p>
+                  <ApprovalStatus
+                    campaignId={campaignId}
+                    decision={decision}
+                    approval={approvalByDecisionId.get(decision.id) ?? null}
+                    canDecide={canDecide}
+                    isCurrent={false}
+                    onRecorded={load}
+                  />
                 </div>
               </article>
             ))}

@@ -326,3 +326,90 @@ class StrategicDecision(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     superseded_by_strategic_decision_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+
+
+class StrategicApprovalOutcome(str, enum.Enum):
+    """MVP-29A/-29B frozen vocabulary — exactly two terminal outcomes, no
+    third member. No ``PENDING``/``REQUESTED``/``UNDER_REVIEW``/``DEFERRED``
+    is ever added here: a StrategicApproval row is only ever created once
+    the governance ruling has already been made (MVP-29A §G, the same
+    "NULL means no decision yet, never a member of the enum" rule
+    ``StrategicRecommendationDecision`` itself already establishes)."""
+
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class StrategicApproval(Base, UUIDPrimaryKeyMixin):
+    """MVP-29A frozen contract, implemented by MVP-29B — a durable,
+    strictly insert-only governance record that one specific, currently
+    ADOPT-typed StrategicDecision has separately received (or been denied)
+    the ratification required to become eligible for a future, not-yet-
+    implemented StrategyRevision workflow. Recording an Approval is never
+    itself a Strategy mutation and never creates a StrategyRevision — see
+    ``app/orchestration/service.py::StrategicApprovalService``.
+
+    STORAGE OWNERSHIP: ``orchestration``, for the identical reason
+    ``StrategicDecision`` lives here (MVP-28A-R2 §D) — this is the one
+    bounded context positioned to hold both halves of the
+    Decision/Approval pair without asking ``learning``/``strategy`` to
+    depend on each other.
+
+    LIFECYCLE / CARDINALITY (MVP-29A §G/§J, frozen): one-shot terminal
+    ruling, no reopening, no supersession of its own — StrategicDecision
+    1 -> 0..1 StrategicApproval. Reconsideration is never represented by
+    mutating or replacing an Approval row; it flows entirely through
+    ``StrategicDecisionService.supersede_decision`` (already-built,
+    already-audited) followed by an independent Approval against the new
+    Decision, if any (MVP-29A §J/§O — "Approval non-inheritance").
+
+    IMMUTABILITY: every column is set exactly once at INSERT — no
+    generic update service, no PATCH, no DELETE, no ``updated_at``.
+    Stricter than ``StrategicDecision`` itself (which permits exactly one
+    later write to its own supersession metadata): an Approval has no
+    supersession metadata of its own to write.
+
+    ELIGIBILITY (enforced in the service layer, not by a DB constraint
+    that cannot express a sibling table's own column values, MVP-29A §F/
+    §T): an Approval may be recorded only against a StrategicDecision
+    whose own ``decision_type`` is ``ADOPT`` and whose own
+    ``superseded_at`` is still NULL at commit time.
+
+    TENANCY: ``strategic_decision_id`` is a plain, single-column FK, not a
+    composite tenant-safe FK — ``strategic_decisions`` has no
+    ``UNIQUE(id, workspace_id)`` candidate key, and adding one is out of
+    this MVP's authorized scope (MVP-29A §P). Tenant-safety is instead
+    proven entirely at the service layer: the Decision is always resolved
+    through ``StrategicDecisionRepository.get_for_campaign_by_public_id``
+    (already campaign-scoped, non-leaky) before its internal UUID is ever
+    used to populate this column.
+
+    CARDINALITY BACKSTOP (MVP-29A §J, MVP-29B §11): the actual, unconditional
+    DB-level backstop for "at most one Approval per Decision" is the plain
+    (non-partial) ``UNIQUE`` constraint on ``strategic_decision_id`` below —
+    never a partial index, since (unlike StrategicDecision) there is no
+    supersession state on this row that would ever need excluding.
+    """
+
+    __tablename__ = "strategic_approvals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["campaign_id", "workspace_id"],
+            ["campaigns.id", "campaigns.workspace_id"],
+            name="fk_strategic_approvals_campaign_workspace",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # Plain FK, deliberately not composite — see class docstring "TENANCY".
+    # unique=True is the actual DB-level "at most one Approval per
+    # Decision" backstop (see class docstring "CARDINALITY BACKSTOP").
+    strategic_decision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategic_decisions.id"), unique=True, index=True
+    )
+    outcome: Mapped[StrategicApprovalOutcome] = mapped_column(
+        Enum(StrategicApprovalOutcome, name="strategic_approval_outcome", native_enum=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
