@@ -8,10 +8,13 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.campaigns.repository import CampaignRunRepository
 from app.learning.models import StrategicRecommendationDecision
 from app.learning.service import LearningService
-from app.orchestration.models import StrategicApprovalOutcome, StrategicDecisionType
-from app.orchestration.service import StrategicApprovalService, StrategicDecisionService
+from app.orchestration.models import BusinessStage, StrategicApprovalOutcome, StrategicDecisionType
+from app.orchestration.repository import RunStageExecutionRepository
+from app.orchestration.service import StrategicApprovalService, StrategicDecisionService, StrategyRevisionService
+from app.strategy.service import StrategyService
 from tests.campaignstest import campaign_payload, register_and_get_csrf
 from tests.contenttest import make_user
 from tests.learningtest import build_recommendation
@@ -111,3 +114,48 @@ def build_strategic_approval(
         actor_user_id=actor.id,
     )
     return campaign, recommendation, decision, approval, actor
+
+
+def build_base_strategy(session, *, campaign, run_number=2):
+    """MVP-30B: bootstraps a fresh Strategy (v1) for an already-existing
+    ``campaign`` via the real, production ``StrategyService.record_strategy``
+    — a second, independent CampaignRun (the accepted Recommendation's own
+    ancestry already consumed run #1 internally), since Strategy Revision
+    requires an existing base Strategy to act on (MVP-30A-R1 §I). Returns
+    ``(base_strategy, run, stage_execution)``."""
+    run = CampaignRunRepository(session).create(campaign=campaign, run_number=run_number)
+    session.flush()
+    stages = RunStageExecutionRepository(session).materialize_for_run(campaign_run=run)
+    stage_execution = next(s for s in stages if s.stage is BusinessStage.STRATEGY)
+    base_strategy, _positioning, _hypotheses, _experiments = StrategyService(session).record_strategy(
+        campaign=campaign, campaign_run=run, stage_execution=stage_execution,
+        summary="Initial bootstrap strategy.", positioning_statement="Initial positioning.",
+    )
+    return base_strategy, run, stage_execution
+
+
+def build_strategy_revision(
+    session,
+    *,
+    revision_summary="A more precisely targeted hooks strategy.",
+    revision_positioning_statement="Position around fast, credible mastery.",
+    **overrides: object,
+):
+    """MVP-30B: builds one APPROVED StrategicApproval (via
+    ``build_strategic_approval`` above) plus a bootstrap-origin base
+    Strategy for the same campaign, then records a governed
+    StrategyRevision for it via the real, production
+    ``StrategyRevisionService``. Returns ``(campaign, base_strategy,
+    approval, result_strategy, positioning, revision, actor)``."""
+    campaign, _recommendation, _decision, approval, actor = build_strategic_approval(session, **overrides)
+    base_strategy, _run, _stage_execution = build_base_strategy(session, campaign=campaign)
+
+    result_strategy, positioning, revision = StrategyRevisionService(session).revise_strategy(
+        campaign=campaign,
+        base_strategy_public_id=base_strategy.public_id,
+        strategic_approval_public_id=approval.public_id,
+        summary=revision_summary,
+        positioning_statement=revision_positioning_statement,
+        actor_user_id=actor.id,
+    )
+    return campaign, base_strategy, approval, result_strategy, positioning, revision, actor

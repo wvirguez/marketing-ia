@@ -1,6 +1,10 @@
 """Reproducible round trip against a dedicated, disposable migration
-database — mirrors ``tests/test_strategic_decision_migration.py`` exactly,
-one migration later."""
+database — mirrors ``tests/test_strategic_approval_migration.py`` exactly,
+one migration later. Also directly exercises the origin CHECK constraint
+via real PostgreSQL inserts (not merely inspected), since SQLite cannot
+prove CHECK constraint enforcement and this is the first migration in the
+project that alters an existing table's nullability + adds a CHECK tying
+two columns to a native enum."""
 import logging
 import os
 
@@ -33,7 +37,7 @@ def _restore_logging_state_after_alembic():
                 logger.disabled = disabled
 
 
-def test_strategic_approval_migration_round_trip(monkeypatch):
+def test_strategy_revision_migration_round_trip(monkeypatch):
     url = os.environ.get("TEST_MIGRATIONS_DATABASE_URL")
     if not url:
         pytest.skip("TEST_MIGRATIONS_DATABASE_URL requires a separate disposable PostgreSQL database")
@@ -45,17 +49,17 @@ def test_strategic_approval_migration_round_trip(monkeypatch):
     config = Config("alembic.ini")
     try:
         # Re-runnable only in the explicitly test-scoped database above.
-        if "strategic_approvals" in inspect(engine).get_table_names():
-            command.downgrade(config, "7b4151d4cf64")
-        command.upgrade(config, "7b4151d4cf64")
-        assert "strategic_approvals" not in inspect(engine).get_table_names()
+        if "strategy_revisions" in inspect(engine).get_table_names():
+            command.downgrade(config, "eae9bb978d9c")
+        command.upgrade(config, "eae9bb978d9c")
+        assert "strategy_revisions" not in inspect(engine).get_table_names()
         for cycle in range(2):
             command.upgrade(config, "head")
             inspector = inspect(engine)
 
-            from app.orchestration.models import StrategicApproval
+            from app.orchestration.models import StrategyRevision
 
-            table = StrategicApproval.__table__
+            table = StrategyRevision.__table__
             columns = inspector.get_columns(table.name)
             assert {c["name"] for c in columns} == set(table.columns.keys())
             assert {c["name"]: c["nullable"] for c in columns} == {c.name: c.nullable for c in table.columns}
@@ -69,25 +73,43 @@ def test_strategic_approval_migration_round_trip(monkeypatch):
                 assert len(fk["name"]) <= 63
 
             indexes = {i["name"]: i for i in inspector.get_indexes(table.name)}
-            assert "ix_strategic_approvals_strategic_decision_id" in indexes
-            assert indexes["ix_strategic_approvals_strategic_decision_id"]["unique"]
+            assert indexes["ix_strategy_revisions_strategic_approval_id"]["unique"]
+            assert indexes["ix_strategy_revisions_result_strategy_id"]["unique"]
+            assert not indexes["ix_strategy_revisions_base_strategy_id"]["unique"]
+
+            # Composite, tenant-safe FKs on base_strategy_id/result_strategy_id;
+            # plain FK on strategic_approval_id (StrategicApproval has no
+            # composite candidate key, MVP-30A-R1 §13).
+            base_fk = next(fk for fk in fks if set(fk["constrained_columns"]) == {"base_strategy_id", "workspace_id"})
+            assert base_fk["referred_table"] == "strategies"
+            result_fk = next(fk for fk in fks if "result_strategy_id" in fk["constrained_columns"] and len(fk["constrained_columns"]) == 2)
+            assert result_fk["referred_table"] == "strategies"
+            approval_fk = next(fk for fk in fks if fk["constrained_columns"] == ["strategic_approval_id"])
+            assert approval_fk["referred_table"] == "strategic_approvals"
+
+            # Strategy origin integrity.
+            strategy_columns = {c["name"]: c["nullable"] for c in inspector.get_columns("strategies")}
+            assert strategy_columns["origin"] is False
+            assert strategy_columns["campaign_run_id"] is True
+            assert strategy_columns["stage_execution_id"] is True
+            checks = {c["name"] for c in inspector.get_check_constraints("strategies")}
+            assert "ck_strategies_origin_bootstrap_fields" in checks
 
             audit_columns = {c["name"] for c in inspector.get_columns("audit_events")}
-            assert "strategic_approval_id" in audit_columns
+            assert "strategy_revision_id" in audit_columns
 
             with engine.connect() as connection:
-                assert connection.scalar(text("select count(*) from strategic_approvals")) == 0
-                # MVP-30B added one additive migration after this one —
-                # "head" now means b27209ee89a1, not this migration's own
-                # revision.
+                assert connection.scalar(text("select count(*) from strategy_revisions")) == 0
                 assert connection.scalar(text("select version_num from alembic_version")) == "b27209ee89a1"
 
             if cycle == 0:
-                command.downgrade(config, "7b4151d4cf64")
+                command.downgrade(config, "eae9bb978d9c")
                 inspector = inspect(engine)
-                assert "strategic_approvals" not in inspector.get_table_names()
+                assert "strategy_revisions" not in inspector.get_table_names()
+                remaining_strategy_columns = {c["name"] for c in inspector.get_columns("strategies")}
+                assert "origin" not in remaining_strategy_columns
                 remaining_audit_columns = {c["name"] for c in inspector.get_columns("audit_events")}
-                assert "strategic_approval_id" not in remaining_audit_columns
+                assert "strategy_revision_id" not in remaining_audit_columns
     finally:
         engine.dispose()
         get_settings.cache_clear()

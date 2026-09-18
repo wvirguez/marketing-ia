@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.campaigns.models import Campaign, CampaignRun
 from app.core.ids import generate_public_id
 from app.orchestration.models import RunStageExecution
-from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy
+from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy, StrategyOrigin
 
 
 class StrategyRepository:
@@ -32,17 +32,26 @@ class StrategyRepository:
         self,
         *,
         campaign: Campaign,
-        campaign_run: CampaignRun,
-        stage_execution: RunStageExecution,
         version: int,
         summary: str,
+        origin: StrategyOrigin,
+        campaign_run: CampaignRun | None = None,
+        stage_execution: RunStageExecution | None = None,
     ) -> Strategy:
+        """``campaign_run``/``stage_execution`` are required together for
+        ``origin=BOOTSTRAP`` and must be omitted together for
+        ``origin=REVISION`` (MVP-30A-R1) — the DB's own
+        ``ck_strategies_origin_bootstrap_fields`` CHECK constraint is the
+        actual backstop, never trusted as merely an application-level
+        convention (mirrors every other origin/status invariant in this
+        codebase)."""
         strategy = Strategy(
             public_id=generate_public_id("STR"),
             workspace_id=campaign.workspace_id,
             campaign_id=campaign.id,
-            campaign_run_id=campaign_run.id,
-            stage_execution_id=stage_execution.id,
+            origin=origin,
+            campaign_run_id=campaign_run.id if campaign_run is not None else None,
+            stage_execution_id=stage_execution.id if stage_execution is not None else None,
             version=version,
             summary=summary,
         )
@@ -53,10 +62,34 @@ class StrategyRepository:
     def get_by_public_id(self, public_id: str) -> Strategy | None:
         return self.session.execute(select(Strategy).where(Strategy.public_id == public_id)).scalar_one_or_none()
 
+    def get_for_campaign_by_public_id(
+        self, *, campaign_id: uuid.UUID, public_id: str, for_update: bool = False
+    ) -> Strategy | None:
+        """Non-leaky, campaign-scoped resource lookup — identical
+        discipline to every other bounded context's own
+        ``get_for_campaign_by_public_id`` (e.g.
+        ``app/orchestration/repository.py::StrategicDecisionRepository``).
+        Used by ``StrategyRevisionService`` to resolve the exact base
+        Strategy a governed Revision targets (MVP-30B) — never a global
+        lookup trusting a client-supplied campaign match."""
+        query = select(Strategy).where(Strategy.campaign_id == campaign_id, Strategy.public_id == public_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
     def get_current_for_campaign(self, campaign_id: uuid.UUID) -> Strategy | None:
         return self.session.execute(
             select(Strategy).where(Strategy.campaign_id == campaign_id).order_by(Strategy.version.desc()).limit(1)
         ).scalar_one_or_none()
+
+    def list_for_campaign(self, campaign_id: uuid.UUID) -> list[Strategy]:
+        return list(
+            self.session.execute(
+                select(Strategy).where(Strategy.campaign_id == campaign_id).order_by(Strategy.version.asc())
+            )
+            .scalars()
+            .all()
+        )
 
     def next_version_for_campaign(self, campaign_id: uuid.UUID) -> int:
         current = self.session.execute(

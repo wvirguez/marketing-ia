@@ -15,12 +15,44 @@ nothing below stands in as a substitute for either.
 
 Ownership mirrors ``app/research/models.py`` exactly for ``Strategy``:
 Campaign-owned (sibling of ResearchReport/AudienceProfile/Orchestration Run
-under Campaign), with ``campaign_run_id``/``stage_execution_id`` carried as
-required *provenance* — which run and stage-execution instance produced
-this version — never as the ownership relationship. Strategy is versioned
-and immutable once created, matching ResearchReport/AudienceProfile's own
-precedent exactly: no ``status``, ``ACTIVE``, ``SUPERSEDED``, or
-``approved`` field — "current" = ``MAX(version)`` for the campaign.
+under Campaign). Strategy is versioned and immutable once created, matching
+ResearchReport/AudienceProfile's own precedent exactly: no ``status``,
+``ACTIVE``, ``SUPERSEDED``, or ``approved`` field — "current" =
+``MAX(version)`` for the campaign.
+
+ORIGIN (MVP-30A-R1, frozen): every Strategy row has exactly one of two
+legal origins, recorded explicitly in ``origin`` rather than left as tribal
+knowledge inferable only from column nullability:
+
+- ``BOOTSTRAP`` — created by the deterministic bootstrap
+  (``StrategyService.record_strategy``, called only from
+  ``app/orchestration/service.py``'s own bootstrap). Carries required
+  *provenance* — ``campaign_run_id``/``stage_execution_id`` — which run and
+  STRATEGY-stage execution instance produced this version.
+- ``REVISION`` — created by a governed Strategy Revision
+  (``app/orchestration/service.py::StrategyRevisionService``, MVP-30B). Has
+  no live ``CampaignRun``/``RunStageExecution`` context at all (a Revision
+  can happen long after any particular run's own STRATEGY stage completed),
+  so both provenance columns are NULL. The governance provenance for *why*
+  a REVISION-origin row exists — which ``StrategicApproval`` authorized it,
+  which prior Strategy it revised — is never stored here; it lives entirely
+  in ``StrategyRevision`` (``app/orchestration/models.py``), consistent with
+  this module's own long-standing disclaimer below that no Strategic
+  Decision/Approval concept is implemented in ``app/strategy/``.
+
+The ``ck_strategies_origin_bootstrap_fields`` CHECK constraint below is the
+DB-enforced half of this invariant (BOOTSTRAP ⇔ both provenance columns
+NOT NULL; REVISION ⇔ both NULL). The other half — that a REVISION-origin
+row is always actually referenced by exactly one ``StrategyRevision`` — is
+NOT independently DB-enforceable (no plain FK/CHECK can express "some row
+elsewhere must reference this row" without a trigger or a circular FK, both
+deliberately not introduced, MVP-30A-R1 §I). It is instead
+TRANSACTIONALLY GUARANTEED: the only production code path that can ever
+insert a REVISION-origin row (``StrategyRevisionService.revise_strategy``)
+inserts it and its corresponding ``StrategyRevision`` row inside the same
+uncommitted transaction — if either insert fails, both roll back together,
+so no orphan REVISION-origin row can ever become visible to any other
+transaction.
 
 Positioning is a 1:1 immutable child of Strategy with no direct tenant
 column of its own — BACKEND-01's domain-model catalog annotates its tenant
@@ -64,7 +96,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -72,6 +104,15 @@ from app.persistence.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 _STATEMENT_MAX_LENGTH = 4000
 _DESCRIPTION_MAX_LENGTH = 4000
 _EXPERIMENT_STATUS_MAX_LENGTH = 30
+
+
+class StrategyOrigin(str, enum.Enum):
+    """MVP-30A-R1 frozen vocabulary — exactly the two legal Strategy
+    origins (see module docstring "ORIGIN"). No speculative future value
+    is added here."""
+
+    BOOTSTRAP = "BOOTSTRAP"
+    REVISION = "REVISION"
 
 
 class Strategy(Base, UUIDPrimaryKeyMixin):
@@ -92,6 +133,9 @@ class Strategy(Base, UUIDPrimaryKeyMixin):
         # or that the stage_execution is the STRATEGY stage of that run —
         # those checks are service-layer (app/strategy/service.py), not
         # database-layer (BACKEND-08 §7, same reasoning as BACKEND-07 §10).
+        # Nullable for REVISION-origin rows (MVP-30A-R1) — a composite FK
+        # with MATCH SIMPLE (PostgreSQL's default) is simply not checked
+        # when either referencing column is NULL.
         ForeignKeyConstraint(
             ["campaign_run_id", "workspace_id"],
             ["campaign_runs.id", "campaign_runs.workspace_id"],
@@ -101,18 +145,38 @@ class Strategy(Base, UUIDPrimaryKeyMixin):
         # key purely so Hypothesis can declare a composite FK on
         # (strategy_id, workspace_id), the same pattern
         # `uq_campaigns_id_workspace_id`/`uq_campaign_runs_id_workspace_id`
-        # already provide one level up.
+        # already provide one level up. MVP-30A-R1 also reuses this exact
+        # key for StrategyRevision's own base_strategy_id/result_strategy_id
+        # composite FKs (app/orchestration/models.py).
         UniqueConstraint("id", "workspace_id", name="uq_strategies_id_workspace_id"),
+        # MVP-30A-R1: the DB-enforced half of the origin invariant (see
+        # module docstring "ORIGIN") — BOOTSTRAP rows always carry both
+        # provenance columns, REVISION rows always carry neither. The
+        # companion invariant ("a REVISION row is always referenced by
+        # exactly one StrategyRevision") cannot be expressed this way — see
+        # the docstring for why, and app/orchestration/service.py for the
+        # transactional guarantee that stands in for it.
+        CheckConstraint(
+            "(origin = 'BOOTSTRAP' AND campaign_run_id IS NOT NULL AND stage_execution_id IS NOT NULL) OR "
+            "(origin = 'REVISION' AND campaign_run_id IS NULL AND stage_execution_id IS NULL)",
+            name="origin_bootstrap_fields",
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     campaign_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
-    campaign_run_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    origin: Mapped[StrategyOrigin] = mapped_column(Enum(StrategyOrigin, name="strategy_origin", native_enum=True))
+    # Nullable — see module docstring "ORIGIN" and the CHECK constraint
+    # above; NULL for REVISION-origin rows, required together for
+    # BOOTSTRAP-origin rows.
+    campaign_run_id: Mapped[uuid.UUID | None] = mapped_column(default=None, index=True)  # covered by the composite FK above
     # Plain FK only — the semantic check ("this stage_execution belongs to
     # this exact campaign_run and is the STRATEGY stage") is proven in the
     # service layer, not assumed from the FK's mere existence.
-    stage_execution_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("run_stage_executions.id"), index=True)
+    stage_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("run_stage_executions.id"), default=None, index=True
+    )
     version: Mapped[int] = mapped_column()
     # BACKEND-01: "AGENT-03's structured strategy (objective, message,
     # funnel)" — a single narrative field, matching ResearchReport.summary/

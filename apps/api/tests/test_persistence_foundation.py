@@ -110,11 +110,18 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     — the MVP-28B Strategic Decision persistence contract (frozen
     MVP-28A/-R1/-R2 contract; owned by ``orchestration`` per MVP-28A-R2
     §D, not ``learning``/``strategy`` — both of those modules explicitly
-    disclaim it in their own docstrings) — and the MVP-29B Strategic
+    disclaim it in their own docstrings) — the MVP-29B Strategic
     Approval persistence contract (frozen MVP-29A contract; also owned by
-    ``orchestration``, for the identical reason). No Content Revision
+    ``orchestration``, for the identical reason) — and the MVP-30B Governed
+    Strategy Revision persistence contract (frozen MVP-30A/-30A-R1
+    contract; the governance-provenance relation ``strategy_revisions`` is
+    also owned by ``orchestration``, for the identical reason, while
+    ``Strategy``/``Positioning`` themselves remain owned by ``strategy`` and
+    gained only an additive ``origin`` column + a nullability relaxation on
+    their own pre-existing bootstrap-provenance columns, never a new table
+    of their own). No Content Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
-    Snapshot/Governed Strategy Revision/Agent Run/Handoff/Return/Gate
+    Snapshot/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
     Subscription/CreativeBriefVersion/CampaignVersion/TrackingStatus/
     TrackingReadiness/Channel table has been prematurely introduced —
@@ -189,6 +196,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "offers",
         "strategic_decisions",
         "strategic_approvals",
+        "strategy_revisions",
     }
 
 

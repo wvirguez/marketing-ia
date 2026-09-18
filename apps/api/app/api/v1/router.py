@@ -21,6 +21,7 @@ from app.measurement.router import router as measurement_router
 from app.orchestration.router import router as orchestration_router
 from app.orchestration.strategic_approval_router import router as strategic_approval_router
 from app.orchestration.strategic_decision_router import router as strategic_decision_router
+from app.orchestration.strategy_revision_router import router as strategy_revision_router
 from app.planning.router import router as planning_router
 from app.research.router import router as research_router
 from app.strategy.router import router as strategy_router
@@ -72,3 +73,6 @@ api_v1_router.include_router(strategic_decision_router)
 # Same reasoning again — own prefix already includes /campaigns/{id}, see
 # app/orchestration/strategic_approval_router.py's module docstring.
 api_v1_router.include_router(strategic_approval_router)
+# Same reasoning again — own prefix already includes /campaigns/{id}, see
+# app/orchestration/strategy_revision_router.py's module docstring.
+api_v1_router.include_router(strategy_revision_router)

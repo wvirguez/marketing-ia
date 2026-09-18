@@ -25,10 +25,15 @@ export interface ExperimentPublic {
   created_at: string;
 }
 
+// MVP-30B: "BOOTSTRAP" (deterministic initial draft) or "REVISION" (a
+// governed Strategy Revision, MVP-30A/-30A-R1) — never a third value.
+export type StrategyOrigin = "BOOTSTRAP" | "REVISION";
+
 export interface StrategyPublic {
   id: string;
   campaign_id: string;
   version: number;
+  origin: StrategyOrigin;
   summary: string;
   created_at: string;
 }

@@ -38,7 +38,7 @@ from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign, CampaignRun
 from app.core.api_errors import ForbiddenError, InvalidLifecycleTransitionError, ProvenanceMismatchError, VersionConflictError
 from app.orchestration.models import BusinessStage, RunStageExecution
-from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy
+from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy, StrategyOrigin
 from app.strategy.repository import (
     ExperimentRepository,
     HypothesisRepository,
@@ -93,6 +93,12 @@ class StrategyService:
             experiments.extend(self.experiments.list_for_hypothesis(hypothesis.id))
         return strategy, positioning, hypotheses, experiments
 
+    def list_versions_for_campaign(self, campaign_id: uuid.UUID) -> list[Strategy]:
+        """MVP-30B: every Strategy version for a Campaign, oldest first —
+        the read side of the governed-history surface
+        (``app/orchestration/strategy_revision_router.py``)."""
+        return self.strategies.list_for_campaign(campaign_id)
+
     # --- writes (service-layer only; no public HTTP trigger) ---------
 
     def record_strategy(
@@ -125,7 +131,7 @@ class StrategyService:
         try:
             strategy = self.strategies.create(
                 campaign=campaign, campaign_run=campaign_run, stage_execution=stage_execution,
-                version=next_version, summary=summary,
+                version=next_version, summary=summary, origin=StrategyOrigin.BOOTSTRAP,
             )
         except IntegrityError:
             self.session.rollback()

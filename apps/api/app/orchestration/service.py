@@ -32,11 +32,15 @@ from app.core.api_errors import (
     ForbiddenError,
     InvalidLifecycleTransitionError,
     OrchestrationNotInitializedError,
+    StrategicApprovalAlreadyConsumedError,
     StrategicApprovalAlreadyExistsError,
     StrategicDecisionAlreadyExistsError,
     StrategicDecisionAlreadySupersededError,
     StrategicDecisionNotEligibleForApprovalError,
     StrategicRecommendationNotAcceptedError,
+    StrategyRevisionBaseStaleError,
+    StrategyRevisionNotEligibleError,
+    VersionConflictError,
 )
 from app.learning.models import StrategicRecommendationDecision
 from app.learning.repository import StrategicRecommendationCandidateRepository
@@ -52,6 +56,7 @@ from app.orchestration.models import (
     StrategicApprovalOutcome,
     StrategicDecision,
     StrategicDecisionType,
+    StrategyRevision,
 )
 from app.orchestration.repository import (
     HumanDecisionRequestRepository,
@@ -59,15 +64,19 @@ from app.orchestration.repository import (
     RunStageExecutionRepository,
     StrategicApprovalRepository,
     StrategicDecisionRepository,
+    StrategyRevisionRepository,
 )
 from app.orchestration.transitions import is_legal_run_transition, is_legal_stage_transition
 from app.planning.service import PlanningService
 from app.research.service import ResearchService
+from app.strategy.models import Positioning, Strategy, StrategyOrigin
+from app.strategy.repository import PositioningRepository, StrategyRepository
 from app.strategy.service import StrategyService
 
 EVENT_STRATEGIC_DECISION_RECORDED = "orchestration.strategic_decision.recorded"
 EVENT_STRATEGIC_DECISION_SUPERSEDED = "orchestration.strategic_decision.superseded"
 EVENT_STRATEGIC_APPROVAL_RECORDED = "orchestration.strategic_approval.recorded"
+EVENT_STRATEGY_REVISION_RECORDED = "orchestration.strategy_revision.recorded"
 
 EVENT_ORCHESTRATION_INITIALIZED = "orchestration.initialized"
 EVENT_RUN_TRANSITIONED = "orchestration.run.transitioned"
@@ -992,3 +1001,137 @@ class StrategicApprovalService:
 
     def list_approvals_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategicApproval]:
         return self.approvals.list_for_campaign(campaign_id)
+
+
+class StrategyRevisionService:
+    """MVP-30B — implements the MVP-30A/-30A-R1 frozen Governed Strategy
+    Revision contract. Transaction ownership: load/validate, mutate, audit,
+    commit once — no intermediate commits (mirrors
+    ``StrategicApprovalService``/``StrategicDecisionService`` exactly).
+
+    Deliberately owns the write path end-to-end even though the actual
+    ``Strategy``/``Positioning`` inserts happen through ``app/strategy/``'s
+    own repositories — this service is the "governance act," ``Strategy``/
+    ``Positioning`` remain the "artifact" (see ``StrategyRevision``'s own
+    class docstring). This dependency direction (orchestration ->
+    app/strategy/) is already established and legitimate: orchestration's
+    own deterministic bootstrap already imports ``StrategyService`` for the
+    identical reason.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.revisions = StrategyRevisionRepository(session)
+        self.decisions = StrategicDecisionRepository(session)
+        self.approvals = StrategicApprovalRepository(session)
+        self.strategies = StrategyRepository(session)
+        self.positionings = PositioningRepository(session)
+        self.events = AuditEventRepository(session)
+
+    def revise_strategy(
+        self,
+        *,
+        campaign: Campaign,
+        base_strategy_public_id: str,
+        strategic_approval_public_id: str,
+        summary: str,
+        positioning_statement: str,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> tuple[Strategy, Positioning, StrategyRevision]:
+        """MVP-30A-R1 §22/§23: canonical lock order — the exact
+        StrategicDecision row FIRST (via the resolved Approval's own FK,
+        never a client-supplied Decision identifier — MVP-30A-R1 §17), then
+        the exact base Strategy row SECOND. Decision currency is required
+        only at this single locked eligibility point, never as an ongoing
+        lifetime condition of the resulting StrategyRevision (MVP-30A-R1
+        §L) — a later Decision supersession never invalidates an
+        already-committed StrategyRevision (MVP-30A-R1 §M/§O/§P), and this
+        method never inspects or modifies StrategicDecisionService's own
+        supersession semantics.
+
+        The client supplies exactly two identifiers — the base Strategy's
+        own public_id (explicit stale-base identity, MVP-30A-R1 §J/§20) and
+        the Strategic Approval's own public_id (MVP-30B §17/§38: the
+        eligible Approval/Decision is resolved from campaign-scoped domain
+        relationships, never heuristically selected by latest/MAX/first
+        row, and never trusting a client-supplied internal UUID or a
+        client-supplied Decision identifier at all)."""
+        approval = self.approvals.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=strategic_approval_public_id
+        )
+        if approval is None:
+            raise ForbiddenError()
+
+        # Canonical lock order: Decision row first (MVP-30A-R1 §22).
+        decision = self.decisions.get_by_id(approval.strategic_decision_id, for_update=True)
+        if decision is None:  # pragma: no cover - FK guarantees existence
+            raise ForbiddenError()
+        if (
+            decision.decision_type is not StrategicDecisionType.ADOPT
+            or decision.superseded_at is not None
+            or approval.outcome is not StrategicApprovalOutcome.APPROVED
+        ):
+            raise StrategyRevisionNotEligibleError()
+        if self.revisions.get_for_approval(approval_id=approval.id) is not None:
+            raise StrategicApprovalAlreadyConsumedError()
+
+        # Second lock: the exact base Strategy row (MVP-30A-R1 §22).
+        base_strategy = self.strategies.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=base_strategy_public_id, for_update=True
+        )
+        if base_strategy is None:
+            raise ForbiddenError()
+        current_strategy = self.strategies.get_current_for_campaign(campaign.id)
+        if current_strategy is None or current_strategy.id != base_strategy.id:
+            raise StrategyRevisionBaseStaleError()
+
+        try:
+            with self.session.begin_nested():
+                result_strategy = self.strategies.create(
+                    campaign=campaign,
+                    version=base_strategy.version + 1,
+                    summary=summary,
+                    origin=StrategyOrigin.REVISION,
+                )
+        except IntegrityError:
+            # A genuinely concurrent revision from the same base that
+            # reached this point despite the base-Strategy-row lock above
+            # (e.g. a caller that bypassed the service layer) is rejected
+            # by the (campaign_id, version) unique constraint itself — the
+            # same "DB backstop, not just an application guard" discipline
+            # already established for this exact constraint in
+            # StrategyService.record_strategy.
+            raise VersionConflictError() from None
+
+        # Never reuses/repoints the base Positioning row — Positioning is
+        # structurally 1:1-per-Strategy-row and never mutated (MVP-30A-R1
+        # §O); "same conceptual positioning" always means a fresh row.
+        positioning = self.positionings.create(strategy=result_strategy, statement=positioning_statement)
+
+        try:
+            with self.session.begin_nested():
+                revision = self.revisions.create(
+                    campaign=campaign,
+                    strategic_approval_id=approval.id,
+                    base_strategy_id=base_strategy.id,
+                    result_strategy_id=result_strategy.id,
+                )
+        except IntegrityError:
+            raise StrategicApprovalAlreadyConsumedError() from None
+
+        self.events.record(
+            workspace_id=result_strategy.workspace_id,
+            campaign_id=campaign.id,
+            event_type=EVENT_STRATEGY_REVISION_RECORDED,
+            actor_type=ActorType.USER,
+            strategy_revision_id=revision.id,
+            new_state=f"v{result_strategy.version}",
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return result_strategy, positioning, revision
+
+    def list_revisions_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategyRevision]:
+        return self.revisions.list_for_campaign(campaign_id)

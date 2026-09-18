@@ -31,6 +31,7 @@ from app.orchestration.models import (
     StrategicApprovalOutcome,
     StrategicDecision,
     StrategicDecisionType,
+    StrategyRevision,
 )
 
 
@@ -194,6 +195,17 @@ class StrategicDecisionRepository:
         self.session.flush()
         return row
 
+    def get_by_id(self, decision_id: uuid.UUID, *, for_update: bool = False) -> StrategicDecision | None:
+        """MVP-30B: resolves a Decision by its already-trusted internal id
+        — used only after that id was itself derived server-side from an
+        already campaign-scoped artifact (a resolved ``StrategicApproval``'s
+        own ``strategic_decision_id`` FK, ``StrategyRevisionService.
+        revise_strategy``), never from a raw client-supplied UUID."""
+        query = select(StrategicDecision).where(StrategicDecision.id == decision_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
     def get_current_for_recommendation(
         self, *, recommendation_id: uuid.UUID, for_update: bool = False
     ) -> StrategicDecision | None:
@@ -288,6 +300,73 @@ class StrategicApprovalRepository:
                 select(StrategicApproval)
                 .where(StrategicApproval.campaign_id == campaign_id)
                 .order_by(StrategicApproval.created_at.asc(), StrategicApproval.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+
+class StrategyRevisionRepository:
+    """Data access for StrategyRevision — MVP-30B (frozen MVP-30A/-30A-R1
+    contract). No method here calls ``session.commit()`` — see
+    ``app/orchestration/service.py::StrategyRevisionService`` for the
+    transaction-ownership boundary. No ``update``/``delete`` method exists
+    anywhere in this class — StrategyRevision is strictly insert-only.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        campaign: Campaign,
+        strategic_approval_id: uuid.UUID,
+        base_strategy_id: uuid.UUID,
+        result_strategy_id: uuid.UUID,
+    ) -> StrategyRevision:
+        row = StrategyRevision(
+            public_id=generate_public_id("SRV"),
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.id,
+            strategic_approval_id=strategic_approval_id,
+            base_strategy_id=base_strategy_id,
+            result_strategy_id=result_strategy_id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_for_approval(self, *, approval_id: uuid.UUID) -> StrategyRevision | None:
+        """The MVP-30A-R1 §H cardinality query rule: at most one row per
+        Approval — this is the DB-backed read; the plain ``unique=True`` on
+        ``strategic_approval_id`` (``app/orchestration/models.py::StrategyRevision``)
+        is the actual, unconditional backstop."""
+        return self.session.execute(
+            select(StrategyRevision).where(StrategyRevision.strategic_approval_id == approval_id)
+        ).scalar_one_or_none()
+
+    def get_for_result_strategy(self, *, result_strategy_id: uuid.UUID) -> StrategyRevision | None:
+        return self.session.execute(
+            select(StrategyRevision).where(StrategyRevision.result_strategy_id == result_strategy_id)
+        ).scalar_one_or_none()
+
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> StrategyRevision | None:
+        """Non-leaky, campaign-scoped resource lookup — identical
+        discipline to every other bounded context's own
+        ``get_for_campaign_by_public_id``."""
+        return self.session.execute(
+            select(StrategyRevision).where(
+                StrategyRevision.campaign_id == campaign_id, StrategyRevision.public_id == public_id
+            )
+        ).scalar_one_or_none()
+
+    def list_for_campaign(self, campaign_id: uuid.UUID) -> list[StrategyRevision]:
+        return list(
+            self.session.execute(
+                select(StrategyRevision)
+                .where(StrategyRevision.campaign_id == campaign_id)
+                .order_by(StrategyRevision.created_at.asc(), StrategyRevision.id.asc())
             )
             .scalars()
             .all()

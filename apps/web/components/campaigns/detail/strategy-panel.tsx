@@ -6,10 +6,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
+import { useAuth } from "@/lib/auth/auth-context";
 import { getStrategy } from "@/lib/api/strategy";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { HypothesisStatus, StrategyOutputResponse } from "@/types/strategy";
 import { DraftDisclosureBanner } from "./draft-disclosure-banner";
+import { StrategyRevisionSection } from "./strategy-revision-section";
 
 type Result =
   | { token: number; status: "error"; message: string }
@@ -41,6 +43,8 @@ export function StrategyPanel({
   active: boolean;
   refreshToken: number;
 }) {
+  const auth = useAuth();
+  const role = auth.status === "authenticated" ? auth.session.membership.role : null;
   const [result, setResult] = useState<Result | null>(null);
   const requestedTokenRef = useRef<number | null>(null);
 
@@ -177,6 +181,8 @@ export function StrategyPanel({
           ))}
         </div>
       )}
+
+      <StrategyRevisionSection campaignId={campaignId} currentStrategyId={strategy.id} role={role} onRevised={retry} />
     </section>
   );
 }

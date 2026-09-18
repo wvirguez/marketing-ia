@@ -256,6 +256,15 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     strategic_approval_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("strategic_approvals.id"), default=None, index=True
     )
+    # MVP-30B: same reasoning as strategic_decision_id/strategic_approval_id
+    # above — an orchestration.strategy_revision.recorded event must
+    # identify its exact StrategyRevision row. Nullable, single-column,
+    # matching every other AuditEvent subject FK exactly (MVP-30A-R1 §U:
+    # the authoritative provenance graph lives on StrategyRevision itself,
+    # never duplicated onto AuditEvent).
+    strategy_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("strategy_revisions.id"), default=None, index=True
+    )
     # A short, stable, dot-separated tag (e.g. "orchestration.run.transitioned")
     # — see app/orchestration/service.py for the fixed set BACKEND-06 emits.
     event_type: Mapped[str] = mapped_column(String(100), index=True)

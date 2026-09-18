@@ -407,3 +407,50 @@ class StrategicApprovalAlreadyExistsError(ApiError):
 
     def __init__(self, message: str = "This Strategic Decision already has a Strategic Approval.") -> None:
         super().__init__(message, status_code=409, code="STRATEGIC_APPROVAL_ALREADY_EXISTS")
+
+
+class StrategyRevisionNotEligibleError(ApiError):
+    """MVP-30A/-30A-R1 (frozen contract, implemented MVP-30B): a governed
+    Strategy Revision may be recorded only against a StrategicApproval whose
+    own outcome is APPROVED and whose own StrategicDecision is, at the
+    locked eligibility point, ADOPT-typed and current (``superseded_at IS
+    NULL``) — REJECTED Approvals, DEFER/DECLINE Decisions, and any
+    already-superseded Decision (including one superseded by a genuinely
+    concurrent operation that commits first) are all deterministically
+    ineligible, never silently accepted. The same role
+    ``StrategicDecisionNotEligibleForApprovalError`` already plays one
+    context up."""
+
+    def __init__(self, message: str = "This Strategic Approval is not eligible to authorize a Strategy Revision.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGY_REVISION_NOT_ELIGIBLE")
+
+
+class StrategicApprovalAlreadyConsumedError(ApiError):
+    """MVP-30A-R1 §H (frozen contract, implemented MVP-30B): StrategicApproval
+    1 -> 0..1 StrategyRevision — a second Revision attempt using an Approval
+    that has already authorized one, whether sequential or genuinely
+    concurrent, is a deterministic conflict, never a silent second Strategy
+    version. The database's own plain ``UNIQUE`` constraint on
+    ``strategic_approval_id`` (``app/orchestration/models.py::StrategyRevision``)
+    is the actual backstop; this is the mapped, deterministic surface for
+    the resulting ``IntegrityError`` or for the equivalent pre-check under
+    row lock — mirrors ``StrategicApprovalAlreadyExistsError`` exactly, one
+    level down."""
+
+    def __init__(self, message: str = "This Strategic Approval has already authorized a Strategy Revision.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGIC_APPROVAL_ALREADY_CONSUMED")
+
+
+class StrategyRevisionBaseStaleError(ApiError):
+    """MVP-30A-R1 §J/§K (frozen contract, implemented MVP-30B): a governed
+    Strategy Revision may only target the Campaign's own current Strategy
+    version (highest ``version``) at the moment its base-Strategy row is
+    locked — a Revision attempt naming a base Strategy that is no longer
+    current, whether because a prior Revision already committed or because
+    the caller's own view is simply stale, is a deterministic conflict,
+    never silently redirected to whatever is current now and never silently
+    rebased. Mirrors ``StrategicDecisionAlreadySupersededError``'s own "may
+    only target the current leaf" precedent exactly."""
+
+    def __init__(self, message: str = "This Strategy version is no longer current and cannot be revised.") -> None:
+        super().__init__(message, status_code=409, code="STRATEGY_REVISION_BASE_STALE")

@@ -41,6 +41,10 @@ class StrategyPublic(BaseModel):
     id: str
     campaign_id: str
     version: int
+    # MVP-30A-R1: "BOOTSTRAP" or "REVISION" — lets a caller distinguish a
+    # legacy/deterministic-bootstrap version from a governed Revision
+    # without needing to separately fetch its StrategyRevision provenance.
+    origin: str
     summary: str
     created_at: datetime
 
@@ -57,6 +61,7 @@ def strategy_to_public(strategy: Strategy, *, campaign_public_id: str) -> Strate
         id=strategy.public_id,
         campaign_id=campaign_public_id,
         version=strategy.version,
+        origin=strategy.origin.value,
         summary=strategy.summary,
         created_at=strategy.created_at,
     )

@@ -101,10 +101,10 @@ def test_commercial_objective_offer_migration_round_trip(monkeypatch):
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from commercial_objectives")) == 0
                 assert connection.scalar(text("select count(*) from offers")) == 0
-                # MVP-28B and MVP-29B each added one additive migration
-                # after this one — "head" now means eae9bb978d9c, not this
-                # migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "eae9bb978d9c"
+                # MVP-28B, MVP-29B, and MVP-30B each added one additive
+                # migration after this one — "head" now means
+                # b27209ee89a1, not this migration's own revision.
+                assert connection.scalar(text("select version_num from alembic_version")) == "b27209ee89a1"
 
             if cycle == 0:
                 # MVP-28B added one additive migration after this one, so

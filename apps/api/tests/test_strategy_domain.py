@@ -20,7 +20,7 @@ from app.core.api_errors import (
 )
 from app.orchestration.models import BusinessStage
 from app.orchestration.repository import RunStageExecutionRepository
-from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy
+from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy, StrategyOrigin
 from app.strategy.repository import StrategyRepository
 from app.strategy.service import StrategyService
 from app.workspaces.repository import OrganizationRepository, WorkspaceRepository
@@ -170,6 +170,7 @@ def test_database_rejects_a_strategy_with_mismatched_workspace(db_session) -> No
         public_id="STR-MISMATCHTEST",
         workspace_id=other_workspace.id,
         campaign_id=campaign.id,
+        origin=StrategyOrigin.BOOTSTRAP,
         campaign_run_id=run.id,
         stage_execution_id=stages[BusinessStage.STRATEGY].id,
         version=1,
@@ -253,7 +254,7 @@ def test_duplicate_version_is_rejected_at_the_database_level(strategy_campaign, 
     db_session.add(
         Strategy(
             public_id="STR-DUPTEST0001", workspace_id=campaign.workspace_id, campaign_id=campaign.id,
-            campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.STRATEGY].id,
+            origin=StrategyOrigin.BOOTSTRAP, campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.STRATEGY].id,
             version=1, summary="first",
         )
     )
@@ -261,7 +262,7 @@ def test_duplicate_version_is_rejected_at_the_database_level(strategy_campaign, 
     db_session.add(
         Strategy(
             public_id="STR-DUPTEST0002", workspace_id=campaign.workspace_id, campaign_id=campaign.id,
-            campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.STRATEGY].id,
+            origin=StrategyOrigin.BOOTSTRAP, campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.STRATEGY].id,
             version=1, summary="duplicate",
         )
     )

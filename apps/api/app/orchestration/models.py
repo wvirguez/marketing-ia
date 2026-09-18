@@ -413,3 +413,102 @@ class StrategicApproval(Base, UUIDPrimaryKeyMixin):
         Enum(StrategicApprovalOutcome, name="strategic_approval_outcome", native_enum=True)
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class StrategyRevision(Base, UUIDPrimaryKeyMixin):
+    """MVP-30A/-30A-R1 frozen contract, implemented by MVP-30B — a durable,
+    strictly insert-only governance-provenance record connecting one
+    consumed ``StrategicApproval`` to the specific ``Strategy`` version it
+    authorized. This is the "governance act" row, distinct from ``Strategy``
+    itself (the "artifact" it produced) — the same separation already
+    applied at every earlier step of this chain (``StrategicDecision`` is
+    its own row, not columns on ``StrategicRecommendationCandidate``;
+    ``StrategicApproval`` is its own row, not columns on
+    ``StrategicDecision``).
+
+    STORAGE OWNERSHIP: ``orchestration``, for the identical reason
+    ``StrategicDecision``/``StrategicApproval`` live here — ``app/strategy/``
+    explicitly and repeatedly disclaims owning any governance concept (see
+    its own module docstring), so the entity connecting an upstream
+    governance artifact (Approval) to a downstream domain artifact
+    (Strategy) belongs where governance already lives, not in the
+    artifact's own self-disclaiming module. ``Strategy``/``Positioning``
+    themselves remain fully owned by ``app/strategy/`` — only this
+    provenance relation lives here.
+
+    DURABLE GOVERNANCE PROVENANCE (MVP-30A-R1 §M): this row itself is the
+    authoritative source of truth for "which Approval authorized this
+    Strategy version" — never derived solely from ``AuditEvent``, which
+    remains secondary evidence only (``app/audit/models.py``).
+
+    APPROVAL CONSUMPTION (MVP-30A-R1 §H): ``StrategicApproval`` 1 -> 0..1
+    ``StrategyRevision`` — the actual, unconditional DB-level backstop is
+    the plain ``UNIQUE`` constraint on ``strategic_approval_id`` below,
+    never relied on as merely an application-level guard. Consumption is
+    represented purely relationally — ``StrategicApproval`` itself is never
+    mutated to mark it "used" (MVP-30A-R1 §29).
+
+    RESULT-STRATEGY CARDINALITY (MVP-30A-R1 §11): a ``Strategy`` row is the
+    result of at most one ``StrategyRevision`` — enforced by the plain
+    ``UNIQUE`` constraint on ``result_strategy_id`` below.
+    ``base_strategy_id`` deliberately carries no such constraint: its
+    effective "at most one successful revision per base" behavior comes
+    from the base-Strategy-row lock + current-version re-check performed
+    under ``StrategyRevisionService.revise_strategy`` (MVP-30A-R1 §10/§K),
+    never falsely encoded here as a broader historical-uniqueness rule.
+
+    IMMUTABILITY: every column is set exactly once at INSERT — no generic
+    update service, no PATCH, no DELETE, no status workflow, no
+    supersession/reopening of its own (MVP-30A-R1 §15/§AB).
+
+    ORPHAN-ORIGIN ENFORCEMENT BOUNDARY: the companion invariant on the
+    ``Strategy`` side — that a ``StrategyOrigin.REVISION`` row is always
+    referenced by exactly one row here — is NOT independently DB-enforced
+    (no plain FK/CHECK can express "some row elsewhere must reference this
+    row" without a trigger or a circular FK, both deliberately not
+    introduced). It is TRANSACTIONALLY GUARANTEED instead: the sole
+    production code path that can insert a ``StrategyOrigin.REVISION`` row
+    (``StrategyRevisionService.revise_strategy``) inserts it and this row
+    together, in the same uncommitted transaction (MVP-30A-R1 §I, see
+    ``app/strategy/models.py``'s own "ORIGIN" docstring for the full
+    reasoning).
+    """
+
+    __tablename__ = "strategy_revisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["campaign_id", "workspace_id"],
+            ["campaigns.id", "campaigns.workspace_id"],
+            name="fk_strategy_revisions_campaign_workspace",
+        ),
+        # Composite, tenant-safe FKs — Strategy already carries the
+        # candidate key (`uq_strategies_id_workspace_id`) this needs, so
+        # there is no reason to degrade to a plain FK the way
+        # `strategic_approval_id` below must (StrategicApproval has no
+        # equivalent candidate key, MVP-30A-R1 §13).
+        ForeignKeyConstraint(
+            ["base_strategy_id", "workspace_id"],
+            ["strategies.id", "strategies.workspace_id"],
+            name="fk_strategy_revisions_base_strategy_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["result_strategy_id", "workspace_id"],
+            ["strategies.id", "strategies.workspace_id"],
+            name="fk_strategy_revisions_result_strategy_workspace",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # Plain FK, deliberately not composite — see class docstring. unique=True
+    # is the actual DB-level "at most one Revision per Approval" backstop
+    # (MVP-30A-R1 §H).
+    strategic_approval_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategic_approvals.id"), unique=True, index=True
+    )
+    base_strategy_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    # unique=True is the actual DB-level "at most one Revision per result
+    # Strategy" backstop (MVP-30A-R1 §11).
+    result_strategy_id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True)  # covered by the composite FK above
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
