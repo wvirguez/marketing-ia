@@ -67,6 +67,13 @@ class ContentPlanRepository:
     def get_by_public_id(self, public_id: str) -> ContentPlan | None:
         return self.session.execute(select(ContentPlan).where(ContentPlan.public_id == public_id)).scalar_one_or_none()
 
+    def get_by_id(self, content_plan_id: uuid.UUID) -> ContentPlan | None:
+        """MVP-34B: readback-only, mirrors ``ExperimentRepository.get_by_id``
+        — used to resolve the exact parent ContentPlan of an already
+        campaign-scoped PlanItem (``PlanItemRepository.get_for_campaign_by_
+        public_id``), never independently re-derived from "current"."""
+        return self.session.get(ContentPlan, content_plan_id)
+
     def get_current_for_campaign(self, campaign_id: uuid.UUID) -> ContentPlan | None:
         return self.session.execute(
             select(ContentPlan).where(ContentPlan.campaign_id == campaign_id).order_by(ContentPlan.version.desc()).limit(1)
@@ -107,3 +114,20 @@ class PlanItemRepository:
             .scalars()
             .all()
         )
+
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> PlanItem | None:
+        """MVP-34A §F/MVP-34B: non-leaky, campaign-scoped resolution — the
+        same join-based technique already used by
+        ``ContentPieceRepository.get_for_campaign_by_public_id``/
+        ``ExperimentRepository.get_for_campaign_by_public_id``, one join
+        level shallower. Deliberately unfiltered by ContentPlan currency —
+        a PlanItem belonging to any version (current or historical) of this
+        Campaign's Content Plan is eligible (MVP-34A §G: historical
+        eligibility is a frozen contract decision, not an oversight). A
+        PlanItem that does not exist, or that exists but belongs to a
+        different Campaign, is indistinguishable — both return ``None``."""
+        return self.session.execute(
+            select(PlanItem)
+            .join(ContentPlan, PlanItem.content_plan_id == ContentPlan.id)
+            .where(ContentPlan.campaign_id == campaign_id, PlanItem.public_id == public_id)
+        ).scalar_one_or_none()

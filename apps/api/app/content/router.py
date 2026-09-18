@@ -10,13 +10,20 @@ by MVP-17B) — exactly:
     POST /api/v1/campaigns/{campaign_id}/content/{content_id}/request-approval
     POST /api/v1/campaigns/{campaign_id}/content/{content_id}/approvals/{approval_id}/mark-under-review
     POST /api/v1/campaigns/{campaign_id}/content/{content_id}/approvals/{approval_id}/decision
+    POST /api/v1/campaigns/{campaign_id}/plan/items/{plan_item_id}/brief   (MVP-34A/-34B)
 
 MVP-18B adds only two human-recorded Distribution transitions. MVP-20 adds
-only the one narrow ``.../versions`` revision route described above — no
-Content Brief, archive, or external publishing route exists. ``.../versions``
+only the one narrow ``.../versions`` revision route described above. MVP-34B
+adds the one narrow governed Content Brief create route (frozen MVP-34A
+contract) — free text only, immutable/create-only (409 on a second attempt
+for the same PlanItem via the pre-existing ``uq_content_briefs_plan_item_id``
+constraint), no archive or external publishing route exists. ``.../versions``
 is legal only while the Piece is REVISION_REQUESTED (see
 ``ContentService.create_revision_version``) — it is not a generic Version
-CRUD surface: no GET/PUT/PATCH/DELETE exists for it.
+CRUD surface: no GET/PUT/PATCH/DELETE exists for it. The Content Brief route
+likewise has no GET/PUT/PATCH/DELETE of its own — see
+``app/planning/router.py``'s own ``GET /plan``, which embeds each current
+PlanItem's Brief (MVP-34A §Q).
 
 PERSISTING AN APPROVAL DECISION != HAVING AUTHORITY TO MAKE THAT DECISION.
 The ``decision`` route's OWNER/ADMIN gate is an APPLICATION authorization
@@ -34,21 +41,24 @@ router), matching the same bounded-context separation already applied to
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_workspace, require_csrf, require_role
 from app.campaigns.service import CampaignAccessService
 from app.content.models import ContentPiece
 from app.content.schemas import (
+    ContentBriefPublic,
     ContentPieceDetailResponse,
     ContentPieceListResponse,
+    CreateContentBriefRequest,
     CreateContentVersionRequest,
     DistributionPublic,
     RecordApprovalDecisionRequest,
     RecordDistributedRequest,
     TrackingRequirementAssociationRequest,
     content_approval_to_public,
+    content_brief_to_public,
     content_piece_to_public,
     content_version_to_public,
     distribution_to_public,
@@ -56,6 +66,7 @@ from app.content.schemas import (
 from app.content.service import ContentService
 from app.core.api_errors import ForbiddenError
 from app.persistence.session import get_db
+from app.planning.repository import ContentPlanRepository, PlanItemRepository
 from app.tracking.repository import TrackingRequirementRepository
 from app.users.models import User
 from app.workspaces.models import MembershipRole, Workspace
@@ -110,6 +121,57 @@ def _distribution_public(content_service: ContentService, distribution) -> Distr
     requirements = TrackingRequirementRepository(content_service.session).list_for_ids(requirement_ids)
     return distribution_to_public(
         distribution, tracking_requirement_ids=[r.public_id for r in requirements]
+    )
+
+
+# --- Content Brief: governed creation (MVP-34A/-34B) -----------------------
+# Frozen contract (MVP-34A): PlanItem is the sole route-named parent —
+# content_plan_id/workspace_id are never client-supplied, both are derived
+# server-side, closing the "PlanItem belongs to a different Plan" case by
+# construction rather than by a runtime check. Historical (non-current)
+# ContentPlan PlanItems remain eligible (MVP-34A §G) — the lookup below is
+# deliberately unfiltered by ContentPlan currency.
+
+
+@router.post(
+    "/plan/items/{plan_item_public_id}/brief",
+    response_model=ContentBriefPublic,
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_content_brief(
+    campaign_public_id: str,
+    plan_item_public_id: str,
+    payload: CreateContentBriefRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ContentBriefPublic:
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    plan_item = PlanItemRepository(db).get_for_campaign_by_public_id(
+        campaign_id=campaign.id, public_id=plan_item_public_id
+    )
+    if plan_item is None:
+        # Non-leaky: a PlanItem that does not exist, or that exists but
+        # belongs to a different Campaign, is indistinguishable.
+        raise ForbiddenError()
+    content_plan = ContentPlanRepository(db).get_by_id(plan_item.content_plan_id)
+    if content_plan is None:
+        raise ForbiddenError()
+
+    content_service = ContentService(db)
+    brief = content_service.record_brief(
+        plan_item=plan_item,
+        content_plan=content_plan,
+        brief=payload.brief,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return content_brief_to_public(
+        brief, plan_item_public_id=plan_item.public_id, content_plan_public_id=content_plan.public_id
     )
 
 

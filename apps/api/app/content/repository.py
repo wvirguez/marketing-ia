@@ -54,6 +54,21 @@ class ContentBriefRepository:
             select(ContentBrief).where(ContentBrief.plan_item_id == plan_item_id)
         ).scalar_one_or_none()
 
+    def list_for_plan_items(self, plan_item_ids: list[uuid.UUID]) -> list[ContentBrief]:
+        """MVP-34B: batched lookup for the GET /plan readback (each
+        returned PlanItem embeds its Brief, if any) — mirrors
+        ``ContentVersionRepository.list_for_ids``'s own bounded-batch
+        precedent, avoiding one query per PlanItem."""
+        if not plan_item_ids:
+            return []
+        return list(
+            self.session.execute(
+                select(ContentBrief).where(ContentBrief.plan_item_id.in_(plan_item_ids))
+            )
+            .scalars()
+            .all()
+        )
+
 
 class ContentPieceRepository:
     def __init__(self, session: Session) -> None:

@@ -25,7 +25,10 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_workspace, require_csrf
 from app.campaigns.service import CampaignAccessService
+from app.content.repository import ContentBriefRepository
+from app.content.schemas import content_brief_to_public
 from app.persistence.session import get_db
+from app.planning.models import PlanItem
 from app.planning.schemas import (
     CreateContentPlanRequest,
     PlanOutputResponse,
@@ -47,6 +50,31 @@ def _experiment_public_id(db: Session, experiment_id: uuid.UUID | None) -> str |
     return experiment.public_id if experiment is not None else None
 
 
+def _items_to_public(db: Session, *, plan_public_id: str, items: list[PlanItem]):
+    """MVP-34A §Q/MVP-34B: embeds each item's governed Content Brief (if
+    any), batched (``ContentBriefRepository.list_for_plan_items``) rather
+    than one query per item — the same avoid-N+1 discipline
+    ``ContentDistributionRepository.list_for_ids``'s own callers already
+    apply."""
+    briefs = ContentBriefRepository(db).list_for_plan_items([item.id for item in items])
+    briefs_by_plan_item_id = {brief.plan_item_id: brief for brief in briefs}
+    return [
+        plan_item_to_public(
+            item,
+            brief=(
+                content_brief_to_public(
+                    briefs_by_plan_item_id[item.id],
+                    plan_item_public_id=item.public_id,
+                    content_plan_public_id=plan_public_id,
+                )
+                if item.id in briefs_by_plan_item_id
+                else None
+            ),
+        )
+        for item in items
+    ]
+
+
 @router.get("/plan", response_model=PlanOutputResponse)
 async def get_plan(
     campaign_public_id: str,
@@ -66,7 +94,7 @@ async def get_plan(
             if plan
             else None
         ),
-        items=[plan_item_to_public(item) for item in items],
+        items=_items_to_public(db, plan_public_id=plan.public_id if plan else "", items=items),
     )
 
 
@@ -100,5 +128,6 @@ async def create_plan(
             plan, campaign_public_id=campaign.public_id,
             experiment_public_id=_experiment_public_id(db, plan.experiment_id),
         ),
-        items=[plan_item_to_public(item) for item in items],
+        # Freshly created in this same request — never yet briefed.
+        items=[plan_item_to_public(item, brief=None) for item in items],
     )

@@ -23,9 +23,46 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.content.models import ContentApproval, ContentApprovalStatus, ContentDistribution, ContentDistributionStatus, ContentPiece, ContentPieceStatus, ContentVersion
+from app.content.models import ContentApproval, ContentApprovalStatus, ContentBrief, ContentDistribution, ContentDistributionStatus, ContentPiece, ContentPieceStatus, ContentVersion
+
+_BRIEF_MAX_LENGTH = 4000
+
+
+class ContentBriefPublic(BaseModel):
+    """MVP-34B: public-id-derived fields only — ``plan_item_id``/
+    ``content_plan_id`` are exposed as their PUBLIC ids, never internal
+    UUIDs (mirrors ``ContentPlanPublic.experiment_id``'s own convention).
+    No ``origin``/``experiment_id``/``workspace_id``/actor field — none is
+    part of the frozen MVP-34A contract (no origin column exists; actor
+    attribution lives on ``AuditEvent`` only)."""
+
+    id: str
+    plan_item_id: str
+    content_plan_id: str
+    brief: str
+    created_at: datetime
+
+
+class CreateContentBriefRequest(BaseModel):
+    """MVP-34A §K (frozen): the minimum client assertion for a governed
+    ContentBrief — free text only. ``plan_item_id``/``content_plan_id``/
+    ``workspace_id``/``campaign_id``/``experiment_id``/``version``/
+    ``origin``/``actor_user_id``/``status`` are never accepted — all are
+    route-derived or do not exist on this entity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    brief: str = Field(min_length=1, max_length=_BRIEF_MAX_LENGTH)
+
+    @field_validator("brief")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("This field cannot be blank.")
+        return stripped
 
 
 class ContentPiecePublic(BaseModel):
@@ -110,6 +147,18 @@ class CreateContentVersionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     payload: dict[str, Any]
+
+
+def content_brief_to_public(
+    brief: ContentBrief, *, plan_item_public_id: str, content_plan_public_id: str
+) -> ContentBriefPublic:
+    return ContentBriefPublic(
+        id=brief.public_id,
+        plan_item_id=plan_item_public_id,
+        content_plan_id=content_plan_public_id,
+        brief=brief.brief,
+        created_at=brief.created_at,
+    )
 
 
 def content_piece_to_public(piece: ContentPiece) -> ContentPiecePublic:

@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createPlan, getPlan } from "@/lib/api/planning";
+import { createBrief, createPlan, getPlan } from "@/lib/api/planning";
 import { getStrategy } from "@/lib/api/strategy";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { PlanOutputResponse } from "@/types/planning";
@@ -32,6 +32,12 @@ const EMPTY_ITEMS_COPY = "Este borrador de planificación aún no contiene eleme
 // creation — a Content Plan proposes, it never commits or mutates
 // authoritative Strategy/Hypothesis/Experiment state.
 function canProposePlan(role: string | null): boolean {
+  return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
+}
+
+// MVP-34A §S: same MEMBER+ tier — a Content Brief proposes planning-
+// adjacent content, it never approves or authorizes production.
+function canProposeBrief(role: string | null): boolean {
   return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
 }
 
@@ -62,6 +68,14 @@ export function PlanPanel({
   const [planPending, setPlanPending] = useState(false);
   const [planError, setPlanError] = useState("");
 
+  // MVP-34A/-34B: at most one open Brief form at a time, keyed by the
+  // target PlanItem's public id — mirrors the single-form shape
+  // showPlanForm already establishes one level up.
+  const [briefFormItemId, setBriefFormItemId] = useState<string | null>(null);
+  const [briefText, setBriefText] = useState("");
+  const [briefPending, setBriefPending] = useState(false);
+  const [briefError, setBriefError] = useState("");
+
   function retry() {
     requestedTokenRef.current = refreshToken;
     getPlan(campaignId)
@@ -86,6 +100,22 @@ export function PlanPanel({
       setPlanError(describeCampaignError(error));
     } finally {
       setPlanPending(false);
+    }
+  }
+
+  async function submitBrief(planItemId: string) {
+    if (briefPending || briefText.trim().length === 0) return;
+    setBriefPending(true);
+    setBriefError("");
+    try {
+      await createBrief(campaignId, planItemId, briefText.trim());
+      setBriefText("");
+      setBriefFormItemId(null);
+      retry();
+    } catch (error) {
+      setBriefError(describeCampaignError(error));
+    } finally {
+      setBriefPending(false);
     }
   }
 
@@ -275,6 +305,66 @@ export function PlanPanel({
                 </h3>
                 <p className="small-text">{item.objective}</p>
                 {item.scheduled_date && <p className="muted small-text">{item.scheduled_date}</p>}
+
+                {item.brief ? (
+                  <p className="muted small-text" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
+                    Brief: {item.brief.brief}
+                  </p>
+                ) : (
+                  canProposeBrief(role) && (
+                    <div style={{ marginTop: 8 }}>
+                      {briefFormItemId !== item.id ? (
+                        <button
+                          type="button"
+                          className="button"
+                          onClick={() => {
+                            setBriefFormItemId(item.id);
+                            setBriefText("");
+                            setBriefError("");
+                          }}
+                        >
+                          Redactar brief
+                        </button>
+                      ) : (
+                        <div className="settings-field">
+                          <label htmlFor={`brief-${item.id}`}>Brief para este elemento</label>
+                          <textarea
+                            id={`brief-${item.id}`}
+                            value={briefText}
+                            disabled={briefPending}
+                            onChange={(event) => setBriefText(event.target.value)}
+                          />
+                          <div className="settings-form-actions" style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              className="button primary"
+                              disabled={briefPending || briefText.trim().length === 0}
+                              onClick={() => submitBrief(item.id)}
+                            >
+                              Confirmar brief
+                            </button>
+                            <button
+                              type="button"
+                              className="button"
+                              disabled={briefPending}
+                              onClick={() => {
+                                setBriefFormItemId(null);
+                                setBriefText("");
+                              }}
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                          {briefError && (
+                            <p role="alert" className="settings-feedback">
+                              {briefError}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                )}
               </div>
             </article>
           ))}

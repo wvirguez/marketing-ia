@@ -13,6 +13,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.content.schemas import ContentBriefPublic
 from app.planning.models import ContentPlan, PlanItem
 
 _SUMMARY_MAX_LENGTH = 4000
@@ -27,6 +28,14 @@ class PlanItemPublic(BaseModel):
     sequence: int
     scheduled_date: date | None
     created_at: datetime
+    # MVP-34A §Q/MVP-34B: the governed Content Brief read surface — embedded
+    # here rather than a separate GET route, mirroring ContentPlan's own
+    # "no dedicated GET-by-id, only the aggregate GET /plan" precedent.
+    # null = not yet briefed. Only reflects the CURRENT ContentPlan's items
+    # (this route's own pre-existing limitation, MVP-34A §AC) — a Brief on a
+    # historical PlanItem remains backend-createable but not visible here
+    # (MVP34A-OBS-1).
+    brief: ContentBriefPublic | None
 
 
 class ContentPlanPublic(BaseModel):
@@ -109,7 +118,7 @@ def content_plan_to_public(
     )
 
 
-def plan_item_to_public(item: PlanItem) -> PlanItemPublic:
+def plan_item_to_public(item: PlanItem, *, brief: ContentBriefPublic | None = None) -> PlanItemPublic:
     return PlanItemPublic(
         id=item.public_id,
         format=item.format,
@@ -117,4 +126,5 @@ def plan_item_to_public(item: PlanItem) -> PlanItemPublic:
         sequence=item.sequence,
         scheduled_date=item.scheduled_date,
         created_at=item.created_at,
+        brief=brief,
     )

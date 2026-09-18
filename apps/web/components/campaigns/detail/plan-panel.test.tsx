@@ -3,12 +3,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PlanPanel } from "@/components/campaigns/detail/plan-panel";
 import { ApiError } from "@/lib/api/client";
-import type { ContentPlanPublic, PlanItemPublic, PlanOutputResponse } from "@/types/planning";
+import type { ContentBriefPublic, ContentPlanPublic, PlanItemPublic, PlanOutputResponse } from "@/types/planning";
 import type { ExperimentPublic, StrategyOutputResponse } from "@/types/strategy";
 
 vi.mock("@/lib/api/planning", () => ({
   getPlan: vi.fn(),
   createPlan: vi.fn(),
+  createBrief: vi.fn(),
 }));
 vi.mock("@/lib/api/strategy", () => ({
   getStrategy: vi.fn(),
@@ -17,12 +18,13 @@ vi.mock("@/lib/auth/auth-context", () => ({
   useAuth: vi.fn(),
 }));
 
-import { createPlan, getPlan } from "@/lib/api/planning";
+import { createBrief, createPlan, getPlan } from "@/lib/api/planning";
 import { getStrategy } from "@/lib/api/strategy";
 import { useAuth } from "@/lib/auth/auth-context";
 
 const mockGetPlan = vi.mocked(getPlan);
 const mockCreatePlan = vi.mocked(createPlan);
+const mockCreateBrief = vi.mocked(createBrief);
 const mockGetStrategy = vi.mocked(getStrategy);
 const mockUseAuth = vi.mocked(useAuth);
 
@@ -91,6 +93,18 @@ function planItem(overrides: Partial<PlanItemPublic> = {}): PlanItemPublic {
     objective: "Introduce the offer.",
     sequence: 1,
     scheduled_date: null,
+    created_at: "2026-01-01T00:00:00Z",
+    brief: null,
+    ...overrides,
+  };
+}
+
+function contentBrief(overrides: Partial<ContentBriefPublic> = {}): ContentBriefPublic {
+  return {
+    id: "CBRF-1",
+    plan_item_id: "ITM-1",
+    content_plan_id: "PLN-1",
+    brief: "Produce a beginner-friendly reel.",
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -239,5 +253,108 @@ describe("PlanPanel — Plan creation submission", () => {
 
     expect(screen.queryByLabelText("Nuevo plan")).not.toBeInTheDocument();
     expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+});
+
+describe("PlanPanel — Content Brief creation (MVP-34A/-34B)", () => {
+  it("MEMBER+ sees the create affordance for an unbriefed item", async () => {
+    mockAuth("MEMBER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+  });
+
+  it("unauthenticated never sees the create affordance", async () => {
+    mockAuth(null);
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Introduce the offer.")).toBeInTheDocument());
+    expect(screen.queryByText("Redactar brief")).not.toBeInTheDocument();
+  });
+
+  it("submits the exact payload for the targeted Plan Item", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValueOnce(output({ items: [planItem({ id: "ITM-7", brief: null })] }));
+    mockCreateBrief.mockResolvedValue(contentBrief({ plan_item_id: "ITM-7" }));
+    mockGetPlan.mockResolvedValueOnce(
+      output({ items: [planItem({ id: "ITM-7", brief: contentBrief({ plan_item_id: "ITM-7" }) })] }),
+    );
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Redactar brief"));
+    await userEvent.type(screen.getByLabelText("Brief para este elemento"), "Produce a beginner reel.");
+    await userEvent.click(screen.getByText("Confirmar brief"));
+
+    await waitFor(() =>
+      expect(mockCreateBrief).toHaveBeenCalledWith("campaign-1", "ITM-7", "Produce a beginner reel."),
+    );
+  });
+
+  it("re-renders the persisted Brief read-only after a successful create", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValueOnce(output({ items: [planItem({ brief: null })] }));
+    mockCreateBrief.mockResolvedValue(contentBrief());
+    mockGetPlan.mockResolvedValueOnce(output({ items: [planItem({ brief: contentBrief() })] }));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Redactar brief"));
+    await userEvent.type(screen.getByLabelText("Brief para este elemento"), "x");
+    await userEvent.click(screen.getByText("Confirmar brief"));
+
+    await waitFor(() =>
+      expect(screen.getByText("Brief: Produce a beginner-friendly reel.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Redactar brief")).not.toBeInTheDocument();
+  });
+
+  it("displays an existing Brief read-only, with no edit/delete/re-brief affordance", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() =>
+      expect(screen.getByText("Brief: Produce a beginner-friendly reel.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Redactar brief")).not.toBeInTheDocument();
+    expect(screen.queryByText("Editar")).not.toBeInTheDocument();
+    expect(screen.queryByText("Eliminar")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a mutation error (e.g. 409 duplicate) without losing the form", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    mockCreateBrief.mockRejectedValue(new ApiError(409, "PLAN_ITEM_ALREADY_BRIEFED", "Conflict."));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Redactar brief"));
+    await userEvent.type(screen.getByLabelText("Brief para este elemento"), "x");
+    await userEvent.click(screen.getByText("Confirmar brief"));
+
+    await waitFor(() => expect(screen.getByText("No pudimos completar esta acción. Intenta de nuevo.")).toBeInTheDocument());
+    expect(screen.getByLabelText("Brief para este elemento")).toBeInTheDocument();
+  });
+
+  it("cancel clears the brief form without submitting", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Redactar brief"));
+    await userEvent.type(screen.getByLabelText("Brief para este elemento"), "discarded");
+    await userEvent.click(screen.getByText("Cancelar"));
+
+    expect(screen.queryByLabelText("Brief para este elemento")).not.toBeInTheDocument();
+    expect(mockCreateBrief).not.toHaveBeenCalled();
+  });
+
+  it("does not render any Variant or experimental-arm affordance", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    expect(screen.queryByText(/variant/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/control/i)).not.toBeInTheDocument();
   });
 });
