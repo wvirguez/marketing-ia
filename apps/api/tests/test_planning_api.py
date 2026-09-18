@@ -57,11 +57,19 @@ def campaign_client_with_stages(campaign_run_client: dict) -> dict:
 # --- route surface -------------------------------------------------------
 
 
-def test_only_get_routes_exist_for_plan(campaign_client_with_stages: dict) -> None:
+def test_get_and_governed_post_are_the_only_routes_for_plan(campaign_client_with_stages: dict) -> None:
+    """MVP-33B: exactly GET (read) + POST (governed creation, frozen
+    MVP-33A/-33A-R1 contract) exist — no PUT/PATCH/DELETE. This route no
+    longer asserts "GET-only": that was the pre-MVP-33 state, formally
+    superseded by MVP-33A/-33A-R1/MVP-33B's explicit authorization to add
+    one governed write route. POST without CSRF is rejected by
+    ``require_csrf`` (403), never treated as an unmapped method (405) —
+    the full request/authority contract is exercised in
+    ``tests/test_content_plan_api.py``."""
     fixtures = campaign_client_with_stages
     path = f"/api/v1/campaigns/{fixtures['campaign_id']}/plan"
     assert fixtures["client"].get(path).status_code == 200
-    assert fixtures["client"].post(path, json={}).status_code == 405
+    assert fixtures["client"].post(path, json={}).status_code == 403
     assert fixtures["client"].put(path, json={}).status_code == 405
     assert fixtures["client"].patch(path, json={}).status_code == 405
     assert fixtures["client"].delete(path).status_code == 405

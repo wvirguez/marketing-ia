@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from app.campaigns.models import Campaign, CampaignRun
 from app.core.ids import generate_public_id
 from app.orchestration.models import RunStageExecution
-from app.planning.models import ContentPlan, PlanItem
+from app.planning.models import ContentPlan, ContentPlanOrigin, PlanItem
+from app.strategy.models import Experiment
 
 
 class ContentPlanRepository:
@@ -30,17 +31,32 @@ class ContentPlanRepository:
         self,
         *,
         campaign: Campaign,
-        campaign_run: CampaignRun,
-        stage_execution: RunStageExecution,
         version: int,
         summary: str,
+        origin: ContentPlanOrigin,
+        campaign_run: CampaignRun | None = None,
+        stage_execution: RunStageExecution | None = None,
+        experiment: Experiment | None = None,
     ) -> ContentPlan:
+        """``campaign_run``/``stage_execution`` are required together for
+        ``origin=BOOTSTRAP`` and must be omitted together for
+        ``origin=GOVERNED`` (MVP-33A/-33A-R1) — the DB's own
+        ``ck_content_plans_origin_bootstrap_fields`` CHECK constraint is
+        the actual backstop, never trusted as merely an application-level
+        convention (mirrors ``StrategyRepository.create``'s own
+        origin/campaign_run/stage_execution precedent exactly). ``version``
+        is always server-derived by the caller — never accepted from a
+        client. ``experiment`` is optional for either origin, but the DB's
+        own ``ck_content_plans_bootstrap_experiment_null`` CHECK constraint
+        additionally guarantees a BOOTSTRAP row can never carry one."""
         plan = ContentPlan(
             public_id=generate_public_id("PLN"),
             workspace_id=campaign.workspace_id,
             campaign_id=campaign.id,
-            campaign_run_id=campaign_run.id,
-            stage_execution_id=stage_execution.id,
+            origin=origin,
+            campaign_run_id=campaign_run.id if campaign_run is not None else None,
+            stage_execution_id=stage_execution.id if stage_execution is not None else None,
+            experiment_id=experiment.id if experiment is not None else None,
             version=version,
             summary=summary,
         )

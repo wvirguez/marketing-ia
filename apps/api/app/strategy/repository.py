@@ -253,3 +253,30 @@ class ExperimentRepository:
             .scalars()
             .all()
         )
+
+    def get_by_id(self, experiment_id: uuid.UUID) -> Experiment | None:
+        """MVP-33B: resolves an Experiment from an already-trusted internal
+        FK reference (e.g. ``ContentPlan.experiment_id``) — read-only, for
+        readback/public-serialization use only, mirrors
+        ``StrategyRepository.get_by_id`` exactly."""
+        return self.session.execute(select(Experiment).where(Experiment.id == experiment_id)).scalar_one_or_none()
+
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> Experiment | None:
+        """MVP-33B (MVP-33A-R1 §I, frozen): non-leaky, campaign-scoped
+        resource lookup, extending ``HypothesisRepository.
+        get_for_campaign_by_public_id``'s own exact join-through-ancestry
+        technique one hop deeper — Experiment carries no ``campaign_id``
+        column (only reachable via ``hypothesis_id -> Hypothesis.
+        strategy_id -> Strategy.campaign_id``). Deliberately does NOT
+        filter or order by Strategy currency — no ``ORDER BY version
+        DESC``, no ``MAX(version)`` — so a historical-Strategy Experiment
+        belonging to this Campaign remains eligible (MVP-33A §N: E2
+        ALLOWED). Read-only — no ``for_update`` option, since neither
+        Experiment nor its ancestry is locked or rechecked by ContentPlan
+        creation (MVP-33A §N/§O: no currency recheck, no lock)."""
+        return self.session.execute(
+            select(Experiment)
+            .join(Hypothesis, Experiment.hypothesis_id == Hypothesis.id)
+            .join(Strategy, Hypothesis.strategy_id == Strategy.id)
+            .where(Strategy.campaign_id == campaign_id, Experiment.public_id == public_id)
+        ).scalar_one_or_none()

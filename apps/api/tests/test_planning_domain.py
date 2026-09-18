@@ -14,7 +14,7 @@ from app.campaigns.repository import CampaignRepository, CampaignRunRepository
 from app.core.api_errors import ProvenanceMismatchError, VersionConflictError
 from app.orchestration.models import BusinessStage
 from app.orchestration.repository import RunStageExecutionRepository
-from app.planning.models import ContentPlan, PlanItem
+from app.planning.models import ContentPlan, ContentPlanOrigin, PlanItem
 from app.planning.repository import ContentPlanRepository
 from app.planning.service import PlanningService
 from app.workspaces.repository import OrganizationRepository, WorkspaceRepository
@@ -161,6 +161,7 @@ def test_database_rejects_a_plan_with_mismatched_workspace(db_session) -> None:
         public_id="PLN-MISMATCHTEST",
         workspace_id=other_workspace.id,
         campaign_id=campaign.id,
+        origin=ContentPlanOrigin.BOOTSTRAP,
         campaign_run_id=run.id,
         stage_execution_id=stages[BusinessStage.PLAN].id,
         version=1,
@@ -222,6 +223,7 @@ def test_duplicate_version_is_rejected_at_the_database_level(planning_campaign, 
     db_session.add(
         ContentPlan(
             public_id="PLN-DUPTEST0001", workspace_id=campaign.workspace_id, campaign_id=campaign.id,
+            origin=ContentPlanOrigin.BOOTSTRAP,
             campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.PLAN].id,
             version=1, summary="first",
         )
@@ -230,6 +232,7 @@ def test_duplicate_version_is_rejected_at_the_database_level(planning_campaign, 
     db_session.add(
         ContentPlan(
             public_id="PLN-DUPTEST0002", workspace_id=campaign.workspace_id, campaign_id=campaign.id,
+            origin=ContentPlanOrigin.BOOTSTRAP,
             campaign_run_id=run.id, stage_execution_id=stages[BusinessStage.PLAN].id,
             version=1, summary="duplicate",
         )
@@ -359,13 +362,27 @@ def test_no_content_revision_request_or_distribution_table_was_introduced() -> N
         assert forbidden_table not in table_names
 
 
-def test_content_plan_has_no_structural_strategy_reference() -> None:
+def test_content_plan_has_no_structural_strategy_or_hypothesis_reference() -> None:
     """STRATEGY != CONTENT PLAN — BACKEND-01 defines no FK from Content Plan
-    to Strategy/Positioning/Hypothesis/Experiment; this is a documented,
-    carried-forward traceability gap, not repaired here."""
+    to Strategy/Positioning/Hypothesis; this remains a documented,
+    carried-forward traceability gap, explicitly NOT repaired by MVP-33B
+    (MVP-33A §R/MVP-33A-R1: out of scope). The one narrowly-scoped
+    exception, explicitly authorized by MVP-33A/-33A-R1, is the optional,
+    nullable ``experiment_id`` — see
+    ``test_content_plan_has_optional_experiment_reference`` below."""
     columns = [c.lower() for c in ContentPlan.__table__.columns.keys()]
-    for term in ("strategy", "positioning", "hypothesis", "experiment"):
+    for term in ("strategy", "positioning", "hypothesis"):
         assert not any(term in c for c in columns)
+
+
+def test_content_plan_has_optional_experiment_reference() -> None:
+    """MVP-33A §K/§L (frozen contract): a single nullable experiment_id
+    column — the maximum permitted granularity, no Variant, no PlanItem-
+    level Experiment reference."""
+    columns = ContentPlan.__table__.columns
+    assert "experiment_id" in columns
+    assert columns["experiment_id"].nullable is True
+    assert "experiment_id" not in [c.lower() for c in PlanItem.__table__.columns.keys()]
 
 
 # --- stage-lifecycle non-mutation -----------------------------------------

@@ -65,7 +65,7 @@ def test_strategic_implication_migration_round_trip(monkeypatch):
                 # MVP-27, MVP-28B, MVP-29B, and MVP-30B each added one
                 # additive migration after this one — "head" now means
                 # b27209ee89a1, not this migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "b27209ee89a1"
+                assert connection.scalar(text("select version_num from alembic_version")) == "cdaeec1bb87f"  # MVP-33B: current head, bumped from b27209ee89a1
 
             if cycle == 0:
                 # Explicit target, not a relative "-1": MVP-27 added a

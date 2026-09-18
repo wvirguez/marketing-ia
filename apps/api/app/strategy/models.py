@@ -269,6 +269,20 @@ class Experiment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             ["hypotheses.id", "hypotheses.workspace_id"],
             name="fk_experiments_hypothesis_workspace",
         ),
+        # MVP-33B (explicitly authorized, additive-only, MVP-33A-R1 §F/§P):
+        # a candidate key purely so ContentPlan can declare a composite
+        # tenant-safety FK on (experiment_id, workspace_id) — the same
+        # additive-candidate-key pattern already used repeatedly
+        # (uq_strategies_id_workspace_id, uq_hypotheses_id_workspace_id,
+        # uq_content_plans_id_workspace_id). Does not change Experiment's
+        # own ownership, tenancy, or any other MVP-32 semantic. Same-
+        # Campaign ancestry is deliberately NOT enforced here — Experiment
+        # gains no campaign_id column (MVP-33A-R1 §F: denormalizing it was
+        # evaluated and rejected as over-hardening); Campaign-scoping
+        # remains a SERVICE-layer JOIN-through-Hypothesis/Strategy
+        # invariant, identical in kind to Hypothesis's own lack of a direct
+        # campaign_id column.
+        UniqueConstraint("id", "workspace_id", name="uq_experiments_id_workspace_id"),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
