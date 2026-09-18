@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.strategy.models import Experiment, Hypothesis, Positioning, Strategy
 
 _HYPOTHESIS_STATEMENT_MAX_LENGTH = 4000
+_EXPERIMENT_DESCRIPTION_MAX_LENGTH = 4000
 
 
 class PositioningPublic(BaseModel):
@@ -58,6 +59,30 @@ class ExperimentPublic(BaseModel):
     description: str
     status: str | None
     created_at: datetime
+
+
+class CreateExperimentRequest(BaseModel):
+    """MVP-32A §7/§21/MVP-32A-R1 (frozen contract, implemented MVP-32B):
+    the minimum client assertion for a governed Experiment — the complete
+    test-design/mechanism description, nothing else. No ``hypothesis_id``,
+    ``strategy_id``, ``workspace_id``, ``campaign_id``, ``status``,
+    ``actor``, ``origin``, ``variant``, ``learning_intent``,
+    ``controlled_variable``, ``measurement_requirement``, or any
+    execution field is ever accepted from the client — all server-derived
+    or server-controlled (``status`` always starts ``"RECORDED"``,
+    MVP-32A §11)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=_EXPERIMENT_DESCRIPTION_MAX_LENGTH)
+
+    @field_validator("description")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("This field cannot be blank.")
+        return stripped
 
 
 class StrategyPublic(BaseModel):

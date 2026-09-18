@@ -62,6 +62,18 @@ class StrategyRepository:
     def get_by_public_id(self, public_id: str) -> Strategy | None:
         return self.session.execute(select(Strategy).where(Strategy.public_id == public_id)).scalar_one_or_none()
 
+    def get_by_id(self, strategy_id: uuid.UUID, *, for_update: bool = False) -> Strategy | None:
+        """MVP-32B: resolves a Strategy from an already-trusted internal FK
+        reference (never a client-supplied identifier) — mirrors
+        ``StrategicDecisionRepository.get_by_id`` in
+        ``app/orchestration/repository.py`` exactly. Used by
+        ``StrategyService.create_experiment`` to lock the exact Strategy
+        row referenced by ``Hypothesis.strategy_id``."""
+        query = select(Strategy).where(Strategy.id == strategy_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
     def get_for_campaign_by_public_id(
         self, *, campaign_id: uuid.UUID, public_id: str, for_update: bool = False
     ) -> Strategy | None:
@@ -163,6 +175,22 @@ class HypothesisRepository:
             query = query.with_for_update()
         return self.session.execute(query).scalar_one_or_none()
 
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> Hypothesis | None:
+        """MVP-32B: non-leaky, campaign-scoped resource lookup — identical
+        discipline to every other bounded context's own
+        ``get_for_campaign_by_public_id`` (e.g.
+        ``StrategyRepository`` above). Hypothesis carries no direct
+        ``campaign_id`` column (BACKEND-01: tenant reached only through
+        its own Strategy), so this joins through ``Strategy.campaign_id``
+        rather than filtering a local column directly. Read-only — no
+        ``for_update`` option, since Hypothesis is immutable in production
+        (no reachable code path mutates one after creation; MVP-32A §N)."""
+        return self.session.execute(
+            select(Hypothesis)
+            .join(Strategy, Hypothesis.strategy_id == Strategy.id)
+            .where(Strategy.campaign_id == campaign_id, Hypothesis.public_id == public_id)
+        ).scalar_one_or_none()
+
     def list_for_strategy(self, strategy_id: uuid.UUID) -> list[Hypothesis]:
         return list(
             self.session.execute(
@@ -178,6 +206,28 @@ class HypothesisRepository:
 class ExperimentRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def create(self, *, hypothesis: Hypothesis, description: str) -> Experiment:
+        """MVP-32B: the single-item governed counterpart to
+        ``create_many`` below — used only by
+        ``StrategyService.create_experiment`` (the new governed,
+        human-reachable path). ``create_many`` remains unchanged and
+        bootstrap-only (mirrors the exact MVP-31B precedent already
+        established for ``HypothesisRepository.create``/``create_many``).
+        ``status`` is set to the literal string ``"RECORDED"`` — no
+        native enum (MVP-32A-R1 §10-13: a single-value vocabulary does
+        not justify a migration; ``experiments.status`` remains the
+        existing nullable ``String(30)``)."""
+        experiment = Experiment(
+            public_id=generate_public_id("EXP"),
+            workspace_id=hypothesis.workspace_id,
+            hypothesis_id=hypothesis.id,
+            description=description,
+            status="RECORDED",
+        )
+        self.session.add(experiment)
+        self.session.flush()
+        return experiment
 
     def create_many(self, *, hypothesis: Hypothesis, items: list[dict]) -> list[Experiment]:
         rows = [

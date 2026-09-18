@@ -469,3 +469,20 @@ class HypothesisStrategyStaleError(ApiError):
 
     def __init__(self, message: str = "This Strategy version is no longer current and cannot receive a new Hypothesis.") -> None:
         super().__init__(message, status_code=409, code="HYPOTHESIS_STRATEGY_STALE")
+
+
+class ExperimentStrategyStaleError(ApiError):
+    """MVP-32A-R1 §9/§14/MVP-32B: a governed Experiment may only be
+    created under a Hypothesis whose own parent Strategy is still the
+    Campaign's current version at the moment that Strategy row is locked
+    — a request naming a Hypothesis whose Strategy is no longer current,
+    whether because a concurrent StrategyRevision already committed or
+    because the caller's own view is simply stale, is a deterministic
+    conflict, never silently redirected to whatever is current now and
+    never silently rebased. Mirrors ``HypothesisStrategyStaleError``'s own
+    precedent exactly, one level down."""
+
+    def __init__(
+        self, message: str = "This Hypothesis belongs to a Strategy that is no longer current and cannot receive a new Experiment."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_STRATEGY_STALE")

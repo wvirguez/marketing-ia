@@ -3,16 +3,21 @@
 
     GET /api/v1/campaigns/{campaign_id}/strategy
 
-plus one governed write route added by MVP-31A/-31A-R1/MVP-31B:
+plus two governed write routes:
 
     POST /api/v1/campaigns/{campaign_id}/strategy/{strategy_id}/hypotheses
+        (MVP-31A/-31A-R1/MVP-31B)
+    POST /api/v1/campaigns/{campaign_id}/hypotheses/{hypothesis_id}/experiments
+        (MVP-32A/-32A-R1/MVP-32B) — no Strategy in the path: Strategy
+        currency is a server-side eligibility check derived exclusively
+        from the named Hypothesis's own persisted ``strategy_id`` FK,
+        never a client-supplied identifier (MVP-32A-R1 §14).
 
 No other write endpoint exists here — Strategy/Positioning themselves
 remain writable only via the deterministic bootstrap
 (``app/strategy/service.py::record_strategy``) or the separate governed
 Strategy Revision surface (``app/orchestration/strategy_revision_router.py``,
-MVP-30B). Hypothesis creation is the first — and, for MVP-31, only —
-governed human write exposed directly from this router.
+MVP-30B).
 
 Mounted directly on ``api_v1_router`` (not nested inside the campaigns
 router), matching the same bounded-context separation already applied to
@@ -28,7 +33,9 @@ from app.auth.dependencies import get_current_user, get_current_workspace, requi
 from app.campaigns.service import CampaignAccessService
 from app.persistence.session import get_db
 from app.strategy.schemas import (
+    CreateExperimentRequest,
     CreateHypothesisRequest,
+    ExperimentPublic,
     HypothesisPublic,
     StrategyOutputResponse,
     experiment_to_public,
@@ -99,3 +106,40 @@ async def create_hypothesis(
         request_id=request.state.request_id,
     )
     return hypothesis_to_public(hypothesis)
+
+
+@router.post(
+    "/hypotheses/{hypothesis_public_id}/experiments",
+    response_model=ExperimentPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_experiment(
+    campaign_public_id: str,
+    hypothesis_public_id: str,
+    payload: CreateExperimentRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExperimentPublic:
+    """Records a governed Experiment under the exact named Hypothesis
+    (MVP-32A/-32A-R1, frozen contract). Any active workspace membership
+    may call this (MEMBER+, matching Hypothesis creation's own precedent —
+    an Experiment proposes, it never commits or mutates the authoritative
+    Strategy/Positioning/Hypothesis state). Any Hypothesis status is
+    eligible (OPEN, CONFIRMED, REFUTED), but the Hypothesis's own parent
+    Strategy must still be the Campaign's current version
+    (``ExperimentStrategyStaleError`` otherwise — never silently rebased
+    to whatever is current now)."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment = StrategyService(db).create_experiment(
+        campaign=campaign,
+        hypothesis_public_id=hypothesis_public_id,
+        description=payload.description,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return experiment_to_public(experiment, hypothesis_public_id=hypothesis_public_id)

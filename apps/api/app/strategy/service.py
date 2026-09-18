@@ -37,6 +37,7 @@ from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign, CampaignRun
 from app.core.api_errors import (
+    ExperimentStrategyStaleError,
     ForbiddenError,
     HypothesisStrategyStaleError,
     InvalidLifecycleTransitionError,
@@ -248,6 +249,69 @@ class StrategyService:
         )
         self.session.commit()
         return hypothesis
+
+    def create_experiment(
+        self,
+        *,
+        campaign: Campaign,
+        hypothesis_public_id: str,
+        description: str,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> Experiment:
+        """MVP-32A/-32A-R1 (frozen contract, implemented MVP-32B): the
+        governed, human-reachable counterpart to ``record_strategy``'s own
+        bootstrap-bound Experiment creation (which production never
+        actually exercises — ``app/orchestration/bootstrap.py`` always
+        synthesizes zero experiments). A human may propose a new
+        Experiment under any Hypothesis (any status — OPEN, CONFIRMED, or
+        REFUTED are all eligible, MVP-32A §L) PROVIDED that Hypothesis's
+        own parent Strategy is still the Campaign's current version at the
+        moment that Strategy row is locked (MVP-32A-R1 §14: Option A —
+        historical-Strategy Hypotheses are NOT eligible for new Experiment
+        creation, never silently rebased). Strategy identity is derived
+        exclusively from the persisted ``Hypothesis.strategy_id`` FK —
+        never client-supplied, so no Strategy appears in the route/payload
+        (MVP-32A §21/MVP-32A-R1: no ambiguity for a client to get wrong,
+        since they never choose a Strategy at all). Canonical lock = the
+        exact Strategy row referenced by the Hypothesis (MVP-32A-R1 §9) —
+        this method never locks or reads a StrategicDecision/
+        StrategicApproval/StrategyRevision row, so it cannot participate
+        in any lock-order cycle with ``StrategyRevisionService.
+        revise_strategy`` or ``StrategyService.create_hypothesis`` (same
+        single-resource acyclicity proof, one level down). No
+        ``ExperimentStatus`` enum exists (MVP-32A-R1 §10-13: a
+        single-value vocabulary does not justify a migration) —
+        ``status`` is the literal string ``"RECORDED"``, written via
+        ``ExperimentRepository.create``."""
+        hypothesis = self.hypotheses.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=hypothesis_public_id
+        )
+        if hypothesis is None:
+            raise ForbiddenError()
+
+        strategy = self.strategies.get_by_id(hypothesis.strategy_id, for_update=True)
+        if strategy is None:  # pragma: no cover - FK guarantees existence
+            raise ForbiddenError()
+        current_strategy = self.strategies.get_current_for_campaign(campaign.id)
+        if current_strategy is None or current_strategy.id != strategy.id:
+            raise ExperimentStrategyStaleError()
+
+        experiment = self.experiments.create(hypothesis=hypothesis, description=description)
+
+        self.events.record(
+            workspace_id=campaign.workspace_id,
+            event_type=EVENT_EXPERIMENT_RECORDED,
+            actor_type=ActorType.USER,
+            campaign_id=campaign.id,
+            strategy_id=strategy.id,
+            hypothesis_id=hypothesis.id,
+            experiment_id=experiment.id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return experiment
 
     def transition_hypothesis(
         self,

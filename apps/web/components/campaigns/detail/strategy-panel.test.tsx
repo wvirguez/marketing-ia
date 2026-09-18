@@ -3,11 +3,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrategyPanel } from "@/components/campaigns/detail/strategy-panel";
 import { ApiError } from "@/lib/api/client";
-import type { HypothesisPublic, StrategyOutputResponse, StrategyPublic } from "@/types/strategy";
+import type { ExperimentPublic, HypothesisPublic, StrategyOutputResponse, StrategyPublic } from "@/types/strategy";
 
 vi.mock("@/lib/api/strategy", () => ({
   getStrategy: vi.fn(),
   createHypothesis: vi.fn(),
+  createExperiment: vi.fn(),
 }));
 vi.mock("@/lib/api/strategic-approvals", () => ({
   getStrategicApprovals: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock("@/lib/auth/auth-context", () => ({
   useAuth: vi.fn(),
 }));
 
-import { createHypothesis, getStrategy } from "@/lib/api/strategy";
+import { createExperiment, createHypothesis, getStrategy } from "@/lib/api/strategy";
 import { getStrategicApprovals } from "@/lib/api/strategic-approvals";
 import { getStrategicDecisions } from "@/lib/api/strategic-decisions";
 import { getStrategyHistory } from "@/lib/api/strategy-revisions";
@@ -31,6 +32,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 
 const mockGetStrategy = vi.mocked(getStrategy);
 const mockCreateHypothesis = vi.mocked(createHypothesis);
+const mockCreateExperiment = vi.mocked(createExperiment);
 const mockGetApprovals = vi.mocked(getStrategicApprovals);
 const mockGetDecisions = vi.mocked(getStrategicDecisions);
 const mockGetHistory = vi.mocked(getStrategyHistory);
@@ -78,6 +80,17 @@ function hypothesis(overrides: Partial<HypothesisPublic> = {}): HypothesisPublic
     id: "HYP-1",
     statement: "First-time buyers respond better to a guarantee.",
     status: "OPEN",
+    created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function experiment(overrides: Partial<ExperimentPublic> = {}): ExperimentPublic {
+  return {
+    id: "EXP-1",
+    hypothesis_id: "HYP-1",
+    description: "A/B test two onboarding email sequences against a held-out control group.",
+    status: "RECORDED",
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -174,5 +187,91 @@ describe("StrategyPanel — Hypothesis creation submission", () => {
 
     expect(screen.queryByLabelText("Nueva hipótesis")).not.toBeInTheDocument();
     expect(mockCreateHypothesis).not.toHaveBeenCalled();
+  });
+});
+
+describe("StrategyPanel — Experiment creation authority", () => {
+  it("MEMBER sees the proposal control under a hypothesis", async () => {
+    mockAuth("MEMBER");
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer experimento")).toBeInTheDocument());
+  });
+
+  it("an unauthenticated viewer never sees the proposal control", async () => {
+    mockAuth(null);
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText(hypothesis().statement)).toBeInTheDocument());
+    expect(screen.queryByText("Proponer experimento")).not.toBeInTheDocument();
+  });
+});
+
+describe("StrategyPanel — Experiment creation submission", () => {
+  it("OWNER can submit a new experiment and the list refreshes", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValueOnce(output({ hypotheses: [hypothesis()] }));
+    mockCreateExperiment.mockResolvedValue(experiment());
+    mockGetStrategy.mockResolvedValueOnce(output({ hypotheses: [hypothesis()], experiments: [experiment()] }));
+
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer experimento")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Proponer experimento"));
+
+    await userEvent.type(
+      screen.getByLabelText("Nuevo experimento"),
+      "A/B test two onboarding email sequences against a held-out control group.",
+    );
+    await userEvent.click(screen.getByText("Confirmar experimento"));
+
+    await waitFor(() =>
+      expect(mockCreateExperiment).toHaveBeenCalledWith(
+        "campaign-1",
+        "HYP-1",
+        "A/B test two onboarding email sequences against a held-out control group.",
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText("A/B test two onboarding email sequences against a held-out control group."),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("the confirm button stays disabled for a blank description", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer experimento")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Proponer experimento"));
+    expect(screen.getByText("Confirmar experimento")).toBeDisabled();
+  });
+
+  it("surfaces a mutation error without losing the form", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()] }));
+    mockCreateExperiment.mockRejectedValue(new ApiError(409, "EXPERIMENT_STRATEGY_STALE", "Stale."));
+
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer experimento")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Proponer experimento"));
+    await userEvent.type(screen.getByLabelText("Nuevo experimento"), "x");
+    await userEvent.click(screen.getByText("Confirmar experimento"));
+
+    await waitFor(() => expect(screen.getByText("No pudimos completar esta acción. Intenta de nuevo.")).toBeInTheDocument());
+    expect(screen.getByLabelText("Nuevo experimento")).toBeInTheDocument();
+  });
+
+  it("cancel clears the form without submitting", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer experimento")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Proponer experimento"));
+    await userEvent.type(screen.getByLabelText("Nuevo experimento"), "discarded");
+    await userEvent.click(screen.getByText("Cancelar"));
+
+    expect(screen.queryByLabelText("Nuevo experimento")).not.toBeInTheDocument();
+    expect(mockCreateExperiment).not.toHaveBeenCalled();
   });
 });

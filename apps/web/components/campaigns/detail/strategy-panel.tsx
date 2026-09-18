@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { useAuth } from "@/lib/auth/auth-context";
-import { createHypothesis, getStrategy } from "@/lib/api/strategy";
+import { createExperiment, createHypothesis, getStrategy } from "@/lib/api/strategy";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { HypothesisStatus, StrategyOutputResponse } from "@/types/strategy";
 import { DraftDisclosureBanner } from "./draft-disclosure-banner";
@@ -43,6 +43,12 @@ function canProposeHypothesis(role: string | null): boolean {
   return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
 }
 
+// MVP-32A §R: same MEMBER+ authority tier as Hypothesis creation — an
+// Experiment proposes, it never commits or mutates authoritative state.
+function canProposeExperiment(role: string | null): boolean {
+  return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
+}
+
 export function StrategyPanel({
   campaignId,
   active,
@@ -60,6 +66,10 @@ export function StrategyPanel({
   const [hypothesisStatement, setHypothesisStatement] = useState("");
   const [hypothesisPending, setHypothesisPending] = useState(false);
   const [hypothesisError, setHypothesisError] = useState("");
+  const [activeExperimentHypothesisId, setActiveExperimentHypothesisId] = useState<string | null>(null);
+  const [experimentDescription, setExperimentDescription] = useState("");
+  const [experimentPending, setExperimentPending] = useState(false);
+  const [experimentError, setExperimentError] = useState("");
 
   function retry() {
     requestedTokenRef.current = refreshToken;
@@ -148,6 +158,22 @@ export function StrategyPanel({
     }
   }
 
+  async function submitExperiment(hypothesisId: string) {
+    if (experimentPending || experimentDescription.trim().length === 0) return;
+    setExperimentPending(true);
+    setExperimentError("");
+    try {
+      await createExperiment(campaignId, hypothesisId, experimentDescription.trim());
+      setExperimentDescription("");
+      setActiveExperimentHypothesisId(null);
+      retry();
+    } catch (error) {
+      setExperimentError(describeCampaignError(error));
+    } finally {
+      setExperimentPending(false);
+    }
+  }
+
   return (
     <section className="panel">
       <DraftDisclosureBanner />
@@ -173,20 +199,97 @@ export function StrategyPanel({
         <p className="muted small-text">{EMPTY_HYPOTHESES_COPY}</p>
       ) : (
         <div className="deliverables-grid">
-          {hypotheses.map((hypothesis) => (
-            <article className="panel deliverable-card" key={hypothesis.id}>
-              <span className="deliverable-icon">
-                <Icon name="target" size={19} />
-              </span>
-              <div>
-                <p>{hypothesis.statement}</p>
-                <span className="status draft">
-                  <span />
-                  {HYPOTHESIS_STATUS_LABELS[hypothesis.status] ?? hypothesis.status}
+          {hypotheses.map((hypothesis) => {
+            const hypothesisExperiments = experiments.filter((experiment) => experiment.hypothesis_id === hypothesis.id);
+            return (
+              <article className="panel deliverable-card" key={hypothesis.id}>
+                <span className="deliverable-icon">
+                  <Icon name="target" size={19} />
                 </span>
-              </div>
-            </article>
-          ))}
+                <div>
+                  <p>{hypothesis.statement}</p>
+                  <span className="status draft">
+                    <span />
+                    {HYPOTHESIS_STATUS_LABELS[hypothesis.status] ?? hypothesis.status}
+                  </span>
+
+                  {hypothesisExperiments.length === 0 ? (
+                    <p className="muted small-text" style={{ marginTop: 8 }}>
+                      {EMPTY_EXPERIMENTS_COPY}
+                    </p>
+                  ) : (
+                    <ul style={{ marginTop: 8 }}>
+                      {hypothesisExperiments.map((experiment) => (
+                        <li key={experiment.id}>
+                          <p>{experiment.description}</p>
+                          <p className="muted small-text">{experiment.status ?? "Sin estado registrado"}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {canProposeExperiment(role) && activeExperimentHypothesisId !== hypothesis.id && (
+                    <div className="settings-form-actions" style={{ marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="button"
+                        onClick={() => {
+                          setActiveExperimentHypothesisId(hypothesis.id);
+                          setExperimentDescription("");
+                          setExperimentError("");
+                        }}
+                      >
+                        Proponer experimento
+                      </button>
+                    </div>
+                  )}
+                  {activeExperimentHypothesisId === hypothesis.id && (
+                    <div className="panel" style={{ marginTop: 8 }}>
+                      <div className="settings-field">
+                        <label htmlFor={`experiment-description-${hypothesis.id}`}>Nuevo experimento</label>
+                        <textarea
+                          id={`experiment-description-${hypothesis.id}`}
+                          value={experimentDescription}
+                          disabled={experimentPending}
+                          onChange={(event) => setExperimentDescription(event.target.value)}
+                        />
+                      </div>
+                      <p className="muted small-text">
+                        Este experimento se registra bajo esta hipótesis — no crea planes de contenido ni ningún
+                        otro contenido, y no autoriza ejecución externa.
+                      </p>
+                      <div className="settings-form-actions" style={{ marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="button primary"
+                          disabled={experimentPending || experimentDescription.trim().length === 0}
+                          onClick={() => submitExperiment(hypothesis.id)}
+                        >
+                          Confirmar experimento
+                        </button>
+                        <button
+                          type="button"
+                          className="button"
+                          disabled={experimentPending}
+                          onClick={() => {
+                            setActiveExperimentHypothesisId(null);
+                            setExperimentDescription("");
+                          }}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                      {experimentError && (
+                        <p role="alert" className="settings-feedback">
+                          {experimentError}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
 
@@ -238,27 +341,6 @@ export function StrategyPanel({
               {hypothesisError}
             </p>
           )}
-        </div>
-      )}
-
-      <div className="section-heading" style={{ marginTop: 24 }}>
-        <h2>Experimentos</h2>
-      </div>
-      {experiments.length === 0 ? (
-        <p className="muted small-text">{EMPTY_EXPERIMENTS_COPY}</p>
-      ) : (
-        <div className="deliverables-grid">
-          {experiments.map((experiment) => (
-            <article className="panel deliverable-card" key={experiment.id}>
-              <span className="deliverable-icon">
-                <Icon name="target" size={19} />
-              </span>
-              <div>
-                <p>{experiment.description}</p>
-                <p className="muted small-text">{experiment.status ?? "Sin estado registrado"}</p>
-              </div>
-            </article>
-          ))}
         </div>
       )}
 

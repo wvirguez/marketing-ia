@@ -32,6 +32,14 @@ export interface ExperimentPublic {
   created_at: string;
 }
 
+// MVP-32A/-32A-R1: the complete governed create payload — description
+// only. No hypothesis_id/strategy_id/workspace_id/campaign_id/status/
+// actor is ever sent — all server-derived or server-controlled (status
+// always starts "RECORDED").
+export interface CreateExperimentRequest {
+  description: string;
+}
+
 // MVP-30B: "BOOTSTRAP" (deterministic initial draft) or "REVISION" (a
 // governed Strategy Revision, MVP-30A/-30A-R1) — never a third value.
 export type StrategyOrigin = "BOOTSTRAP" | "REVISION";
