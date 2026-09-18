@@ -1,13 +1,18 @@
-"""Strategy API surface (BACKEND-08 §19) — the exact, canonical, GET-only
-route `docs/backend/BACKEND-01-API-MAP.md` §2 defines:
+"""Strategy API surface (BACKEND-08 §19) — the canonical read route
+`docs/backend/BACKEND-01-API-MAP.md` §2 defines:
 
     GET /api/v1/campaigns/{campaign_id}/strategy
 
-No write endpoint exists here at all — BACKEND-01's own API map marks this
-route GET-only ("Experiments may get a POST later" — future, not now), and
-nothing in this stage has a legitimate trigger to create strategy output
-yet (no Agent Run/Gate Decision exists). Writes are service-layer only
-(``app/strategy/service.py``).
+plus one governed write route added by MVP-31A/-31A-R1/MVP-31B:
+
+    POST /api/v1/campaigns/{campaign_id}/strategy/{strategy_id}/hypotheses
+
+No other write endpoint exists here — Strategy/Positioning themselves
+remain writable only via the deterministic bootstrap
+(``app/strategy/service.py::record_strategy``) or the separate governed
+Strategy Revision surface (``app/orchestration/strategy_revision_router.py``,
+MVP-30B). Hypothesis creation is the first — and, for MVP-31, only —
+governed human write exposed directly from this router.
 
 Mounted directly on ``api_v1_router`` (not nested inside the campaigns
 router), matching the same bounded-context separation already applied to
@@ -16,13 +21,15 @@ router), matching the same bounded-context separation already applied to
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_workspace
+from app.auth.dependencies import get_current_user, get_current_workspace, require_csrf
 from app.campaigns.service import CampaignAccessService
 from app.persistence.session import get_db
 from app.strategy.schemas import (
+    CreateHypothesisRequest,
+    HypothesisPublic,
     StrategyOutputResponse,
     experiment_to_public,
     hypothesis_to_public,
@@ -30,6 +37,7 @@ from app.strategy.schemas import (
     strategy_to_public,
 )
 from app.strategy.service import StrategyService
+from app.users.models import User
 from app.workspaces.models import Workspace
 
 router = APIRouter(prefix="/campaigns/{campaign_public_id}", tags=["strategy"])
@@ -55,3 +63,39 @@ async def get_strategy(
             for e in experiments
         ],
     )
+
+
+@router.post(
+    "/strategy/{strategy_public_id}/hypotheses",
+    response_model=HypothesisPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_hypothesis(
+    campaign_public_id: str,
+    strategy_public_id: str,
+    payload: CreateHypothesisRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> HypothesisPublic:
+    """Records a governed next-cycle Hypothesis under the exact named
+    Strategy (MVP-31A/-31A-R1, frozen contract). Any active workspace
+    membership may call this (MEMBER+, matching
+    ``StrategicImplication``/``StrategicRecommendation``'s own precedent —
+    a Hypothesis proposes, it never commits or mutates the authoritative
+    Strategy/Positioning state). The named Strategy must still be the
+    Campaign's own current version (``HypothesisStrategyStaleError``
+    otherwise — never silently rebased to whatever is current now)."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    hypothesis = StrategyService(db).create_hypothesis(
+        campaign=campaign,
+        strategy_public_id=strategy_public_id,
+        statement=payload.statement,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return hypothesis_to_public(hypothesis)

@@ -454,3 +454,18 @@ class StrategyRevisionBaseStaleError(ApiError):
 
     def __init__(self, message: str = "This Strategy version is no longer current and cannot be revised.") -> None:
         super().__init__(message, status_code=409, code="STRATEGY_REVISION_BASE_STALE")
+
+
+class HypothesisStrategyStaleError(ApiError):
+    """MVP-31A §8/MVP-31B: a governed Hypothesis may only be created
+    against the Campaign's own current Strategy version (highest
+    ``version``) at the moment the targeted Strategy row is locked — a
+    request naming a Strategy that is no longer current, whether because a
+    concurrent StrategyRevision already committed or because the caller's
+    own view is simply stale, is a deterministic conflict, never silently
+    redirected to whatever is current now and never silently rebased.
+    Mirrors ``StrategyRevisionBaseStaleError``'s own precedent exactly, one
+    level down."""
+
+    def __init__(self, message: str = "This Strategy version is no longer current and cannot receive a new Hypothesis.") -> None:
+        super().__init__(message, status_code=409, code="HYPOTHESIS_STRATEGY_STALE")

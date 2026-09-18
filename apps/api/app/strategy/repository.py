@@ -122,6 +122,26 @@ class HypothesisRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def create(self, *, strategy: Strategy, statement: str) -> Hypothesis:
+        """MVP-31B: the single-item governed counterpart to
+        ``create_many`` below — used only by
+        ``StrategyService.create_hypothesis`` (the new governed,
+        human-reachable path). ``create_many`` remains unchanged and
+        bootstrap-only (MVP-31A-R1: no ``origin`` discriminator
+        distinguishes the two — a governed Hypothesis is the exact same
+        domain entity as a bootstrap one, differing only in which code
+        path inserted it, which is not a canonical stored property)."""
+        hypothesis = Hypothesis(
+            public_id=generate_public_id("HYP"),
+            workspace_id=strategy.workspace_id,
+            strategy_id=strategy.id,
+            statement=statement,
+            status=HypothesisStatus.OPEN,
+        )
+        self.session.add(hypothesis)
+        self.session.flush()
+        return hypothesis
+
     def create_many(self, *, strategy: Strategy, items: list[dict]) -> list[Hypothesis]:
         rows = [
             Hypothesis(

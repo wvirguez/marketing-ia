@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { useAuth } from "@/lib/auth/auth-context";
-import { getStrategy } from "@/lib/api/strategy";
+import { createHypothesis, getStrategy } from "@/lib/api/strategy";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { HypothesisStatus, StrategyOutputResponse } from "@/types/strategy";
 import { DraftDisclosureBanner } from "./draft-disclosure-banner";
@@ -34,6 +34,15 @@ const HYPOTHESIS_STATUS_LABELS: Record<HypothesisStatus, string> = {
   REFUTED: "Hipótesis descartada",
 };
 
+// MVP-31A §T: any active workspace membership (MEMBER+) may propose a
+// governed Hypothesis — a contributory/analytical action, never one that
+// commits or mutates the authoritative Strategy/Positioning state — the
+// same authority tier already established for StrategicImplication/
+// StrategicRecommendation creation (learning-panel.tsx's own precedent).
+function canProposeHypothesis(role: string | null): boolean {
+  return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
+}
+
 export function StrategyPanel({
   campaignId,
   active,
@@ -47,6 +56,10 @@ export function StrategyPanel({
   const role = auth.status === "authenticated" ? auth.session.membership.role : null;
   const [result, setResult] = useState<Result | null>(null);
   const requestedTokenRef = useRef<number | null>(null);
+  const [showHypothesisForm, setShowHypothesisForm] = useState(false);
+  const [hypothesisStatement, setHypothesisStatement] = useState("");
+  const [hypothesisPending, setHypothesisPending] = useState(false);
+  const [hypothesisError, setHypothesisError] = useState("");
 
   function retry() {
     requestedTokenRef.current = refreshToken;
@@ -119,6 +132,22 @@ export function StrategyPanel({
     );
   }
 
+  async function submitHypothesis() {
+    if (hypothesisPending || hypothesisStatement.trim().length === 0 || !strategy) return;
+    setHypothesisPending(true);
+    setHypothesisError("");
+    try {
+      await createHypothesis(campaignId, strategy.id, hypothesisStatement.trim());
+      setHypothesisStatement("");
+      setShowHypothesisForm(false);
+      retry();
+    } catch (error) {
+      setHypothesisError(describeCampaignError(error));
+    } finally {
+      setHypothesisPending(false);
+    }
+  }
+
   return (
     <section className="panel">
       <DraftDisclosureBanner />
@@ -158,6 +187,57 @@ export function StrategyPanel({
               </div>
             </article>
           ))}
+        </div>
+      )}
+
+      {canProposeHypothesis(role) && !showHypothesisForm && (
+        <div className="settings-form-actions" style={{ marginTop: 8 }}>
+          <button type="button" className="button" onClick={() => setShowHypothesisForm(true)}>
+            Proponer hipótesis
+          </button>
+        </div>
+      )}
+      {showHypothesisForm && (
+        <div className="panel" style={{ marginTop: 8 }}>
+          <div className="settings-field">
+            <label htmlFor="hypothesis-statement">Nueva hipótesis</label>
+            <textarea
+              id="hypothesis-statement"
+              value={hypothesisStatement}
+              disabled={hypothesisPending}
+              onChange={(event) => setHypothesisStatement(event.target.value)}
+            />
+          </div>
+          <p className="muted small-text">
+            Esta hipótesis se registra bajo la versión vigente de la estrategia — no crea experimentos ni ningún
+            otro contenido, y no autoriza ejecución externa.
+          </p>
+          <div className="settings-form-actions" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="button primary"
+              disabled={hypothesisPending || hypothesisStatement.trim().length === 0}
+              onClick={submitHypothesis}
+            >
+              Confirmar hipótesis
+            </button>
+            <button
+              type="button"
+              className="button"
+              disabled={hypothesisPending}
+              onClick={() => {
+                setShowHypothesisForm(false);
+                setHypothesisStatement("");
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+          {hypothesisError && (
+            <p role="alert" className="settings-feedback">
+              {hypothesisError}
+            </p>
+          )}
         </div>
       )}
 

@@ -36,7 +36,13 @@ from sqlalchemy.orm import Session
 from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign, CampaignRun
-from app.core.api_errors import ForbiddenError, InvalidLifecycleTransitionError, ProvenanceMismatchError, VersionConflictError
+from app.core.api_errors import (
+    ForbiddenError,
+    HypothesisStrategyStaleError,
+    InvalidLifecycleTransitionError,
+    ProvenanceMismatchError,
+    VersionConflictError,
+)
 from app.orchestration.models import BusinessStage, RunStageExecution
 from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy, StrategyOrigin
 from app.strategy.repository import (
@@ -192,6 +198,56 @@ class StrategyService:
 
         self.session.commit()
         return strategy, positioning, created_hypotheses, created_experiments
+
+    def create_hypothesis(
+        self,
+        *,
+        campaign: Campaign,
+        strategy_public_id: str,
+        statement: str,
+        actor_user_id: uuid.UUID,
+        request_id: str | None = None,
+    ) -> Hypothesis:
+        """MVP-31A/-31A-R1 (frozen contract, implemented MVP-31B): the
+        governed, human-reachable counterpart to ``record_strategy``'s own
+        bootstrap-bound Hypothesis creation. A human may propose a new
+        Hypothesis under the Campaign's own current Strategy — of either
+        ``origin`` (MVP-31A §H: BOOTSTRAP and REVISION are both eligible,
+        never restricted to REVISION only) — naming it explicitly by its
+        own ``public_id`` (never resolved as "whatever is current",
+        MVP-31A §31) and never silently rebased if it has since gone stale
+        (``HypothesisStrategyStaleError``). Canonical lock = the exact
+        Strategy row only (MVP-31A §28/§29) — this method never locks or
+        even reads a StrategicDecision/StrategicApproval/StrategyRevision
+        row, so it cannot participate in any lock-order cycle with
+        ``StrategyRevisionService.revise_strategy``. No ``origin``
+        discriminator exists on ``Hypothesis`` (MVP-31A-R1) — the created
+        row is indistinguishable, by any stored column, from one produced
+        by the bootstrap path."""
+        strategy = self.strategies.get_for_campaign_by_public_id(
+            campaign_id=campaign.id, public_id=strategy_public_id, for_update=True
+        )
+        if strategy is None:
+            raise ForbiddenError()
+        current_strategy = self.strategies.get_current_for_campaign(campaign.id)
+        if current_strategy is None or current_strategy.id != strategy.id:
+            raise HypothesisStrategyStaleError()
+
+        hypothesis = self.hypotheses.create(strategy=strategy, statement=statement)
+
+        self.events.record(
+            workspace_id=campaign.workspace_id,
+            event_type=EVENT_HYPOTHESIS_RECORDED,
+            actor_type=ActorType.USER,
+            campaign_id=campaign.id,
+            strategy_id=strategy.id,
+            hypothesis_id=hypothesis.id,
+            new_state=HypothesisStatus.OPEN.value,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        self.session.commit()
+        return hypothesis
 
     def transition_hypothesis(
         self,

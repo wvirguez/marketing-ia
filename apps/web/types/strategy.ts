@@ -17,6 +17,13 @@ export interface HypothesisPublic {
   created_at: string;
 }
 
+// MVP-31A/-31A-R1: the complete governed create payload — statement only.
+// No status/strategy_id/workspace_id/campaign_id/origin is ever sent —
+// all server-derived or server-controlled (status always starts OPEN).
+export interface CreateHypothesisRequest {
+  statement: string;
+}
+
 export interface ExperimentPublic {
   id: string;
   hypothesis_id: string;

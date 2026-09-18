@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.strategy.models import Experiment, Hypothesis, Positioning, Strategy
+
+_HYPOTHESIS_STATEMENT_MAX_LENGTH = 4000
 
 
 class PositioningPublic(BaseModel):
@@ -27,6 +29,27 @@ class HypothesisPublic(BaseModel):
     statement: str
     status: str
     created_at: datetime
+
+
+class CreateHypothesisRequest(BaseModel):
+    """MVP-31A §7/§O (frozen contract, implemented MVP-31B): the minimum
+    client assertion for a governed Hypothesis — the complete new
+    statement, nothing else. No ``status``, ``strategy_id``,
+    ``workspace_id``, ``campaign_id``, ``origin``, ``created_at``, or
+    audit actor is ever accepted from the client — all server-derived or
+    server-controlled (``status`` always starts ``OPEN``, MVP-31A §17)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1, max_length=_HYPOTHESIS_STATEMENT_MAX_LENGTH)
+
+    @field_validator("statement")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("This field cannot be blank.")
+        return stripped
 
 
 class ExperimentPublic(BaseModel):
