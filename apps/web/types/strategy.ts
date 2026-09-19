@@ -47,6 +47,41 @@ export interface ExperimentDefinitionPublic {
   non_conclusion_boundary: string;
   non_conclusion_codes: string[];
   created_at: string;
+  // MVP-38: derived, never stored. `variant_count` is how many Variants pin
+  // this version; `is_pinned` only means a governed pinning child exists
+  // (a lock indicator — never a validity/readiness/causality claim).
+  variant_count: number;
+  is_pinned: boolean;
+}
+
+// MVP-38: the immutable identity of ONE declared condition, pinned to one
+// immutable definition version. No role, weight, status, metric, result or
+// validity field exists.
+export interface VariantPublic {
+  id: string;
+  experiment_id: string;
+  definition_version_id: string;
+  ordinal: number;
+  label: string;
+  condition_description: string;
+  created_at: string;
+}
+
+export interface VariantListResponse {
+  experiment_id: string;
+  items: VariantPublic[];
+  limit: number;
+  offset: number;
+  total: number;
+}
+
+// MVP-38: `definition_version_id` is the EXPLICIT pin (the `EXD-…` id of the
+// current tip) — the server never substitutes the current version.
+export interface DeclareVariantRequest {
+  definition_version_id: string;
+  label: string;
+  condition_description: string;
+  client_request_id: string;
 }
 
 // MVP-37: additive — `definition` is the current tip (null when none is

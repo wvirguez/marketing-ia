@@ -536,3 +536,45 @@ class ExperimentDefinitionUnchangedError(ApiError):
 
     def __init__(self, message: str = "This revision is identical to the current Experiment definition.") -> None:
         super().__init__(message, status_code=409, code="EXPERIMENT_DEFINITION_UNCHANGED")
+
+
+class ExperimentDefinitionPinnedError(ApiError):
+    """MVP-38B §E: a NEW Experiment Definition version cannot be written
+    while a governed pinning child (today: a Variant) pins the current tip.
+    Deliberately generic — never names the pinning child."""
+
+    def __init__(
+        self, message: str = "This Experiment definition is pinned by declared conditions and cannot receive a new version."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_DEFINITION_PINNED")
+
+
+class ExperimentVariantStrategyStaleError(ApiError):
+    """MVP-38B §P: a new Variant may only be declared for an Experiment
+    whose parent Strategy is still the Campaign's current version (the
+    same Option-A rule as ``ExperimentDefinitionStrategyStaleError``)."""
+
+    def __init__(
+        self,
+        message: str = "This Experiment belongs to a Strategy that is no longer current and cannot receive a new condition.",
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_VARIANT_STRATEGY_STALE")
+
+
+class ExperimentVariantDefinitionVersionNotCurrentError(ApiError):
+    """MVP-38B §D: the requested ``definition_version_id`` resolves inside
+    the Experiment but is not the current tip at the moment the Experiment
+    row is locked — never silently rebased onto the current tip."""
+
+    def __init__(
+        self, message: str = "The requested definition version is not the current version of this Experiment."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_VARIANT_DEFINITION_VERSION_NOT_CURRENT")
+
+
+class ExperimentVariantLabelDuplicateError(ApiError):
+    """MVP-38B §J: a Variant with the same (normalized) label is already
+    declared under the pinned definition version."""
+
+    def __init__(self, message: str = "A condition with this label already exists for this definition version.") -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_VARIANT_LABEL_DUPLICATE")

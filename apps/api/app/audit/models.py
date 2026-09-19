@@ -262,6 +262,15 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # MVP-38: same reasoning as experiment_definition_version_id above — a
+    # strategy.variant.declared event must identify its exact
+    # ExperimentVariant row. Nullable, single-column, matching every other
+    # AuditEvent subject FK exactly. The auto-derived FK name
+    # (fk_audit_events_experiment_variant_id_experiment_variants) is 57
+    # characters, within PostgreSQL's 63-character limit.
+    experiment_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("experiment_variants.id"), default=None, index=True
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

@@ -1,9 +1,9 @@
 """Governed Experiment Definition — MVP-37 (frozen MVP-37A/-37B).
 
 ``ExperimentDefinitionService.write_version`` is the SINGLE writer of
-``experiment_definition_versions`` — the choke point where a future Variant
-guard ("once any Variant pins a version, no further version may be written")
-attaches. It is deliberately not implemented now.
+``experiment_definition_versions`` — the choke point of the Definition lock
+("once any governed pinning child pins the tip, no further version may be
+written"), implemented in MVP-38 with Variant as the first trigger.
 
 Write order (frozen MVP-37B §U): resolve the campaign-scoped Experiment →
 fast-path replay lookup → lock the Experiment's Strategy row → lock the
@@ -12,7 +12,13 @@ locks an Experiment row, so it is a leaf and the order is acyclic against
 ``StrategyRevisionService.revise_strategy``'s Decision-then-Strategy order)
 → re-check replay under the locks → verify the Strategy is still current →
 verify ``base_version`` equals the tip → reject an unchanged revision →
-insert + audit → commit. ``UNIQUE(experiment_id, version)`` and
+insert + audit → commit. The DEFINITION LOCK (MVP-38) sits after the base-version check and before
+the unchanged check: once a governed pinning child (today only a Variant,
+via ``_has_pinning_children``) pins the tip, no new version may be written
+(``EXPERIMENT_DEFINITION_PINNED``). The lock is derived from the existence
+of a pinning child — never stored — and Experiment Definition governance,
+not Variant, owns it; future pinning children add themselves to the single
+``_has_pinning_children`` seam. ``UNIQUE(experiment_id, version)`` and
 ``UNIQUE(workspace_id, client_request_id)`` are the structural backstops;
 only those two known violations are translated, anything else re-raises.
 
@@ -36,6 +42,7 @@ from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign
 from app.core.api_errors import (
     ExperimentDefinitionBaseStaleError,
+    ExperimentDefinitionPinnedError,
     ExperimentDefinitionStrategyStaleError,
     ExperimentDefinitionUnchangedError,
     ForbiddenError,
@@ -45,6 +52,7 @@ from app.strategy.models import Experiment, ExperimentDefinitionVersion
 from app.strategy.repository import (
     ExperimentDefinitionRepository,
     ExperimentRepository,
+    ExperimentVariantRepository,
     HypothesisRepository,
     StrategyRepository,
 )
@@ -80,7 +88,35 @@ class ExperimentDefinitionService:
         self.hypotheses = HypothesisRepository(session)
         self.experiments = ExperimentRepository(session)
         self.definitions = ExperimentDefinitionRepository(session)
+        self.variants = ExperimentVariantRepository(session)
         self.events = AuditEventRepository(session)
+
+    # --- definition lock (derived) ---------------------------------------
+
+    def _has_pinning_children(self, *, definition_version_id: uuid.UUID) -> bool:
+        """THE central Definition-lock seam (MVP-38B §E/§H). Must be called
+        with the Strategy and Experiment row locks already held. Today the
+        only pinning child is a Variant; a future pinning child (e.g. a
+        measurement contract) adds its own existence check HERE rather than
+        inventing separate lock semantics."""
+        return self.variants.exists_for_definition_version(definition_version_id=definition_version_id)
+
+    def pin_states_for_versions(
+        self, *, workspace_id: uuid.UUID, definition_version_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[int, bool]]:
+        """``{version_id: (variant_count, is_pinned)}`` — derived, batched
+        (one grouped query), never stored. ``is_pinned`` means only that a
+        governed pinning child exists; for MVP-38 it equals
+        ``variant_count > 0`` but is computed from the set of pinning
+        children so future children participate without changing
+        ``variant_count``."""
+        variant_counts = self.variants.counts_for_versions(
+            definition_version_ids=definition_version_ids, workspace_id=workspace_id
+        )
+        return {
+            version_id: (variant_counts.get(version_id, 0), variant_counts.get(version_id, 0) > 0)
+            for version_id in definition_version_ids
+        }
 
     # --- reads -----------------------------------------------------------
 
@@ -167,6 +203,8 @@ class ExperimentDefinitionService:
         tip_version = tip.version if tip is not None else 0
         if base_version != tip_version:
             raise ExperimentDefinitionBaseStaleError()
+        if tip is not None and self._has_pinning_children(definition_version_id=tip.id):
+            raise ExperimentDefinitionPinnedError()
         if tip is not None and _content_equal(tip, fields):
             raise ExperimentDefinitionUnchangedError()
 

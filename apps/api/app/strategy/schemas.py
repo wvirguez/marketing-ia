@@ -19,9 +19,12 @@ from app.strategy.models import (
     EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH,
     EXPERIMENT_DEFINITION_MAX_CONTROLLED_FACTORS,
     EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH,
+    EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH,
+    EXPERIMENT_VARIANT_LABEL_MAX_LENGTH,
     ComparisonType,
     Experiment,
     ExperimentDefinitionVersion,
+    ExperimentVariant,
     Hypothesis,
     Positioning,
     Strategy,
@@ -116,6 +119,12 @@ class ExperimentDefinitionPublic(BaseModel):
     non_conclusion_boundary: str
     non_conclusion_codes: list[str]
     created_at: datetime
+    # MVP-38 (additive, derived, NEVER stored): how many Variants pin this
+    # version, and whether any governed pinning child exists. ``is_pinned``
+    # means only that — it is a lock indicator, never a validity/readiness/
+    # causality claim, and it never changes ``comparison_label``.
+    variant_count: int = 0
+    is_pinned: bool = False
 
 
 class ExperimentPublic(BaseModel):
@@ -309,7 +318,14 @@ def hypothesis_to_public(hypothesis: Hypothesis) -> HypothesisPublic:
     )
 
 
-def definition_to_public(definition: ExperimentDefinitionVersion, *, experiment_public_id: str) -> ExperimentDefinitionPublic:
+def definition_to_public(
+    definition: ExperimentDefinitionVersion,
+    *,
+    experiment_public_id: str,
+    pin_state: tuple[int, bool] = (0, False),
+) -> ExperimentDefinitionPublic:
+    """``pin_state`` is ``(variant_count, is_pinned)`` — derived by
+    ``ExperimentDefinitionService.pin_states_for_versions`` (batched)."""
     return ExperimentDefinitionPublic(
         id=definition.public_id,
         experiment_id=experiment_public_id,
@@ -324,6 +340,8 @@ def definition_to_public(definition: ExperimentDefinitionVersion, *, experiment_
         non_conclusion_boundary=definition.non_conclusion_boundary,
         non_conclusion_codes=non_conclusion_codes_for(definition.comparison_type),
         created_at=definition.created_at,
+        variant_count=pin_state[0],
+        is_pinned=pin_state[1],
     )
 
 
@@ -332,6 +350,7 @@ def experiment_to_public(
     *,
     hypothesis_public_id: str,
     definition: ExperimentDefinitionVersion | None = None,
+    definition_pin_state: tuple[int, bool] = (0, False),
 ) -> ExperimentPublic:
     """``definition`` is the Experiment's current definition tip (or None).
     An Experiment with no definition serializes ``definition=None`` and
@@ -344,7 +363,9 @@ def experiment_to_public(
         created_at=experiment.created_at,
         comparison_label=comparison_label_for(definition),
         definition=(
-            definition_to_public(definition, experiment_public_id=experiment.public_id)
+            definition_to_public(
+                definition, experiment_public_id=experiment.public_id, pin_state=definition_pin_state
+            )
             if definition is not None
             else None
         ),
@@ -356,3 +377,80 @@ class ExperimentDefinitionHistoryResponse(BaseModel):
     comparison_label: str
     current_version: int | None
     versions: list[ExperimentDefinitionPublic]
+
+
+class CreateVariantRequest(BaseModel):
+    """MVP-38B §R/§J: the Variant declaration payload. ``definition_version_id``
+    is the EXPLICIT pin (the public ``EXD-…`` id) — the server never
+    substitutes the current tip. No ``role``, ``weight``, ``traffic``,
+    ``metric``, ``status``, allocation, exposure or result field is accepted
+    (``extra="forbid"``). ``workspace_id``/``experiment_id``/``ordinal``/
+    actor are all server-derived."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    definition_version_id: str = Field(min_length=1, max_length=20)
+    label: str = Field(min_length=1, max_length=EXPERIMENT_VARIANT_LABEL_MAX_LENGTH)
+    condition_description: str = Field(min_length=1, max_length=EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH)
+    client_request_id: str = Field(min_length=1, max_length=EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH)
+
+    @field_validator("definition_version_id", "label", "condition_description", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("definition_version_id")
+    @classmethod
+    def _version_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _client_request_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator("label")
+    @classmethod
+    def _label_rules(cls, value: str) -> str:
+        return _require_single_line(_reject_nul(value))
+
+    @field_validator("condition_description")
+    @classmethod
+    def _description_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class VariantPublic(BaseModel):
+    """MVP-38: one immutable Variant. Public ids only (``VAR-…``, ``EXP-…``,
+    ``EXD-…``) — no internal UUID. No role, weight, status, metric, result or
+    validity field exists."""
+
+    id: str
+    experiment_id: str
+    definition_version_id: str
+    ordinal: int
+    label: str
+    condition_description: str
+    created_at: datetime
+
+
+class VariantListResponse(BaseModel):
+    experiment_id: str
+    items: list[VariantPublic]
+    limit: int
+    offset: int
+    total: int
+
+
+def variant_to_public(
+    variant: ExperimentVariant, *, experiment_public_id: str, definition_version_public_id: str
+) -> VariantPublic:
+    return VariantPublic(
+        id=variant.public_id,
+        experiment_id=experiment_public_id,
+        definition_version_id=definition_version_public_id,
+        ordinal=variant.ordinal,
+        label=variant.label,
+        condition_description=variant.condition_description,
+        created_at=variant.created_at,
+    )

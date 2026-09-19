@@ -5,7 +5,8 @@
 // (no definition yet), read the current tip with its safe declaration-only
 // label, and revise (a preloaded full-state form that appends a new
 // immutable version). There is no history UI, no Variant UI, no measurement
-// UI and no execution UI — none of those exist in MVP-37.
+// UI and no execution UI — none of those exist in MVP-37. (MVP-38 renders the
+// declared-conditions child section below once a definition exists.)
 //
 // DECLARED != PRE-REGISTERED. DECLARED CONTROLLED INTENT != CONTROLLED
 // EXPERIMENT. Nothing here claims validity, causality, a result, a winner,
@@ -23,6 +24,7 @@ import { declareExperimentDefinition } from "@/lib/api/strategy";
 import { ApiError } from "@/lib/api/client";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { ComparisonType, ExperimentPublic } from "@/types/strategy";
+import { ExperimentVariantsSection } from "./experiment-variants-section";
 
 const PROSE_MAX = 1000;
 const FACTOR_MAX = 200;
@@ -150,6 +152,8 @@ function describeDefinitionError(error: unknown): string {
         return "La definición cambió mientras la editabas. Se actualizó la vista con la versión vigente; revísala y vuelve a intentar.";
       case "EXPERIMENT_DEFINITION_STRATEGY_STALE":
         return "Este experimento pertenece a una versión de la estrategia que ya no es la vigente, por lo que su definición no puede modificarse.";
+      case "EXPERIMENT_DEFINITION_PINNED":
+        return "Esta versión de la definición está fijada por condiciones declaradas, por lo que no admite una nueva versión.";
       case "EXPERIMENT_DEFINITION_UNCHANGED":
         return "No hay cambios respecto a la definición vigente.";
       case "IDEMPOTENCY_KEY_CONFLICT":
@@ -226,7 +230,11 @@ export function ExperimentDefinitionSection({
         clientRequestIdRef.current = crypto.randomUUID();
       }
       setError(describeDefinitionError(caught));
-      if (code === "EXPERIMENT_DEFINITION_BASE_STALE" || code === "EXPERIMENT_DEFINITION_STRATEGY_STALE") {
+      if (
+        code === "EXPERIMENT_DEFINITION_BASE_STALE" ||
+        code === "EXPERIMENT_DEFINITION_STRATEGY_STALE" ||
+        code === "EXPERIMENT_DEFINITION_PINNED"
+      ) {
         // Never silently rebase a stale draft over a newer tip: discard it,
         // close the form and refetch the current state.
         closeForm();
@@ -288,10 +296,28 @@ export function ExperimentDefinitionSection({
 
       {canDeclareDefinition(role) && !open && (
         <div className="settings-form-actions" style={{ marginTop: 8 }}>
-          <button type="button" className="button" onClick={openForm}>
+          {/* The backend remains authoritative (EXPERIMENT_DEFINITION_PINNED);
+              disabling here only avoids a doomed request. */}
+          <button type="button" className="button" disabled={definition?.is_pinned === true} onClick={openForm}>
             {definition ? "Revisar comparación" : "Declarar comparación"}
           </button>
+          {definition?.is_pinned === true && (
+            <span className="muted small-text">
+              {" "}
+              La definición está fijada por condiciones declaradas y no admite una nueva versión.
+            </span>
+          )}
         </div>
+      )}
+
+      {definition && (
+        <ExperimentVariantsSection
+          campaignId={campaignId}
+          experiment={experiment}
+          definition={definition}
+          role={role}
+          onChanged={onChanged}
+        />
       )}
 
       {open && (

@@ -24,6 +24,7 @@ from app.orchestration.models import RunStageExecution
 from app.strategy.models import (
     Experiment,
     ExperimentDefinitionVersion,
+    ExperimentVariant,
     Hypothesis,
     HypothesisStatus,
     Positioning,
@@ -354,6 +355,20 @@ class ExperimentDefinitionRepository:
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
 
+    def get_by_public_id_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str
+    ) -> ExperimentDefinitionVersion | None:
+        """MVP-38: resolves a version by its public ``EXD-…`` id strictly
+        inside one Experiment (and workspace) — never a global lookup, so an
+        id belonging to another Experiment/tenant is simply not found."""
+        return self.session.execute(
+            select(ExperimentDefinitionVersion).where(
+                ExperimentDefinitionVersion.experiment_id == experiment_id,
+                ExperimentDefinitionVersion.workspace_id == workspace_id,
+                ExperimentDefinitionVersion.public_id == public_id,
+            )
+        ).scalar_one_or_none()
+
     def get_tip(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> ExperimentDefinitionVersion | None:
         return self.session.execute(
             select(ExperimentDefinitionVersion)
@@ -397,3 +412,120 @@ class ExperimentDefinitionRepository:
             .order_by(ExperimentDefinitionVersion.version.asc())
         ).scalars()
         return {row.experiment_id: row for row in rows}
+
+
+class ExperimentVariantRepository:
+    """MVP-38: data access for ``ExperimentVariant``. Append-only by
+    construction — exactly one write method (``create``), no update or
+    delete. No method here calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        experiment_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        definition_version_id: uuid.UUID,
+        ordinal: int,
+        label: str,
+        condition_description: str,
+        client_request_id: str,
+    ) -> ExperimentVariant:
+        row = ExperimentVariant(
+            public_id=generate_public_id("VAR"),
+            workspace_id=workspace_id,
+            experiment_id=experiment_id,
+            definition_version_id=definition_version_id,
+            ordinal=ordinal,
+            label=label,
+            condition_description=condition_description,
+            client_request_id=client_request_id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExperimentVariant | None:
+        return self.session.execute(
+            select(ExperimentVariant)
+            .where(
+                ExperimentVariant.workspace_id == workspace_id,
+                ExperimentVariant.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def list_labels_for_version(self, *, definition_version_id: uuid.UUID) -> list[str]:
+        """Only the ``label`` column of every Variant of one version (used
+        for the normalized duplicate check under the Experiment lock)."""
+        return list(
+            self.session.execute(
+                select(ExperimentVariant.label).where(ExperimentVariant.definition_version_id == definition_version_id)
+            ).scalars()
+        )
+
+    def max_ordinal_for_version(self, *, definition_version_id: uuid.UUID) -> int:
+        value = self.session.execute(
+            select(func.max(ExperimentVariant.ordinal)).where(
+                ExperimentVariant.definition_version_id == definition_version_id
+            )
+        ).scalar_one_or_none()
+        return int(value) if value is not None else 0
+
+    def exists_for_definition_version(self, *, definition_version_id: uuid.UUID) -> bool:
+        return (
+            self.session.execute(
+                select(ExperimentVariant.id)
+                .where(ExperimentVariant.definition_version_id == definition_version_id)
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+    def counts_for_versions(
+        self, *, definition_version_ids: list[uuid.UUID], workspace_id: uuid.UUID
+    ) -> dict[uuid.UUID, int]:
+        """One grouped query for any number of versions (no N+1)."""
+        if not definition_version_ids:
+            return {}
+        rows = self.session.execute(
+            select(ExperimentVariant.definition_version_id, func.count(ExperimentVariant.id))
+            .where(
+                ExperimentVariant.definition_version_id.in_(definition_version_ids),
+                ExperimentVariant.workspace_id == workspace_id,
+            )
+            .group_by(ExperimentVariant.definition_version_id)
+        ).all()
+        return {version_id: count for version_id, count in rows}
+
+    def count_for_experiment(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> int:
+        return int(
+            self.session.execute(
+                select(func.count(ExperimentVariant.id)).where(
+                    ExperimentVariant.experiment_id == experiment_id,
+                    ExperimentVariant.workspace_id == workspace_id,
+                )
+            ).scalar_one()
+        )
+
+    def list_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, limit: int, offset: int
+    ) -> list[tuple[ExperimentVariant, ExperimentDefinitionVersion]]:
+        """Deterministic page: ordered by the pinned version's ordinal and
+        then the Variant's ordinal — never by ``created_at``."""
+        rows = self.session.execute(
+            select(ExperimentVariant, ExperimentDefinitionVersion)
+            .join(ExperimentDefinitionVersion, ExperimentVariant.definition_version_id == ExperimentDefinitionVersion.id)
+            .where(
+                ExperimentVariant.experiment_id == experiment_id,
+                ExperimentVariant.workspace_id == workspace_id,
+            )
+            .order_by(ExperimentDefinitionVersion.version.asc(), ExperimentVariant.ordinal.asc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [(variant, version) for variant, version in rows]

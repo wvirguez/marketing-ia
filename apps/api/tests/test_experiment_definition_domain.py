@@ -152,7 +152,8 @@ def test_only_the_two_known_unique_violations_are_translated(db_session, monkeyp
 def test_writer_surface_is_append_only() -> None:
     public = {name for name in dir(ExperimentDefinitionRepository) if not name.startswith("_")}
     assert public == {
-        "create", "get_by_workspace_and_request_id", "get_tip", "list_for_experiment", "tips_for_experiments",
+        "create", "get_by_workspace_and_request_id", "get_by_public_id_for_experiment", "get_tip",
+        "list_for_experiment", "tips_for_experiments",
     }
     assert not {name for name in dir(ExperimentDefinitionService) if name.startswith(("update", "delete", "edit"))}
     assert hasattr(ExperimentDefinitionService, "write_version")

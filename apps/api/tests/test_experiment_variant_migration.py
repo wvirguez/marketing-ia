@@ -1,8 +1,8 @@
-"""MVP-37 reproducible round trip for the Experiment Definition migration
-(``7c2e91b4d0a8``, down_revision ``41687fa37c1c``) against the dedicated,
+"""MVP-38 reproducible round trip for the Governed Variant Identity migration
+(``b41d7a90c2e5``, down_revision ``7c2e91b4d0a8``) against the dedicated,
 disposable migration database, plus model <-> DB parity against the
 ``create_all`` application-test database — mirrors
-``tests/test_commercial_outcome_migration.py``, one migration later."""
+``tests/test_experiment_definition_migration.py``, one migration later."""
 import logging
 import os
 
@@ -16,9 +16,11 @@ from app.persistence.testing import assert_safe_test_database_url
 
 pytestmark = pytest.mark.postgres
 
-REVISION = "7c2e91b4d0a8"
-PREDECESSOR = "41687fa37c1c"
-TABLE = "experiment_definition_versions"
+REVISION = "b41d7a90c2e5"
+PREDECESSOR = "7c2e91b4d0a8"
+TABLE = "experiment_variants"
+VERSIONS = "experiment_definition_versions"
+CANDIDATE_KEY = "uq_experiment_definition_versions_id_experiment_workspace"
 
 _CONSTRAINT_DEFS = """
     select conname, contype, pg_get_constraintdef(oid) as definition
@@ -47,26 +49,21 @@ def _restore_logging_state_after_alembic():
                 logger.disabled = disabled
 
 
-def test_migration_is_a_single_step_after_its_predecessor_and_is_an_ancestor_of_the_single_head():
-    # MVP-38 added a successor migration, so this revision is no longer the
-    # head itself — it must remain a single step after its predecessor and
-    # an ancestor of the one and only head.
+def test_migration_is_a_single_step_after_its_predecessor_and_is_current_head():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     assert script.get_revision(REVISION).down_revision == PREDECESSOR
-    heads = script.get_heads()
-    assert len(heads) == 1
-    assert REVISION in {revision.revision for revision in script.walk_revisions(base="base", head=heads[0])}
+    assert script.get_heads() == [REVISION]
 
 
-def _constraint_definitions(engine) -> dict[str, tuple[str, str]]:
+def _constraint_definitions(engine, table) -> dict[str, tuple[str, str]]:
     with engine.connect() as connection:
         return {
             row.conname: (row.contype, row.definition)
-            for row in connection.execute(text(_CONSTRAINT_DEFS), {"table": TABLE})
+            for row in connection.execute(text(_CONSTRAINT_DEFS), {"table": table})
         }
 
 
-def test_experiment_definition_migration_round_trip(monkeypatch, postgres_engine):
+def test_variant_migration_round_trip(monkeypatch, postgres_engine):
     url = os.environ.get("TEST_MIGRATIONS_DATABASE_URL")
     if not url:
         pytest.skip("TEST_MIGRATIONS_DATABASE_URL requires a separate disposable PostgreSQL database")
@@ -83,94 +80,93 @@ def test_experiment_definition_migration_round_trip(monkeypatch, postgres_engine
         command.upgrade(config, PREDECESSOR)
         inspector = inspect(engine)
         assert TABLE not in inspector.get_table_names()
-        assert "experiment_definition_version_id" not in {c["name"] for c in inspector.get_columns("audit_events")}
+        assert "experiment_variant_id" not in {c["name"] for c in inspector.get_columns("audit_events")}
+        assert CANDIDATE_KEY not in {u["name"] for u in inspector.get_unique_constraints(VERSIONS)}
         with engine.connect() as connection:
             assert connection.scalar(text("select version_num from alembic_version")) == PREDECESSOR
 
         for cycle in range(2):
-            command.upgrade(config, REVISION)
+            command.upgrade(config, "head")
             inspector = inspect(engine)
 
-            from app.strategy.models import ExperimentDefinitionVersion
+            from app.strategy.models import ExperimentVariant
 
-            table = ExperimentDefinitionVersion.__table__
+            table = ExperimentVariant.__table__
             columns = inspector.get_columns(TABLE)
             assert {c["name"] for c in columns} == set(table.columns.keys())
             assert {c["name"]: c["nullable"] for c in columns} == {c.name: c.nullable for c in table.columns}
-            # Frozen MVP-37B: none of these may ever exist on the version table.
+            # Frozen MVP-38B: none of these may ever exist on the Variant table.
             assert not {
-                "updated_at", "created_by", "campaign_id", "status", "is_frozen", "is_locked", "variant_id",
-                "required_signal", "success_criterion", "allocation",
+                "role", "created_by", "updated_at", "status", "allocation", "weight", "traffic", "metric",
+                "success_criterion", "exposure", "winner", "result",
             } & {c["name"] for c in columns}
 
             fks = inspector.get_foreign_keys(TABLE)
             assert {tuple(fk["constrained_columns"]) for fk in fks} == {
                 tuple(c.name for c in fk.columns) for fk in table.foreign_key_constraints
             }
-            assert "fk_experiment_definition_versions_experiment_workspace" in {fk["name"] for fk in fks}
+            composite = next(fk for fk in fks if len(fk["constrained_columns"]) == 3)
+            assert composite["name"] == "fk_experiment_variants_definition_version_experiment_workspace"
+            assert composite["constrained_columns"] == ["definition_version_id", "experiment_id", "workspace_id"]
+            assert composite["referred_table"] == VERSIONS
+            assert composite["referred_columns"] == ["id", "experiment_id", "workspace_id"]
             assert all(fk["options"].get("ondelete") != "CASCADE" for fk in fks)
             assert all(len(fk["name"]) <= 63 for fk in fks)
             assert all(len(i["name"]) <= 63 for i in inspector.get_indexes(TABLE))
 
             uniques = {u["name"] for u in inspector.get_unique_constraints(TABLE)}
-            assert {
-                "uq_experiment_definition_versions_experiment_version",
-                "uq_experiment_definition_versions_workspace_client_request_id",
-            } <= uniques
+            assert uniques == {
+                "uq_experiment_variants_definition_version_label",
+                "uq_experiment_variants_definition_version_ordinal",
+                "uq_experiment_variants_workspace_client_request_id",
+            }
+            assert CANDIDATE_KEY in {u["name"] for u in inspector.get_unique_constraints(VERSIONS)}
             index_names = {i["name"] for i in inspector.get_indexes(TABLE)}
             assert {
-                "ix_experiment_definition_versions_public_id",
-                "ix_experiment_definition_versions_workspace_id",
-                "ix_experiment_definition_versions_experiment_id",
+                "ix_experiment_variants_public_id",
+                "ix_experiment_variants_workspace_id",
+                "ix_experiment_variants_experiment_id",
+                "ix_experiment_variants_definition_version_id",
             } <= index_names
             checks = {c["name"] for c in inspector.get_check_constraints(TABLE)}
             assert checks == {
-                "ck_experiment_definition_versions_comparison_type_valid",
-                "ck_experiment_definition_versions_version_positive",
-                "ck_experiment_definition_versions_controlled_factors_is_array",
-                "ck_experiment_definition_versions_controlled_factors_max_count",
-                "ck_experiment_definition_versions_controlled_needs_factors",
-                "ck_experiment_definition_versions_text_fields_nonblank",
+                "ck_experiment_variants_ordinal_positive",
+                "ck_experiment_variants_text_fields_nonblank",
             }
 
             audit_columns = {c["name"]: c["nullable"] for c in inspector.get_columns("audit_events")}
-            assert audit_columns["experiment_definition_version_id"] is True
-            audit_fks = inspector.get_foreign_keys("audit_events")
+            assert audit_columns["experiment_variant_id"] is True
             assert any(
-                fk["name"] == "fk_audit_events_experiment_definition_version_id"
-                and fk["constrained_columns"] == ["experiment_definition_version_id"]
+                fk["name"] == "fk_audit_events_experiment_variant_id_experiment_variants"
+                and fk["constrained_columns"] == ["experiment_variant_id"]
                 and fk["referred_table"] == TABLE
-                for fk in audit_fks
+                for fk in inspector.get_foreign_keys("audit_events")
             )
-            assert "ix_audit_events_experiment_definition_version_id" in {
-                i["name"] for i in inspector.get_indexes("audit_events")
-            }
+            assert "ix_audit_events_experiment_variant_id" in {i["name"] for i in inspector.get_indexes("audit_events")}
 
             with engine.connect() as connection:
                 assert connection.scalar(text(f"select count(*) from {TABLE}")) == 0
                 assert connection.scalar(text("select version_num from alembic_version")) == REVISION
 
-            # Model <-> DB parity: every constraint definition the migration
-            # produced is byte-identical to what the ORM metadata produced in the
-            # create_all application-test database.
-            # The ORM metadata now also carries MVP-38's additive candidate key, which
-            # does not exist at this revision — exclude exactly that one constraint.
-            model_definitions = _constraint_definitions(postgres_engine)
-            model_definitions.pop("uq_experiment_definition_versions_id_experiment_workspace", None)
-            assert _constraint_definitions(engine) == model_definitions
+            # Model <-> DB parity for BOTH tables the migration touches.
+            for name in (TABLE, VERSIONS):
+                assert _constraint_definitions(engine, name) == _constraint_definitions(postgres_engine, name), name
 
             if cycle == 0:
                 before = set(inspect(engine).get_table_names()) - {TABLE}
                 command.downgrade(config, PREDECESSOR)
                 inspector = inspect(engine)
                 assert TABLE not in inspector.get_table_names()
-                # Only the MVP-37 additions are removed — every other table
-                # (including the neighbouring Strategy/Commercial ones) is untouched.
+                # Only the MVP-38 additions are removed; MVP-37's table and constraints are intact.
                 assert set(inspector.get_table_names()) == before
-                assert "experiments" in before and "commercial_outcomes" in before
-                remaining_audit_columns = {c["name"] for c in inspector.get_columns("audit_events")}
-                assert "experiment_definition_version_id" not in remaining_audit_columns
-                assert "commercial_outcome_id" in remaining_audit_columns
+                assert VERSIONS in before
+                assert CANDIDATE_KEY not in {u["name"] for u in inspector.get_unique_constraints(VERSIONS)}
+                assert "uq_experiment_definition_versions_experiment_version" in {
+                    u["name"] for u in inspector.get_unique_constraints(VERSIONS)
+                }
+                remaining = {c["name"] for c in inspector.get_columns("audit_events")}
+                assert "experiment_variant_id" not in remaining
+                assert "experiment_definition_version_id" in remaining
                 with engine.connect() as connection:
                     assert connection.scalar(text("select version_num from alembic_version")) == PREDECESSOR
     finally:

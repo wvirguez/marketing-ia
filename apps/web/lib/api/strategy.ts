@@ -9,10 +9,13 @@ import type {
   CreateExperimentRequest,
   CreateHypothesisRequest,
   DeclareExperimentDefinitionRequest,
+  DeclareVariantRequest,
   ExperimentDefinitionPublic,
   ExperimentPublic,
   HypothesisPublic,
   StrategyOutputResponse,
+  VariantListResponse,
+  VariantPublic,
 } from "@/types/strategy";
 
 export async function getStrategy(campaignPublicId: string): Promise<StrategyOutputResponse> {
@@ -61,5 +64,35 @@ export async function declareExperimentDefinition(
   return request<ExperimentDefinitionPublic>(
     `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/definition-versions`,
     { method: "POST", body: payload },
+  );
+}
+
+// MVP-38: declares ONE immutable Variant (the identity of one declared
+// condition) pinned to the EXPLICITLY named current definition version.
+// Idempotent on client_request_id (201 new / 200 replay). Declaring a Variant
+// fixes the definition version; it is NOT allocation, exposure, measurement,
+// a result or execution authorization, and it cannot currently be corrected.
+export async function declareVariant(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  payload: DeclareVariantRequest,
+): Promise<VariantPublic> {
+  return request<VariantPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/variants`,
+    { method: "POST", body: payload },
+  );
+}
+
+// MVP-38: a deterministic page of the Experiment's declared Variants
+// (ordered by pinned version, then ordinal). limit <= 100.
+export async function listVariants(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  page: { limit: number; offset: number },
+): Promise<VariantListResponse> {
+  const query = `?limit=${encodeURIComponent(String(page.limit))}&offset=${encodeURIComponent(String(page.offset))}`;
+  return request<VariantListResponse>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/variants${query}`,
+    { method: "GET" },
   );
 }

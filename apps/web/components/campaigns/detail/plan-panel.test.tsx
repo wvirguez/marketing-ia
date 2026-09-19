@@ -242,6 +242,8 @@ describe("PlanPanel — Plan creation submission", () => {
               non_conclusion_boundary: "n",
               non_conclusion_codes: [],
               created_at: "2026-01-01T00:00:00Z",
+              variant_count: 0,
+              is_pinned: false,
             },
           }),
         ],

@@ -348,10 +348,12 @@ class ExperimentDefinitionVersion(Base, UUIDPrimaryKeyMixin):
     against ``experiments(id, workspace_id)``. No ``campaign_id`` — Campaign
     scoping stays a service-layer join (MVP-33A-R1 §F).
 
-    Future Variant lock (NOT implemented): a Variant will pin one version
-    and its existence will block further versions, enforced at the single
-    writer choke point ``ExperimentDefinitionService.write_version`` under
-    the canonical Strategy-then-Experiment lock order."""
+    Definition lock (MVP-38): an ``ExperimentVariant`` pins one version and
+    its existence blocks further versions. The lock is DERIVED (never
+    stored) and enforced at the single writer choke point
+    ``ExperimentDefinitionService.write_version`` under the canonical
+    Strategy-then-Experiment lock order. Experiment Definition governance
+    owns the lock; Variant is only its first implemented trigger."""
 
     __tablename__ = "experiment_definition_versions"
     __table_args__ = (
@@ -361,6 +363,14 @@ class ExperimentDefinitionVersion(Base, UUIDPrimaryKeyMixin):
             name="fk_experiment_definition_versions_experiment_workspace",
         ),
         UniqueConstraint("experiment_id", "version", name="uq_experiment_definition_versions_experiment_version"),
+        # MVP-38: candidate key purely so ``experiment_variants`` (and any
+        # future pinning child) can declare a composite tenant- and
+        # Experiment-safe FK on (definition_version_id, experiment_id,
+        # workspace_id). ``id`` is already unique, so every existing row
+        # satisfies it — no backfill.
+        UniqueConstraint(
+            "id", "experiment_id", "workspace_id", name="uq_experiment_definition_versions_id_experiment_workspace"
+        ),
         UniqueConstraint(
             "workspace_id", "client_request_id", name="uq_experiment_definition_versions_workspace_client_request_id"
         ),
@@ -397,5 +407,73 @@ class ExperimentDefinitionVersion(Base, UUIDPrimaryKeyMixin):
     scope: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
     learning_intent: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
     non_conclusion_boundary: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+EXPERIMENT_VARIANT_LABEL_MAX_LENGTH = 200
+EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH = 1000
+
+
+class ExperimentVariant(Base, UUIDPrimaryKeyMixin):
+    """MVP-38 (frozen MVP-38A/-38B): the immutable governed identity of ONE
+    declared condition of one Experiment, bound to ONE immutable
+    ``ExperimentDefinitionVersion``.
+
+    VARIANT IDENTITY != ALLOCATION != RANDOMIZATION != EXPOSURE !=
+    MEASUREMENT != RESULT != WINNER != CAUSALITY != EXECUTION
+    AUTHORIZATION. Nothing here is a role (control/treatment), a weight, a
+    metric, a criterion, a status, or a link to content, distribution,
+    evidence or commercial outcomes — no such column exists.
+
+    Immutable and append-only by absence: no ``updated_at``, no
+    ``created_by`` (the audit event carries the actor), no repository
+    update/delete method, no correction, supersession or retirement.
+    CURRENT MVP-38 CAPABILITY LIMIT: an erroneous committed Variant cannot
+    be repaired in place because no governed correction/invalidation path
+    exists yet (MVP38A-OBS-3).
+
+    Parentage: composite FK ``(definition_version_id, experiment_id,
+    workspace_id)`` to ``experiment_definition_versions`` — the database
+    proves the Variant's Experiment and workspace equal the pinned
+    version's. ``ordinal`` is the 1-based declaration order within the
+    pinned version, assigned under the Experiment row lock
+    (``created_at`` is transaction-start time and is NOT authoritative
+    order). There is deliberately NO maximum number of Variants.
+
+    Normalized-label uniqueness (casefold/whitespace-collapsed) is enforced
+    by the service under the Experiment lock; the database backstops only
+    the exact string (MVP38A-OBS-1)."""
+
+    __tablename__ = "experiment_variants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["definition_version_id", "experiment_id", "workspace_id"],
+            [
+                "experiment_definition_versions.id",
+                "experiment_definition_versions.experiment_id",
+                "experiment_definition_versions.workspace_id",
+            ],
+            name="fk_experiment_variants_definition_version_experiment_workspace",
+        ),
+        UniqueConstraint("definition_version_id", "label", name="uq_experiment_variants_definition_version_label"),
+        UniqueConstraint("definition_version_id", "ordinal", name="uq_experiment_variants_definition_version_ordinal"),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_experiment_variants_workspace_client_request_id"
+        ),
+        CheckConstraint("ordinal >= 1", name="ordinal_positive"),
+        CheckConstraint(
+            "char_length(btrim(label)) > 0 AND char_length(btrim(condition_description)) > 0",
+            name="text_fields_nonblank",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    definition_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    ordinal: Mapped[int] = mapped_column(Integer)
+    label: Mapped[str] = mapped_column(String(EXPERIMENT_VARIANT_LABEL_MAX_LENGTH))
+    condition_description: Mapped[str] = mapped_column(String(EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH))
     client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

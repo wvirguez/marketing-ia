@@ -10,6 +10,8 @@ vi.mock("@/lib/api/strategy", () => ({
   createHypothesis: vi.fn(),
   createExperiment: vi.fn(),
   declareExperimentDefinition: vi.fn(),
+  declareVariant: vi.fn(),
+  listVariants: vi.fn(),
 }));
 vi.mock("@/lib/api/strategic-approvals", () => ({
   getStrategicApprovals: vi.fn(),
@@ -295,6 +297,8 @@ describe("StrategyPanel — Experiment Definition (MVP-37)", () => {
     non_conclusion_boundary: "Does not establish causality.",
     non_conclusion_codes: ["NO_ATTRIBUTION_ESTABLISHED", "CANNOT_ESTABLISH_CAUSALITY"],
     created_at: "2026-01-01T00:00:00Z",
+    variant_count: 0,
+    is_pinned: false,
   };
 
   it("shows the no-comparison state and a declare control under a definition-less experiment", async () => {

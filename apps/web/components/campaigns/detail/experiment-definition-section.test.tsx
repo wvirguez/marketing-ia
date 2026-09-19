@@ -7,9 +7,11 @@ import type { ExperimentDefinitionPublic, ExperimentPublic } from "@/types/strat
 
 vi.mock("@/lib/api/strategy", () => ({
   declareExperimentDefinition: vi.fn(),
+  declareVariant: vi.fn(),
+  listVariants: vi.fn(),
 }));
 
-import { declareExperimentDefinition } from "@/lib/api/strategy";
+import { declareExperimentDefinition, listVariants } from "@/lib/api/strategy";
 
 const mockDeclare = vi.mocked(declareExperimentDefinition);
 
@@ -35,6 +37,8 @@ function definition(overrides: Partial<ExperimentDefinitionPublic> = {}): Experi
       "CANNOT_ESTABLISH_CAUSALITY",
     ],
     created_at: "2026-01-01T00:00:00Z",
+    variant_count: 0,
+    is_pinned: false,
     ...overrides,
   };
 }
@@ -89,6 +93,7 @@ function fillValid(overrides: Record<string, string> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listVariants).mockResolvedValue({ experiment_id: "EXP-1", items: [], limit: 100, offset: 0, total: 0 });
   uuidCounter = 0;
   vi.spyOn(crypto, "randomUUID").mockImplementation(
     () => `uuid-${++uuidCounter}` as ReturnType<typeof crypto.randomUUID>,
@@ -427,5 +432,37 @@ describe("ExperimentDefinitionSection — stale and conflict handling", () => {
     expect(mockDeclare).toHaveBeenCalledTimes(1);
     resolveWrite(definition());
     await waitFor(() => expect(screen.queryByLabelText("Alcance")).not.toBeInTheDocument());
+  });
+});
+
+describe("ExperimentDefinitionSection — pinned definition (MVP-38)", () => {
+  it("disables the revision control with an explanation when the definition is pinned", () => {
+    renderSection(defined({ variant_count: 2, is_pinned: true }));
+    expect(screen.getByText("Revisar comparación")).toBeDisabled();
+    expect(screen.getByText(/está fijada por condiciones declaradas y no admite una nueva versión/)).toBeInTheDocument();
+    expect(screen.getByText("Condiciones declaradas")).toBeInTheDocument();
+  });
+
+  it("keeps the revision control enabled while no condition is declared, and renders the conditions child", () => {
+    renderSection(defined());
+    expect(screen.getByText("Revisar comparación")).toBeEnabled();
+    expect(screen.getByText("Condiciones declaradas")).toBeInTheDocument();
+    expect(screen.getByText("Agregar condición")).toBeInTheDocument();
+  });
+
+  it("does not render the conditions child without a definition", () => {
+    renderSection(experiment());
+    expect(screen.queryByText("Condiciones declaradas")).not.toBeInTheDocument();
+  });
+
+  it("on a backend PINNED conflict closes the revision form, refetches, and explains — the backend stays authoritative", async () => {
+    mockDeclare.mockRejectedValue(new ApiError(409, "EXPERIMENT_DEFINITION_PINNED", "pinned"));
+    const { onChanged } = renderSection(defined());
+    await userEvent.click(screen.getByText("Revisar comparación"));
+    set("Alcance", "A draft that races a declared condition.");
+    await userEvent.click(screen.getByText("Confirmar revisión"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/está fijada por condiciones declaradas, por lo que no admite una nueva versión/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Alcance")).not.toBeInTheDocument();
   });
 });

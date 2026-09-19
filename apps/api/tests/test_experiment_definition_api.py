@@ -144,8 +144,9 @@ def test_first_declaration_creates_version_one(campaign_run_client: dict) -> Non
     assert set(data) == {
         "id", "experiment_id", "version", "comparison_question", "comparison_type", "changed_factor",
         "controlled_factors", "comparison_basis", "scope", "learning_intent", "non_conclusion_boundary",
-        "non_conclusion_codes", "created_at",
+        "non_conclusion_codes", "created_at", "variant_count", "is_pinned",
     }
+    assert data["variant_count"] == 0 and data["is_pinned"] is False
 
 
 def test_revision_appends_version_two_and_keeps_version_one_immutable(campaign_run_client: dict) -> None:
@@ -781,19 +782,24 @@ def test_definition_makes_no_experimental_claim(campaign_run_client: dict) -> No
         "changed_factor", "controlled_factors", "comparison_basis", "scope", "learning_intent",
         "non_conclusion_boundary", "client_request_id", "created_at",
     }
+    # MVP-38: Variant identity is now intentionally governed, so the firewall is
+    # semantic — no allocation / randomization / contamination / execution table.
     assert not [
-        t for t in Base.metadata.tables if any(word in t for word in ("variant", "allocation", "randomiz", "contamination"))
+        t for t in Base.metadata.tables
+        if any(word in t for word in ("allocation", "randomiz", "contamination", "execution_auth"))
     ]
 
 
-def test_route_surface_adds_exactly_the_two_frozen_routes() -> None:
+def test_route_surface_adds_exactly_the_frozen_definition_and_variant_routes() -> None:
     from app.main import create_app
 
     spec = create_app().openapi()["paths"]
     pairs = {(method.upper(), path) for path, item in spec.items() for method in item if method in {"get", "post", "put", "patch", "delete"}}
-    assert len(pairs) == 99  # 97 before MVP-37 + exactly the two frozen definition routes
+    assert len(pairs) == 101  # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38)
+    prefix = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}"
     definition_pairs = {(m, p) for m, p in pairs if "definition" in p}
-    route = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}/definition-versions"
-    assert definition_pairs == {("POST", route), ("GET", route)}
-    for word in ("variant", "allocation", "randomiz", "execution", "contamination", "winner", "measurement-contract"):
+    assert definition_pairs == {("POST", f"{prefix}/definition-versions"), ("GET", f"{prefix}/definition-versions")}
+    variant_pairs = {(m, p) for m, p in pairs if "variant" in p}
+    assert variant_pairs == {("POST", f"{prefix}/variants"), ("GET", f"{prefix}/variants")}
+    for word in ("allocation", "randomiz", "execution", "contamination", "winner", "measurement-contract"):
         assert not [p for _, p in pairs if word in p], word
