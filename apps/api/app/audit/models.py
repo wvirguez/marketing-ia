@@ -248,6 +248,20 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
     commercial_outcome_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("commercial_outcomes.id"), default=None, index=True
     )
+    # MVP-37: same reasoning as commercial_outcome_id above — a
+    # strategy.experiment_definition.declared/...revised event must
+    # identify its exact ExperimentDefinitionVersion row. Nullable,
+    # single-column, matching every other AuditEvent subject FK exactly —
+    # no composite audit FK, no AuditEvent-specific candidate key. Explicit,
+    # shortened FK name: the naming convention's own derived name
+    # ("fk_audit_events_experiment_definition_version_id_experiment_
+    # definition_versions") is 79 characters, over PostgreSQL's 63-character
+    # identifier limit.
+    experiment_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("experiment_definition_versions.id", name="fk_audit_events_experiment_definition_version_id"),
+        default=None,
+        index=True,
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

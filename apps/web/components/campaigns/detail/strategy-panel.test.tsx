@@ -9,6 +9,7 @@ vi.mock("@/lib/api/strategy", () => ({
   getStrategy: vi.fn(),
   createHypothesis: vi.fn(),
   createExperiment: vi.fn(),
+  declareExperimentDefinition: vi.fn(),
 }));
 vi.mock("@/lib/api/strategic-approvals", () => ({
   getStrategicApprovals: vi.fn(),
@@ -24,7 +25,7 @@ vi.mock("@/lib/auth/auth-context", () => ({
   useAuth: vi.fn(),
 }));
 
-import { createExperiment, createHypothesis, getStrategy } from "@/lib/api/strategy";
+import { createExperiment, createHypothesis, declareExperimentDefinition, getStrategy } from "@/lib/api/strategy";
 import { getStrategicApprovals } from "@/lib/api/strategic-approvals";
 import { getStrategicDecisions } from "@/lib/api/strategic-decisions";
 import { getStrategyHistory } from "@/lib/api/strategy-revisions";
@@ -33,6 +34,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 const mockGetStrategy = vi.mocked(getStrategy);
 const mockCreateHypothesis = vi.mocked(createHypothesis);
 const mockCreateExperiment = vi.mocked(createExperiment);
+const mockDeclareDefinition = vi.mocked(declareExperimentDefinition);
 const mockGetApprovals = vi.mocked(getStrategicApprovals);
 const mockGetDecisions = vi.mocked(getStrategicDecisions);
 const mockGetHistory = vi.mocked(getStrategyHistory);
@@ -92,6 +94,8 @@ function experiment(overrides: Partial<ExperimentPublic> = {}): ExperimentPublic
     description: "A/B test two onboarding email sequences against a held-out control group.",
     status: "RECORDED",
     created_at: "2026-01-01T00:00:00Z",
+    comparison_label: "NO_COMPARISON_DECLARED",
+    definition: null,
     ...overrides,
   };
 }
@@ -273,5 +277,93 @@ describe("StrategyPanel — Experiment creation submission", () => {
 
     expect(screen.queryByLabelText("Nuevo experimento")).not.toBeInTheDocument();
     expect(mockCreateExperiment).not.toHaveBeenCalled();
+  });
+});
+
+describe("StrategyPanel — Experiment Definition (MVP-37)", () => {
+  const observationalTip = {
+    id: "EXD-1",
+    experiment_id: "EXP-1",
+    version: 1,
+    comparison_question: "Does a question hook change completion?",
+    comparison_type: "OBSERVATIONAL" as const,
+    changed_factor: "Opening hook",
+    controlled_factors: [],
+    comparison_basis: "The current hook.",
+    scope: "Reels, one month.",
+    learning_intent: "Choose the next hook style.",
+    non_conclusion_boundary: "Does not establish causality.",
+    non_conclusion_codes: ["NO_ATTRIBUTION_ESTABLISHED", "CANNOT_ESTABLISH_CAUSALITY"],
+    created_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("shows the no-comparison state and a declare control under a definition-less experiment", async () => {
+    mockAuth("MEMBER");
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()], experiments: [experiment()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Sin comparación declarada")).toBeInTheDocument());
+    expect(screen.getByText("Declarar comparación")).toBeInTheDocument();
+    // The Experiment's own status is untouched by the definition surface.
+    expect(screen.getByText("RECORDED")).toBeInTheDocument();
+  });
+
+  it("shows the declared tip with its declaration-only label", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValue(
+      output({
+        hypotheses: [hypothesis()],
+        experiments: [
+          experiment({ comparison_label: "DECLARED_OBSERVATIONAL_INTENT", definition: observationalTip }),
+        ],
+      }),
+    );
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Comparación observacional declarada")).toBeInTheDocument());
+    expect(screen.getByText("Revisar comparación")).toBeInTheDocument();
+    expect(screen.getByText("Una comparación observacional no puede establecer causalidad.")).toBeInTheDocument();
+  });
+
+  it("declaring a comparison refetches the strategy output and shows the new tip", async () => {
+    mockAuth("OWNER");
+    mockGetStrategy.mockResolvedValueOnce(output({ hypotheses: [hypothesis()], experiments: [experiment()] }));
+    mockDeclareDefinition.mockResolvedValue(observationalTip);
+    mockGetStrategy.mockResolvedValueOnce(
+      output({
+        hypotheses: [hypothesis()],
+        experiments: [
+          experiment({ comparison_label: "DECLARED_OBSERVATIONAL_INTENT", definition: observationalTip }),
+        ],
+      }),
+    );
+
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Declarar comparación")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Declarar comparación"));
+    for (const [label, value] of [
+      ["Pregunta de comparación", "Does a question hook change completion?"],
+      ["Factor que cambia", "Opening hook"],
+      ["Base de comparación", "The current hook."],
+      ["Alcance", "Reels, one month."],
+      ["Intención de aprendizaje", "Choose the next hook style."],
+      ["Límite de conclusión (lo que esta comparación NO establece)", "Does not establish causality."],
+    ] as const) {
+      await userEvent.type(screen.getByLabelText(label), value);
+    }
+    await userEvent.click(screen.getByText("Confirmar comparación"));
+
+    await waitFor(() => expect(mockDeclareDefinition).toHaveBeenCalledTimes(1));
+    expect(mockDeclareDefinition.mock.calls[0][0]).toBe("campaign-1");
+    expect(mockDeclareDefinition.mock.calls[0][1]).toBe("EXP-1");
+    expect(mockDeclareDefinition.mock.calls[0][2].base_version).toBe(0);
+    await waitFor(() => expect(screen.getByText("Comparación observacional declarada")).toBeInTheDocument());
+    expect(mockGetStrategy).toHaveBeenCalledTimes(2);
+  });
+
+  it("an unauthenticated viewer never sees the declare control", async () => {
+    mockAuth(null);
+    mockGetStrategy.mockResolvedValue(output({ hypotheses: [hypothesis()], experiments: [experiment()] }));
+    render(<StrategyPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Sin comparación declarada")).toBeInTheDocument());
+    expect(screen.queryByText("Declarar comparación")).not.toBeInTheDocument();
   });
 });

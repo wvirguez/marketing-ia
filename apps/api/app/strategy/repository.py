@@ -21,7 +21,15 @@ from sqlalchemy.orm import Session
 from app.campaigns.models import Campaign, CampaignRun
 from app.core.ids import generate_public_id
 from app.orchestration.models import RunStageExecution
-from app.strategy.models import Experiment, Hypothesis, HypothesisStatus, Positioning, Strategy, StrategyOrigin
+from app.strategy.models import (
+    Experiment,
+    ExperimentDefinitionVersion,
+    Hypothesis,
+    HypothesisStatus,
+    Positioning,
+    Strategy,
+    StrategyOrigin,
+)
 
 
 class StrategyRepository:
@@ -175,6 +183,11 @@ class HypothesisRepository:
             query = query.with_for_update()
         return self.session.execute(query).scalar_one_or_none()
 
+    def get_by_id(self, hypothesis_id: uuid.UUID) -> Hypothesis | None:
+        """MVP-37: resolves a Hypothesis from an already-trusted internal FK
+        reference (``Experiment.hypothesis_id``) — read-only."""
+        return self.session.execute(select(Hypothesis).where(Hypothesis.id == hypothesis_id)).scalar_one_or_none()
+
     def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> Hypothesis | None:
         """MVP-32B: non-leaky, campaign-scoped resource lookup — identical
         discipline to every other bounded context's own
@@ -254,12 +267,17 @@ class ExperimentRepository:
             .all()
         )
 
-    def get_by_id(self, experiment_id: uuid.UUID) -> Experiment | None:
+    def get_by_id(self, experiment_id: uuid.UUID, *, for_update: bool = False) -> Experiment | None:
         """MVP-33B: resolves an Experiment from an already-trusted internal
         FK reference (e.g. ``ContentPlan.experiment_id``) — read-only, for
         readback/public-serialization use only, mirrors
-        ``StrategyRepository.get_by_id`` exactly."""
-        return self.session.execute(select(Experiment).where(Experiment.id == experiment_id)).scalar_one_or_none()
+        ``StrategyRepository.get_by_id`` exactly. MVP-37: ``for_update``
+        takes the Experiment row lock that serializes Definition-version
+        writes (canonical order: Strategy row, then this row)."""
+        query = select(Experiment).where(Experiment.id == experiment_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
 
     def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> Experiment | None:
         """MVP-33B (MVP-33A-R1 §I, frozen): non-leaky, campaign-scoped
@@ -280,3 +298,102 @@ class ExperimentRepository:
             .join(Strategy, Hypothesis.strategy_id == Strategy.id)
             .where(Strategy.campaign_id == campaign_id, Experiment.public_id == public_id)
         ).scalar_one_or_none()
+
+
+class ExperimentDefinitionRepository:
+    """MVP-37: data access for ``ExperimentDefinitionVersion``. Append-only
+    by construction — exactly one write method (``create``), no update or
+    delete method exists. No method here calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        experiment: Experiment,
+        version: int,
+        client_request_id: str,
+        comparison_question: str,
+        comparison_type: str,
+        changed_factor: str,
+        controlled_factors: list[str],
+        comparison_basis: str,
+        scope: str,
+        learning_intent: str,
+        non_conclusion_boundary: str,
+    ) -> ExperimentDefinitionVersion:
+        row = ExperimentDefinitionVersion(
+            public_id=generate_public_id("EXD"),
+            workspace_id=experiment.workspace_id,
+            experiment_id=experiment.id,
+            version=version,
+            client_request_id=client_request_id,
+            comparison_question=comparison_question,
+            comparison_type=comparison_type,
+            changed_factor=changed_factor,
+            controlled_factors=list(controlled_factors),
+            comparison_basis=comparison_basis,
+            scope=scope,
+            learning_intent=learning_intent,
+            non_conclusion_boundary=non_conclusion_boundary,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExperimentDefinitionVersion | None:
+        return self.session.execute(
+            select(ExperimentDefinitionVersion)
+            .where(
+                ExperimentDefinitionVersion.workspace_id == workspace_id,
+                ExperimentDefinitionVersion.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_tip(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> ExperimentDefinitionVersion | None:
+        return self.session.execute(
+            select(ExperimentDefinitionVersion)
+            .where(
+                ExperimentDefinitionVersion.experiment_id == experiment_id,
+                ExperimentDefinitionVersion.workspace_id == workspace_id,
+            )
+            .order_by(ExperimentDefinitionVersion.version.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def list_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID
+    ) -> list[ExperimentDefinitionVersion]:
+        return list(
+            self.session.execute(
+                select(ExperimentDefinitionVersion)
+                .where(
+                    ExperimentDefinitionVersion.experiment_id == experiment_id,
+                    ExperimentDefinitionVersion.workspace_id == workspace_id,
+                )
+                .order_by(ExperimentDefinitionVersion.version.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def tips_for_experiments(
+        self, *, experiment_ids: list[uuid.UUID], workspace_id: uuid.UUID
+    ) -> dict[uuid.UUID, ExperimentDefinitionVersion]:
+        """The highest-version row per Experiment, for the Strategy read."""
+        if not experiment_ids:
+            return {}
+        rows = self.session.execute(
+            select(ExperimentDefinitionVersion)
+            .where(
+                ExperimentDefinitionVersion.experiment_id.in_(experiment_ids),
+                ExperimentDefinitionVersion.workspace_id == workspace_id,
+            )
+            .order_by(ExperimentDefinitionVersion.version.asc())
+        ).scalars()
+        return {row.experiment_id: row for row in rows}

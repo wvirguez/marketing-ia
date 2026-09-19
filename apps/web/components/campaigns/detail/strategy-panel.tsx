@@ -11,6 +11,7 @@ import { createExperiment, createHypothesis, getStrategy } from "@/lib/api/strat
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { HypothesisStatus, StrategyOutputResponse } from "@/types/strategy";
 import { DraftDisclosureBanner } from "./draft-disclosure-banner";
+import { ExperimentDefinitionSection } from "./experiment-definition-section";
 import { StrategyRevisionSection } from "./strategy-revision-section";
 
 type Result =
@@ -223,6 +224,12 @@ export function StrategyPanel({
                         <li key={experiment.id}>
                           <p>{experiment.description}</p>
                           <p className="muted small-text">{experiment.status ?? "Sin estado registrado"}</p>
+                          <ExperimentDefinitionSection
+                            campaignId={campaignId}
+                            experiment={experiment}
+                            role={role}
+                            onChanged={retry}
+                          />
                         </li>
                       ))}
                     </ul>

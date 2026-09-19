@@ -96,7 +96,19 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -294,3 +306,96 @@ class Experiment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # "creation default: OPEN"). Left NULL until a future stage with real
     # canonical status semantics assigns one.
     status: Mapped[str | None] = mapped_column(String(_EXPERIMENT_STATUS_MAX_LENGTH), default=None)
+
+
+class ComparisonType(str, enum.Enum):
+    """MVP-37 (frozen MVP-37B §C): the coarsest possible declared-intent
+    vocabulary. ``CONTROLLED`` is a declared design intent only — it is
+    never a validated experimental status, and no randomized/
+    non-randomized/sequential value exists (those belong to a future
+    allocation contract). Stored as a plain ``String(20)`` guarded by a
+    named CHECK, not a native PostgreSQL enum."""
+
+    OBSERVATIONAL = "OBSERVATIONAL"
+    CONTROLLED = "CONTROLLED"
+
+
+EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH = 1000
+EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH = 200
+EXPERIMENT_DEFINITION_MAX_CONTROLLED_FACTORS = 20
+EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH = 100
+
+
+class ExperimentDefinitionVersion(Base, UUIDPrimaryKeyMixin):
+    """MVP-37 (frozen MVP-37A/-37B): one immutable, append-only version of
+    an Experiment's declared comparison design. The logical "definition"
+    is the Experiment's own slot; this table holds its N versions
+    (``version`` starts at 1; the current tip is the highest ordinal).
+
+    DECLARATION != PRE-REGISTRATION. DEFINITION != VALID EXPERIMENT.
+    DECLARED_CONTROLLED_INTENT != CONTROLLED EXPERIMENT. Nothing here
+    represents a measurement contract, a Variant, allocation, execution
+    authorization, a result or a winner — no such column exists.
+
+    Immutability is structural by absence: no ``updated_at``, no
+    ``created_by`` (the audit event carries the actor), no repository
+    update/delete method. Version contiguity (no gaps) and the element
+    type of ``controlled_factors`` are SERVICE-LAYER invariants only
+    (MVP37B-OBS-1) — no PostgreSQL CHECK can inspect JSONB elements and
+    no self-FK expresses "version N-1 exists".
+
+    Ownership: direct ``workspace_id`` plus a composite tenant-safe FK
+    against ``experiments(id, workspace_id)``. No ``campaign_id`` — Campaign
+    scoping stays a service-layer join (MVP-33A-R1 §F).
+
+    Future Variant lock (NOT implemented): a Variant will pin one version
+    and its existence will block further versions, enforced at the single
+    writer choke point ``ExperimentDefinitionService.write_version`` under
+    the canonical Strategy-then-Experiment lock order."""
+
+    __tablename__ = "experiment_definition_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["experiment_id", "workspace_id"],
+            ["experiments.id", "experiments.workspace_id"],
+            name="fk_experiment_definition_versions_experiment_workspace",
+        ),
+        UniqueConstraint("experiment_id", "version", name="uq_experiment_definition_versions_experiment_version"),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_experiment_definition_versions_workspace_client_request_id"
+        ),
+        CheckConstraint("comparison_type IN ('OBSERVATIONAL', 'CONTROLLED')", name="comparison_type_valid"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("jsonb_typeof(controlled_factors) = 'array'", name="controlled_factors_is_array"),
+        CheckConstraint(
+            "CASE WHEN jsonb_typeof(controlled_factors) = 'array' "
+            "THEN jsonb_array_length(controlled_factors) <= 20 ELSE false END",
+            name="controlled_factors_max_count",
+        ),
+        CheckConstraint(
+            "comparison_type <> 'CONTROLLED' OR (CASE WHEN jsonb_typeof(controlled_factors) = 'array' "
+            "THEN jsonb_array_length(controlled_factors) >= 1 ELSE false END)",
+            name="controlled_needs_factors",
+        ),
+        CheckConstraint(
+            "char_length(btrim(comparison_question)) > 0 AND char_length(btrim(changed_factor)) > 0 "
+            "AND char_length(btrim(comparison_basis)) > 0 AND char_length(btrim(scope)) > 0 "
+            "AND char_length(btrim(learning_intent)) > 0 AND char_length(btrim(non_conclusion_boundary)) > 0",
+            name="text_fields_nonblank",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    version: Mapped[int] = mapped_column(Integer)
+    comparison_question: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    comparison_type: Mapped[str] = mapped_column(String(20))
+    changed_factor: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH))
+    controlled_factors: Mapped[list] = mapped_column(JSONB)
+    comparison_basis: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    scope: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    learning_intent: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    non_conclusion_boundary: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH))
+    client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -66,6 +66,8 @@ function experiment(overrides: Partial<ExperimentPublic> = {}): ExperimentPublic
     description: "A/B test two onboarding email sequences.",
     status: "RECORDED",
     created_at: "2026-01-01T00:00:00Z",
+    comparison_label: "NO_COMPARISON_DECLARED",
+    definition: null,
     ...overrides,
   };
 }
@@ -212,7 +214,60 @@ describe("PlanPanel — Plan creation submission", () => {
       "Experimento que operacionaliza este plan (opcional)",
     )) as HTMLSelectElement;
     expect(select.value).toBe("");
-    await waitFor(() => expect(screen.getByText("EXP-1 — A/B test two onboarding email sequences.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("EXP-1 — A/B test two onboarding email sequences. (sin comparación declarada)")).toBeInTheDocument());
+  });
+
+  it("MVP-37: marks a definition-less experiment in the selector but never gates selection or submission", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValueOnce(output({ plan: null, items: [] }));
+    mockGetStrategy.mockResolvedValue(
+      strategyOutput({
+        experiments: [
+          experiment(),
+          experiment({
+            id: "EXP-2",
+            description: "A second experiment.",
+            comparison_label: "DECLARED_OBSERVATIONAL_INTENT",
+            definition: {
+              id: "EXD-1",
+              experiment_id: "EXP-2",
+              version: 1,
+              comparison_question: "q",
+              comparison_type: "OBSERVATIONAL",
+              changed_factor: "f",
+              controlled_factors: [],
+              comparison_basis: "b",
+              scope: "s",
+              learning_intent: "l",
+              non_conclusion_boundary: "n",
+              non_conclusion_codes: [],
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          }),
+        ],
+      }),
+    );
+    mockCreatePlan.mockResolvedValue(plan({ experiment_id: "EXP-1" }));
+    mockGetPlan.mockResolvedValueOnce(output({ plan: plan({ experiment_id: "EXP-1" }) }));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Proponer plan")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Proponer plan"));
+    await userEvent.type(screen.getByLabelText("Nuevo plan"), "Plan for an experiment with no definition.");
+    await waitFor(() =>
+      expect(
+        screen.getByText("EXP-1 — A/B test two onboarding email sequences. (sin comparación declarada)"),
+      ).toBeInTheDocument(),
+    );
+    // The defined experiment carries no suffix.
+    expect(screen.getByText("EXP-2 — A second experiment.")).toBeInTheDocument();
+    // Selecting the definition-less experiment is still allowed and submits normally.
+    await userEvent.selectOptions(screen.getByLabelText("Experimento que operacionaliza este plan (opcional)"), "EXP-1");
+    expect(screen.getByText("Confirmar plan")).toBeEnabled();
+    await userEvent.click(screen.getByText("Confirmar plan"));
+    await waitFor(() =>
+      expect(mockCreatePlan).toHaveBeenCalledWith("campaign-1", "Plan for an experiment with no definition.", "EXP-1"),
+    );
   });
 
   it("generic submission sends no experiment_public_id", async () => {
@@ -244,7 +299,7 @@ describe("PlanPanel — Plan creation submission", () => {
     await waitFor(() => expect(screen.getByText("Proponer plan")).toBeInTheDocument());
     await userEvent.click(screen.getByText("Proponer plan"));
     await userEvent.type(screen.getByLabelText("Nuevo plan"), "Operationalizes the experiment.");
-    await waitFor(() => expect(screen.getByText("EXP-1 — A/B test two onboarding email sequences.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("EXP-1 — A/B test two onboarding email sequences. (sin comparación declarada)")).toBeInTheDocument());
     await userEvent.selectOptions(screen.getByLabelText("Experimento que operacionaliza este plan (opcional)"), "EXP-1");
     await userEvent.click(screen.getByText("Confirmar plan"));
 

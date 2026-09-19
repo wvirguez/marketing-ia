@@ -502,3 +502,37 @@ class ExperimentStrategyStaleError(ApiError):
         self, message: str = "This Hypothesis belongs to a Strategy that is no longer current and cannot receive a new Experiment."
     ) -> None:
         super().__init__(message, status_code=409, code="EXPERIMENT_STRATEGY_STALE")
+
+
+class ExperimentDefinitionStrategyStaleError(ApiError):
+    """MVP-37B §Q: a NEW Experiment Definition version may only be written
+    for an Experiment whose own parent Strategy is still the Campaign's
+    current version at the moment that Strategy row is locked — the same
+    Option-A rule as ``ExperimentStrategyStaleError``, one level down.
+    History reads and matching replays of an already-committed write are
+    unaffected."""
+
+    def __init__(
+        self,
+        message: str = "This Experiment belongs to a Strategy that is no longer current and cannot receive a new definition version.",
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_DEFINITION_STRATEGY_STALE")
+
+
+class ExperimentDefinitionBaseStaleError(ApiError):
+    """MVP-37B §N/§O: ``base_version`` did not equal the Experiment's current
+    definition tip at the moment the Experiment row was locked (or two
+    concurrent writers raced for the same ``(experiment_id, version)`` and
+    the database's own unique constraint decided). Mirrors
+    ``StrategyRevisionBaseStaleError``."""
+
+    def __init__(self, message: str = "The Experiment definition changed; refresh and retry from the current version.") -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_DEFINITION_BASE_STALE")
+
+
+class ExperimentDefinitionUnchangedError(ApiError):
+    """MVP-37B §O: a revision whose normalized content equals the current
+    tip is rejected — it would add a version carrying no new declaration."""
+
+    def __init__(self, message: str = "This revision is identical to the current Experiment definition.") -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_DEFINITION_UNCHANGED")

@@ -124,7 +124,11 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     alongside CommercialObjective/Offer — EVENT semantics only, Campaign
     mandatory + ContentDistribution optional observational provenance,
     no experiment_id/variant_id/commercial_objective_id/offer_id/
-    tracking_requirement_id/causal/success/winner column). No Content
+    tracking_requirement_id/causal/success/winner column) — and the MVP-37
+    governed Experiment Definition persistence contract (frozen
+    MVP-37A/-37B; owned by ``strategy`` — one append-only, versioned
+    declared-comparison table, no Variant/measurement/allocation/result/
+    execution column). No Content
     Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
     Snapshot/Agent Run/Handoff/Return/Gate
@@ -204,6 +208,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "strategic_approvals",
         "strategy_revisions",
         "commercial_outcomes",
+        "experiment_definition_versions",
     }
 
 

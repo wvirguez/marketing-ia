@@ -24,12 +24,58 @@ export interface CreateHypothesisRequest {
   statement: string;
 }
 
+// MVP-37: declared comparison intent only. "CONTROLLED" is a declared
+// design intent — never a validated experimental status.
+export type ComparisonType = "OBSERVATIONAL" | "CONTROLLED";
+
+// MVP-37: one immutable Definition version. Mirrors
+// apps/api/app/strategy/schemas.py::ExperimentDefinitionPublic. No field
+// here represents validity, causality, a result, a winner, a measurement
+// contract, or execution authorization. `non_conclusion_codes` is derived,
+// response-only metadata.
+export interface ExperimentDefinitionPublic {
+  id: string;
+  experiment_id: string;
+  version: number;
+  comparison_question: string;
+  comparison_type: ComparisonType;
+  changed_factor: string;
+  controlled_factors: string[];
+  comparison_basis: string;
+  scope: string;
+  learning_intent: string;
+  non_conclusion_boundary: string;
+  non_conclusion_codes: string[];
+  created_at: string;
+}
+
+// MVP-37: additive — `definition` is the current tip (null when none is
+// declared) and `comparison_label` is a derived, declaration-only label
+// (NO_COMPARISON_DECLARED / DECLARED_OBSERVATIONAL_INTENT /
+// DECLARED_CONTROLLED_INTENT).
 export interface ExperimentPublic {
   id: string;
   hypothesis_id: string;
   description: string;
   status: string | null;
   created_at: string;
+  comparison_label: string;
+  definition: ExperimentDefinitionPublic | null;
+}
+
+// MVP-37: the FULL-STATE version-write payload. base_version is 0 for the
+// first declaration, otherwise the current tip version.
+export interface DeclareExperimentDefinitionRequest {
+  base_version: number;
+  client_request_id: string;
+  comparison_question: string;
+  comparison_type: ComparisonType;
+  changed_factor: string;
+  controlled_factors: string[];
+  comparison_basis: string;
+  scope: string;
+  learning_intent: string;
+  non_conclusion_boundary: string;
 }
 
 // MVP-32A/-32A-R1: the complete governed create payload — description

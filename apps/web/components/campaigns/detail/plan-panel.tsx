@@ -287,6 +287,7 @@ export function PlanPanel({
               {currentExperiments.map((experiment) => (
                 <option key={experiment.id} value={experiment.id}>
                   {experiment.id} — {experiment.description}
+                  {experiment.definition === null ? " (sin comparación declarada)" : ""}
                 </option>
               ))}
             </select>
