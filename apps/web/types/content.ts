@@ -54,6 +54,21 @@ export interface ContentPieceListResponse {
   items: ContentPiecePublic[];
 }
 
+// MVP-35A/-35B: the client supplies only the Piece's own fields plus the
+// mandatory initial ContentVersion payload (a bare Piece has no legal
+// route to ever acquire its first Version — MVP-35A §O). No
+// content_brief_id/workspace_id/campaign_id/experiment_id/variant_id/
+// actor_user_id/status is ever accepted — all are route-derived or do
+// not exist on this entity.
+export interface CreateContentPieceRequest {
+  format: string;
+  objective: string;
+  funnel_stage: string;
+  cta: string;
+  channel: string;
+  payload: Record<string, unknown>;
+}
+
 export interface ContentPieceDetailResponse {
   piece: ContentPiecePublic;
   latest_version: ContentVersionPublic | null;

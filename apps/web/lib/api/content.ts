@@ -8,6 +8,7 @@ import type {
   ContentPieceDetailResponse,
   ContentPieceListResponse,
   ContentApprovalDecision,
+  CreateContentPieceRequest,
   CreateContentVersionRequest,
   DistributionEvidenceListResponse,
   DistributionEvidencePublic,
@@ -31,6 +32,19 @@ export async function getContentDetail(
   contentPublicId: string,
 ): Promise<ContentPieceDetailResponse> {
   return request<ContentPieceDetailResponse>(contentPath(campaignPublicId, contentPublicId), { method: "GET" });
+}
+
+// MVP-35A/-35B: governed, ContentBrief 1 -> 0..N ContentPiece creation —
+// mirrors apps/api/app/content/router.py::create_content_piece exactly.
+export async function createContentPiece(
+  campaignPublicId: string,
+  contentBriefPublicId: string,
+  body: CreateContentPieceRequest,
+): Promise<ContentPieceDetailResponse> {
+  return request<ContentPieceDetailResponse>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/content/briefs/${encodeURIComponent(contentBriefPublicId)}/pieces`,
+    { method: "POST", body },
+  );
 }
 
 export async function markContentInProduction(

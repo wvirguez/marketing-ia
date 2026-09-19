@@ -11,19 +11,29 @@ by MVP-17B) — exactly:
     POST /api/v1/campaigns/{campaign_id}/content/{content_id}/approvals/{approval_id}/mark-under-review
     POST /api/v1/campaigns/{campaign_id}/content/{content_id}/approvals/{approval_id}/decision
     POST /api/v1/campaigns/{campaign_id}/plan/items/{plan_item_id}/brief   (MVP-34A/-34B)
+    POST /api/v1/campaigns/{campaign_id}/content/briefs/{content_brief_id}/pieces   (MVP-35A/-35B)
 
 MVP-18B adds only two human-recorded Distribution transitions. MVP-20 adds
 only the one narrow ``.../versions`` revision route described above. MVP-34B
 adds the one narrow governed Content Brief create route (frozen MVP-34A
 contract) — free text only, immutable/create-only (409 on a second attempt
 for the same PlanItem via the pre-existing ``uq_content_briefs_plan_item_id``
-constraint), no archive or external publishing route exists. ``.../versions``
-is legal only while the Piece is REVISION_REQUESTED (see
-``ContentService.create_revision_version``) — it is not a generic Version
-CRUD surface: no GET/PUT/PATCH/DELETE exists for it. The Content Brief route
-likewise has no GET/PUT/PATCH/DELETE of its own — see
-``app/planning/router.py``'s own ``GET /plan``, which embeds each current
-PlanItem's Brief (MVP-34A §Q).
+constraint), no archive or external publishing route exists. MVP-35B adds
+the one narrow governed Content Piece create route (frozen MVP-35A
+contract) — ``ContentBrief`` is the sole semantic parent, cardinality is
+deliberately ``ContentBrief 1 -> 0..N ContentPiece`` (no uniqueness on
+``content_brief_id`` exists or is added; repeated creation against the same
+Brief is legitimate, never a 409), and it atomically creates the mandatory
+initial ``ContentVersion`` alongside the Piece (MVP-35A §O: a bare Piece
+has no legal HTTP route to ever acquire its first Version — see
+``.../versions`` below). ``.../versions`` is legal only while the Piece is
+REVISION_REQUESTED (see ``ContentService.create_revision_version``) — it is
+not a generic Version CRUD surface: no GET/PUT/PATCH/DELETE exists for it.
+Neither the Content Brief nor the Content Piece create route has any
+GET/PUT/PATCH/DELETE of its own — see ``app/planning/router.py``'s own
+``GET /plan``, which embeds each current PlanItem's Brief (MVP-34A §Q), and
+this module's own ``GET /content``/``GET /content/{id}`` below, which
+already lists every Piece regardless of how it was created (MVP-35A §AA).
 
 PERSISTING AN APPROVAL DECISION != HAVING AUTHORITY TO MAKE THAT DECISION.
 The ``decision`` route's OWNER/ADMIN gate is an APPLICATION authorization
@@ -47,11 +57,13 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user, get_current_workspace, require_csrf, require_role
 from app.campaigns.service import CampaignAccessService
 from app.content.models import ContentPiece
+from app.content.repository import ContentBriefRepository
 from app.content.schemas import (
     ContentBriefPublic,
     ContentPieceDetailResponse,
     ContentPieceListResponse,
     CreateContentBriefRequest,
+    CreateContentPieceRequest,
     CreateContentVersionRequest,
     DistributionPublic,
     RecordApprovalDecisionRequest,
@@ -173,6 +185,62 @@ async def create_content_brief(
     return content_brief_to_public(
         brief, plan_item_public_id=plan_item.public_id, content_plan_public_id=content_plan.public_id
     )
+
+
+# --- Content Piece: governed creation (MVP-35A/-35B) ------------------------
+# Frozen contract (MVP-35A): ContentBrief is the sole semantic parent —
+# content_plan_id/plan_item_id/workspace_id/experiment_id are never
+# client-supplied, all derived server-side. Deliberately
+# ContentBrief 1 -> 0..N ContentPiece — no uniqueness on content_brief_id
+# exists or is added (MVP-35A §D); repeated creation against the same
+# Brief is legitimate and never rejected as a duplicate (MVP-35A §E).
+# Historical (non-current) ContentPlan Briefs remain eligible (MVP-35A
+# §K) — the lookup below is deliberately unfiltered by ContentPlan
+# currency. Atomically creates the mandatory initial ContentVersion
+# alongside the Piece (MVP-35A §O) by reusing ContentService.record_piece
+# unchanged — no write logic is duplicated here.
+
+
+@router.post(
+    "/content/briefs/{content_brief_public_id}/pieces",
+    response_model=ContentPieceDetailResponse,
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_content_piece(
+    campaign_public_id: str,
+    content_brief_public_id: str,
+    payload: CreateContentPieceRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ContentPieceDetailResponse:
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    content_brief = ContentBriefRepository(db).get_for_campaign_by_public_id(
+        campaign_id=campaign.id, public_id=content_brief_public_id
+    )
+    if content_brief is None:
+        # Non-leaky: a ContentBrief that does not exist, or that exists but
+        # belongs to a different Campaign, is indistinguishable.
+        raise ForbiddenError()
+
+    content_service = ContentService(db)
+    piece, _version = content_service.record_piece(
+        content_brief=content_brief,
+        format=payload.format,
+        objective=payload.objective,
+        funnel_stage=payload.funnel_stage,
+        cta=payload.cta,
+        channel=payload.channel,
+        initial_payload=payload.payload,
+        created_by_user_id=user.id,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return _build_detail_response(content_service, piece=piece)
 
 
 def _build_detail_response(content_service: ContentService, *, piece: ContentPiece) -> ContentPieceDetailResponse:

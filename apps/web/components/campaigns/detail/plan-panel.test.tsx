@@ -5,11 +5,15 @@ import { PlanPanel } from "@/components/campaigns/detail/plan-panel";
 import { ApiError } from "@/lib/api/client";
 import type { ContentBriefPublic, ContentPlanPublic, PlanItemPublic, PlanOutputResponse } from "@/types/planning";
 import type { ExperimentPublic, StrategyOutputResponse } from "@/types/strategy";
+import type { ContentPieceDetailResponse } from "@/types/content";
 
 vi.mock("@/lib/api/planning", () => ({
   getPlan: vi.fn(),
   createPlan: vi.fn(),
   createBrief: vi.fn(),
+}));
+vi.mock("@/lib/api/content", () => ({
+  createContentPiece: vi.fn(),
 }));
 vi.mock("@/lib/api/strategy", () => ({
   getStrategy: vi.fn(),
@@ -18,6 +22,7 @@ vi.mock("@/lib/auth/auth-context", () => ({
   useAuth: vi.fn(),
 }));
 
+import { createContentPiece } from "@/lib/api/content";
 import { createBrief, createPlan, getPlan } from "@/lib/api/planning";
 import { getStrategy } from "@/lib/api/strategy";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -25,6 +30,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 const mockGetPlan = vi.mocked(getPlan);
 const mockCreatePlan = vi.mocked(createPlan);
 const mockCreateBrief = vi.mocked(createBrief);
+const mockCreateContentPiece = vi.mocked(createContentPiece);
 const mockGetStrategy = vi.mocked(getStrategy);
 const mockUseAuth = vi.mocked(useAuth);
 
@@ -95,6 +101,26 @@ function planItem(overrides: Partial<PlanItemPublic> = {}): PlanItemPublic {
     scheduled_date: null,
     created_at: "2026-01-01T00:00:00Z",
     brief: null,
+    ...overrides,
+  };
+}
+
+function contentPieceDetail(overrides: Partial<ContentPieceDetailResponse> = {}): ContentPieceDetailResponse {
+  return {
+    piece: {
+      id: "CNT-1",
+      format: "Reel",
+      objective: "Generate identification and interest.",
+      funnel_stage: "Awareness",
+      cta: "Learn the method",
+      channel: "Instagram",
+      status: "DRAFT",
+      archived_at: null,
+      created_at: "2026-01-01T00:00:00Z",
+    },
+    latest_version: { id: "CNV-1", payload: {}, created_at: "2026-01-01T00:00:00Z" },
+    latest_approval: null,
+    distribution: null,
     ...overrides,
   };
 }
@@ -356,5 +382,142 @@ describe("PlanPanel — Content Brief creation (MVP-34A/-34B)", () => {
     await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
     expect(screen.queryByText(/variant/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/control/i)).not.toBeInTheDocument();
+  });
+});
+
+async function fillPieceForm(itemId: string) {
+  await userEvent.type(screen.getByLabelText("Formato"), "Reel");
+  await userEvent.type(screen.getByLabelText("Objetivo"), "Generate identification and interest.");
+  await userEvent.type(screen.getByLabelText("Etapa del embudo"), "Awareness");
+  await userEvent.type(screen.getByLabelText("Llamado a la acción"), "Learn the method");
+  await userEvent.type(screen.getByLabelText("Canal"), "Instagram");
+  void itemId;
+}
+
+describe("PlanPanel — Content Piece creation (MVP-35A/-35B)", () => {
+  it("MEMBER+ sees the create affordance under a briefed item", async () => {
+    mockAuth("MEMBER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+  });
+
+  it("unauthenticated never sees the create affordance", async () => {
+    mockAuth(null);
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText(/Brief:/)).toBeInTheDocument());
+    expect(screen.queryByText("Crear pieza")).not.toBeInTheDocument();
+  });
+
+  it("the create affordance is absent for an unbriefed item", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: null })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Redactar brief")).toBeInTheDocument());
+    expect(screen.queryByText("Crear pieza")).not.toBeInTheDocument();
+  });
+
+  it("submits the exact payload for the targeted ContentBrief", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(
+      output({ items: [planItem({ id: "ITM-7", brief: contentBrief({ id: "CBRF-7", plan_item_id: "ITM-7" }) })] }),
+    );
+    mockCreateContentPiece.mockResolvedValue(contentPieceDetail());
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Crear pieza"));
+    await fillPieceForm("ITM-7");
+    await userEvent.click(screen.getByText("Confirmar pieza"));
+
+    await waitFor(() =>
+      expect(mockCreateContentPiece).toHaveBeenCalledWith("campaign-1", "CBRF-7", {
+        format: "Reel",
+        objective: "Generate identification and interest.",
+        funnel_stage: "Awareness",
+        cta: "Learn the method",
+        channel: "Instagram",
+        payload: {},
+      }),
+    );
+  });
+
+  it("shows a success confirmation and resets the form after creation", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    mockCreateContentPiece.mockResolvedValue(contentPieceDetail({ piece: { ...contentPieceDetail().piece, id: "CNT-99" } }));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Crear pieza"));
+    await fillPieceForm("ITM-1");
+    await userEvent.click(screen.getByText("Confirmar pieza"));
+
+    await waitFor(() => expect(screen.getByText(/Pieza creada: CNT-99/)).toBeInTheDocument());
+    expect(screen.queryByLabelText("Formato")).not.toBeInTheDocument();
+  });
+
+  it("multiple items do not overwrite each other's success state", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(
+      output({
+        items: [
+          planItem({ id: "ITM-1", brief: contentBrief({ id: "CBRF-1", plan_item_id: "ITM-1" }) }),
+          planItem({ id: "ITM-2", sequence: 2, brief: contentBrief({ id: "CBRF-2", plan_item_id: "ITM-2" }) }),
+        ],
+      }),
+    );
+    mockCreateContentPiece.mockResolvedValue(contentPieceDetail({ piece: { ...contentPieceDetail().piece, id: "CNT-1" } }));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getAllByText("Crear pieza")).toHaveLength(2));
+    await userEvent.click(screen.getAllByText("Crear pieza")[0]);
+    await fillPieceForm("ITM-1");
+    await userEvent.click(screen.getByText("Confirmar pieza"));
+
+    await waitFor(() => expect(screen.getByText(/Pieza creada: CNT-1/)).toBeInTheDocument());
+    // Cardinality is 0..N (MVP-35A §D) — both items' own "Crear pieza"
+    // affordances remain available/independent after one succeeds.
+    expect(screen.getAllByText("Crear pieza")).toHaveLength(2);
+  });
+
+  it("surfaces a mutation error without losing the form", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    mockCreateContentPiece.mockRejectedValue(new ApiError(409, "SOME_CONFLICT", "Conflict."));
+
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Crear pieza"));
+    await fillPieceForm("ITM-1");
+    await userEvent.click(screen.getByText("Confirmar pieza"));
+
+    await waitFor(() => expect(screen.getByText("No pudimos completar esta acción. Intenta de nuevo.")).toBeInTheDocument());
+    expect(screen.getByLabelText("Formato")).toBeInTheDocument();
+  });
+
+  it("cancel clears the piece form without submitting", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Crear pieza"));
+    await userEvent.type(screen.getByLabelText("Formato"), "discarded");
+    await userEvent.click(screen.getByText("Cancelar"));
+
+    expect(screen.queryByLabelText("Formato")).not.toBeInTheDocument();
+    expect(mockCreateContentPiece).not.toHaveBeenCalled();
+  });
+
+  it("does not render any Variant or Experiment-execution UI", async () => {
+    mockAuth("OWNER");
+    mockGetPlan.mockResolvedValue(output({ items: [planItem({ brief: contentBrief() })] }));
+    render(<PlanPanel campaignId="campaign-1" active={true} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Crear pieza")).toBeInTheDocument());
+    await userEvent.click(screen.getByText("Crear pieza"));
+    expect(screen.queryByText(/variant/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/experimento/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/estado/i)).not.toBeInTheDocument();
   });
 });

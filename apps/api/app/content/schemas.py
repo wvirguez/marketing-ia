@@ -25,7 +25,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.content.models import ContentApproval, ContentApprovalStatus, ContentBrief, ContentDistribution, ContentDistributionStatus, ContentPiece, ContentPieceStatus, ContentVersion
+from app.content.models import (
+    _CHANNEL_MAX_LENGTH,
+    _CTA_MAX_LENGTH,
+    _FORMAT_MAX_LENGTH,
+    _FUNNEL_STAGE_MAX_LENGTH,
+    _OBJECTIVE_MAX_LENGTH,
+    ContentApproval,
+    ContentApprovalStatus,
+    ContentBrief,
+    ContentDistribution,
+    ContentDistributionStatus,
+    ContentPiece,
+    ContentPieceStatus,
+    ContentVersion,
+)
 
 _BRIEF_MAX_LENGTH = 4000
 
@@ -57,6 +71,38 @@ class CreateContentBriefRequest(BaseModel):
     brief: str = Field(min_length=1, max_length=_BRIEF_MAX_LENGTH)
 
     @field_validator("brief")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("This field cannot be blank.")
+        return stripped
+
+
+class CreateContentPieceRequest(BaseModel):
+    """MVP-35A §H (frozen): the minimum client assertion for a governed
+    ContentPiece — ``format``/``objective``/``funnel_stage``/``cta``/
+    ``channel`` (the same fields ``ContentPiece`` itself already requires)
+    plus ``payload``, the mandatory initial ``ContentVersion`` content
+    (MVP-35A §O: a bare Piece has no legal HTTP route to ever acquire its
+    first Version, so governed creation must supply one atomically, the
+    same unstructured-dict shape ``CreateContentVersionRequest`` already
+    establishes). ``content_brief_id``/``workspace_id``/``campaign_id``/
+    ``content_plan_id``/``plan_item_id``/``experiment_id``/``variant_id``/
+    ``actor_user_id``/``status``/``archived_at``/``origin``/``version``
+    are never accepted — all are route-derived or do not exist on this
+    entity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: str = Field(min_length=1, max_length=_FORMAT_MAX_LENGTH)
+    objective: str = Field(min_length=1, max_length=_OBJECTIVE_MAX_LENGTH)
+    funnel_stage: str = Field(min_length=1, max_length=_FUNNEL_STAGE_MAX_LENGTH)
+    cta: str = Field(min_length=1, max_length=_CTA_MAX_LENGTH)
+    channel: str = Field(min_length=1, max_length=_CHANNEL_MAX_LENGTH)
+    payload: dict[str, Any]
+
+    @field_validator("format", "objective", "funnel_stage", "cta", "channel")
     @classmethod
     def _strip_required(cls, value: str) -> str:
         stripped = value.strip()

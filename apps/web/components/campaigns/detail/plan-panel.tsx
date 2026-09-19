@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { useAuth } from "@/lib/auth/auth-context";
+import { createContentPiece } from "@/lib/api/content";
 import { createBrief, createPlan, getPlan } from "@/lib/api/planning";
 import { getStrategy } from "@/lib/api/strategy";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
@@ -40,6 +41,14 @@ function canProposePlan(role: string | null): boolean {
 function canProposeBrief(role: string | null): boolean {
   return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
 }
+
+// MVP-35A §R: same MEMBER+ tier — a Content Piece proposes/records
+// production content, it is not a Content Approval decision.
+function canProposePiece(role: string | null): boolean {
+  return role === "OWNER" || role === "ADMIN" || role === "MEMBER";
+}
+
+const EMPTY_PIECE_FORM = { format: "", objective: "", funnelStage: "", cta: "", channel: "", payload: "" };
 
 export function PlanPanel({
   campaignId,
@@ -75,6 +84,20 @@ export function PlanPanel({
   const [briefText, setBriefText] = useState("");
   const [briefPending, setBriefPending] = useState(false);
   const [briefError, setBriefError] = useState("");
+
+  // MVP-35A/-35B: at most one open Piece form at a time, keyed by the
+  // owning PlanItem's public id — mirrors the Brief form's own shape.
+  // ContentBrief 1 -> 0..N ContentPiece (MVP-35A §D): repeated creation
+  // is legitimate, so no "already has a piece" gate exists here.
+  const [pieceFormItemId, setPieceFormItemId] = useState<string | null>(null);
+  const [pieceForm, setPieceForm] = useState(EMPTY_PIECE_FORM);
+  const [piecePending, setPiecePending] = useState(false);
+  const [pieceError, setPieceError] = useState("");
+  // Per-item, cleared whenever that item's form reopens — proof of
+  // success without fabricating a new ContentBrief.pieces relationship
+  // (MVP-35A §20/§AA: the canonical readback surface remains
+  // GET /content and GET /content/{id}, not this panel).
+  const [pieceCreatedByItemId, setPieceCreatedByItemId] = useState<Record<string, string>>({});
 
   function retry() {
     requestedTokenRef.current = refreshToken;
@@ -116,6 +139,48 @@ export function PlanPanel({
       setBriefError(describeCampaignError(error));
     } finally {
       setBriefPending(false);
+    }
+  }
+
+  function pieceFormIsFillable(): boolean {
+    return (
+      pieceForm.format.trim().length > 0 &&
+      pieceForm.objective.trim().length > 0 &&
+      pieceForm.funnelStage.trim().length > 0 &&
+      pieceForm.cta.trim().length > 0 &&
+      pieceForm.channel.trim().length > 0
+    );
+  }
+
+  async function submitPiece(planItemId: string, contentBriefId: string) {
+    if (piecePending || !pieceFormIsFillable()) return;
+    let payload: Record<string, unknown> = {};
+    if (pieceForm.payload.trim().length > 0) {
+      try {
+        payload = JSON.parse(pieceForm.payload);
+      } catch {
+        setPieceError("El contenido debe ser un objeto JSON válido (o dejarse en blanco).");
+        return;
+      }
+    }
+    setPiecePending(true);
+    setPieceError("");
+    try {
+      const detail = await createContentPiece(campaignId, contentBriefId, {
+        format: pieceForm.format.trim(),
+        objective: pieceForm.objective.trim(),
+        funnel_stage: pieceForm.funnelStage.trim(),
+        cta: pieceForm.cta.trim(),
+        channel: pieceForm.channel.trim(),
+        payload,
+      });
+      setPieceForm(EMPTY_PIECE_FORM);
+      setPieceFormItemId(null);
+      setPieceCreatedByItemId((prev) => ({ ...prev, [planItemId]: detail.piece.id }));
+    } catch (error) {
+      setPieceError(describeCampaignError(error));
+    } finally {
+      setPiecePending(false);
     }
   }
 
@@ -307,9 +372,121 @@ export function PlanPanel({
                 {item.scheduled_date && <p className="muted small-text">{item.scheduled_date}</p>}
 
                 {item.brief ? (
-                  <p className="muted small-text" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
-                    Brief: {item.brief.brief}
-                  </p>
+                  <>
+                    <p className="muted small-text" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
+                      Brief: {item.brief.brief}
+                    </p>
+                    {canProposePiece(role) && (
+                      <div style={{ marginTop: 8 }}>
+                        {pieceFormItemId !== item.id ? (
+                          <button
+                            type="button"
+                            className="button"
+                            onClick={() => {
+                              setPieceFormItemId(item.id);
+                              setPieceForm(EMPTY_PIECE_FORM);
+                              setPieceError("");
+                            }}
+                          >
+                            Crear pieza
+                          </button>
+                        ) : (
+                          <div className="panel">
+                            <div className="settings-field">
+                              <label htmlFor={`piece-format-${item.id}`}>Formato</label>
+                              <input
+                                id={`piece-format-${item.id}`}
+                                value={pieceForm.format}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, format: event.target.value }))}
+                              />
+                            </div>
+                            <div className="settings-field">
+                              <label htmlFor={`piece-objective-${item.id}`}>Objetivo</label>
+                              <input
+                                id={`piece-objective-${item.id}`}
+                                value={pieceForm.objective}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, objective: event.target.value }))}
+                              />
+                            </div>
+                            <div className="settings-field">
+                              <label htmlFor={`piece-funnel-${item.id}`}>Etapa del embudo</label>
+                              <input
+                                id={`piece-funnel-${item.id}`}
+                                value={pieceForm.funnelStage}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, funnelStage: event.target.value }))}
+                              />
+                            </div>
+                            <div className="settings-field">
+                              <label htmlFor={`piece-cta-${item.id}`}>Llamado a la acción</label>
+                              <input
+                                id={`piece-cta-${item.id}`}
+                                value={pieceForm.cta}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, cta: event.target.value }))}
+                              />
+                            </div>
+                            <div className="settings-field">
+                              <label htmlFor={`piece-channel-${item.id}`}>Canal</label>
+                              <input
+                                id={`piece-channel-${item.id}`}
+                                value={pieceForm.channel}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, channel: event.target.value }))}
+                              />
+                            </div>
+                            <div className="settings-field">
+                              <label htmlFor={`piece-payload-${item.id}`}>Contenido inicial (JSON, opcional)</label>
+                              <textarea
+                                id={`piece-payload-${item.id}`}
+                                value={pieceForm.payload}
+                                disabled={piecePending}
+                                onChange={(event) => setPieceForm((prev) => ({ ...prev, payload: event.target.value }))}
+                              />
+                            </div>
+                            <p className="muted small-text">
+                              Esta pieza se registra para la campaña — no crea una versión aprobada, no
+                              autoriza distribución ni ejecución de experimento.
+                            </p>
+                            <div className="settings-form-actions" style={{ marginTop: 8 }}>
+                              <button
+                                type="button"
+                                className="button primary"
+                                disabled={piecePending || !pieceFormIsFillable()}
+                                onClick={() => submitPiece(item.id, item.brief!.id)}
+                              >
+                                Confirmar pieza
+                              </button>
+                              <button
+                                type="button"
+                                className="button"
+                                disabled={piecePending}
+                                onClick={() => {
+                                  setPieceFormItemId(null);
+                                  setPieceForm(EMPTY_PIECE_FORM);
+                                }}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                            {pieceError && (
+                              <p role="alert" className="settings-feedback">
+                                {pieceError}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {pieceCreatedByItemId[item.id] && (
+                          <p className="muted small-text" style={{ marginTop: 8 }}>
+                            Pieza creada: {pieceCreatedByItemId[item.id]}. Consulta la vista de Contenido
+                            para verla.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   canProposeBrief(role) && (
                     <div style={{ marginTop: 8 }}>

@@ -54,6 +54,23 @@ class ContentBriefRepository:
             select(ContentBrief).where(ContentBrief.plan_item_id == plan_item_id)
         ).scalar_one_or_none()
 
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> ContentBrief | None:
+        """MVP-35A §J/MVP-35B: non-leaky, campaign-scoped resolution for
+        governed ContentPiece creation — one join (ContentBrief already
+        carries its own ``content_plan_id`` tenant-safety anchor, unlike
+        PlanItem, so no second hop through PlanItem is needed here).
+        Deliberately unfiltered by ContentPlan currency — a Brief
+        belonging to any version (current or historical) of this
+        Campaign's Content Plan is eligible (MVP-35A §K, mirrors MVP-34A
+        §G's identical historical-eligibility precedent one level down). A
+        ContentBrief that does not exist, or that exists but belongs to a
+        different Campaign, is indistinguishable — both return ``None``."""
+        return self.session.execute(
+            select(ContentBrief)
+            .join(ContentPlan, ContentBrief.content_plan_id == ContentPlan.id)
+            .where(ContentPlan.campaign_id == campaign_id, ContentBrief.public_id == public_id)
+        ).scalar_one_or_none()
+
     def list_for_plan_items(self, plan_item_ids: list[uuid.UUID]) -> list[ContentBrief]:
         """MVP-34B: batched lookup for the GET /plan readback (each
         returned PlanItem embeds its Brief, if any) — mirrors
