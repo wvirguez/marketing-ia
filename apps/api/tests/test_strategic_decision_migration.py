@@ -89,7 +89,7 @@ def test_strategic_decision_migration_round_trip(monkeypatch):
                 # MVP-29B and MVP-30B each added one additive migration
                 # after this one — "head" now means b27209ee89a1, not this
                 # migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "cdaeec1bb87f"  # MVP-33B: current head, bumped from b27209ee89a1
+                assert connection.scalar(text("select version_num from alembic_version")) == "41687fa37c1c"  # MVP-36B: current head, bumped from cdaeec1bb87f
 
             if cycle == 0:
                 command.downgrade(config, "5236a613ef1a")

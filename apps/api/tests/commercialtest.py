@@ -7,10 +7,14 @@ already used throughout ``tests/trackingtest.py``/``tests/learningtest.py``.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
+
 from app.campaigns.repository import CampaignRepository
 from app.campaigns.service import CampaignService
 from app.commercial.service import CommercialService
 from app.workspaces.repository import OrganizationRepository, WorkspaceRepository
+from tests.contenttest import make_user
 
 
 def build_campaign(session, *, org_name="Commercial Org", workspace_name="Commercial WS", campaign_name="Commercial Campaign"):
@@ -57,3 +61,38 @@ def build_offer(session, *, statement="Six-week home dog training course.", pric
     campaign = build_campaign(session, **overrides)
     offer = CommercialService(session).record_offer(campaign=campaign, statement=statement, price=price, currency=currency)
     return campaign, offer
+
+
+def build_commercial_outcome(
+    session,
+    *,
+    outcome_type="lead",
+    quantity=None,
+    monetary_value=None,
+    currency=None,
+    occurred_at=None,
+    content_distribution_id=None,
+    external_reference=None,
+    client_request_id=None,
+    actor_user_id=None,
+    **overrides: object,
+):
+    """MVP-36: the sole upstream dependency for CommercialOutcome tests
+    that don't need a real ContentDistribution — mirrors
+    ``build_commercial_objective``/``build_offer`` exactly."""
+    campaign = build_campaign(session, **overrides)
+    if actor_user_id is None:
+        actor_user_id = make_user(session).id
+    outcome, _created = CommercialService(session).record_commercial_outcome(
+        campaign=campaign,
+        content_distribution_id=content_distribution_id,
+        outcome_type=outcome_type,
+        quantity=quantity,
+        monetary_value=monetary_value,
+        currency=currency,
+        occurred_at=occurred_at or datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+        external_reference=external_reference,
+        client_request_id=client_request_id or str(uuid.uuid4()),
+        actor_user_id=actor_user_id,
+    )
+    return campaign, outcome

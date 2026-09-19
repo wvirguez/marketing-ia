@@ -119,7 +119,13 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     ``Strategy``/``Positioning`` themselves remain owned by ``strategy`` and
     gained only an additive ``origin`` column + a nullability relaxation on
     their own pre-existing bootstrap-provenance columns, never a new table
-    of their own). No Content Revision
+    of their own) — and the MVP-36 governed CommercialOutcome persistence
+    contract (frozen MVP-36A/-R1 contract; owned by ``commercial``
+    alongside CommercialObjective/Offer — EVENT semantics only, Campaign
+    mandatory + ContentDistribution optional observational provenance,
+    no experiment_id/variant_id/commercial_objective_id/offer_id/
+    tracking_requirement_id/causal/success/winner column). No Content
+    Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
     Snapshot/Agent Run/Handoff/Return/Gate
     Decision/IntegrationDefinition/WorkspaceIntegration/SubscriptionPlan/
@@ -197,6 +203,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "strategic_decisions",
         "strategic_approvals",
         "strategy_revisions",
+        "commercial_outcomes",
     }
 
 

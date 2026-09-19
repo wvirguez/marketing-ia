@@ -4,7 +4,13 @@
 // GET/POST /offers, POST /offers/{id}/supersede.
 
 import { request } from "@/lib/api/client";
-import type { CommercialObjectivePublic, OfferPublic } from "@/types/commercial";
+import type {
+  CommercialObjectivePublic,
+  CommercialOutcomePublic,
+  CorrectCommercialOutcomeRequest,
+  CreateCommercialOutcomeRequest,
+  OfferPublic,
+} from "@/types/commercial";
 
 function campaignPath(campaignPublicId: string, suffix: string): string {
   return `/campaigns/${encodeURIComponent(campaignPublicId)}${suffix}`;
@@ -72,4 +78,36 @@ export async function supersedeOffer(
     method: "POST",
     body: { statement, price: price ?? null, currency: currency ?? null },
   });
+}
+
+// MVP-36 (frozen by MVP-36A/-R1): governed CommercialOutcome. Create and
+// correction both return 201 for a genuinely new row and 200 for an exact
+// idempotent replay — `request()` treats both as success, the caller
+// never needs to branch on which one came back.
+
+export async function getCommercialOutcomes(campaignPublicId: string): Promise<CommercialOutcomePublic[]> {
+  return request<CommercialOutcomePublic[]>(campaignPath(campaignPublicId, "/commercial-outcomes"), {
+    method: "GET",
+  });
+}
+
+export async function createCommercialOutcome(
+  campaignPublicId: string,
+  body: CreateCommercialOutcomeRequest,
+): Promise<CommercialOutcomePublic> {
+  return request<CommercialOutcomePublic>(campaignPath(campaignPublicId, "/commercial-outcomes"), {
+    method: "POST",
+    body,
+  });
+}
+
+export async function correctCommercialOutcome(
+  campaignPublicId: string,
+  outcomePublicId: string,
+  body: CorrectCommercialOutcomeRequest,
+): Promise<CommercialOutcomePublic> {
+  return request<CommercialOutcomePublic>(
+    campaignPath(campaignPublicId, `/commercial-outcomes/${encodeURIComponent(outcomePublicId)}/corrections`),
+    { method: "POST", body },
+  );
 }

@@ -282,6 +282,21 @@ class ContentDistributionRepository:
             select(ContentDistribution).where(ContentDistribution.content_piece_id == content_piece_id)
         ).scalar_one_or_none()
 
+    def get_for_campaign_by_public_id(self, *, campaign_id: uuid.UUID, public_id: str) -> ContentDistribution | None:
+        """MVP-36B: non-leaky, campaign-scoped resource lookup for
+        CommercialOutcome's optional Distribution provenance — mirrors
+        ``ContentBriefRepository.get_for_campaign_by_public_id`` one hop
+        further down the chain (ContentDistribution has no direct
+        ``campaign_id``; it is reached via ContentPiece -> ContentBrief ->
+        ContentPlan)."""
+        return self.session.execute(
+            select(ContentDistribution)
+            .join(ContentPiece, ContentDistribution.content_piece_id == ContentPiece.id)
+            .join(ContentBrief, ContentPiece.content_brief_id == ContentBrief.id)
+            .join(ContentPlan, ContentBrief.content_plan_id == ContentPlan.id)
+            .where(ContentPlan.campaign_id == campaign_id, ContentDistribution.public_id == public_id)
+        ).scalar_one_or_none()
+
     def list_for_ids(self, content_distribution_ids: list[uuid.UUID]) -> list[ContentDistribution]:
         """MVP-24: batched lookup for resolving a set of internal ids to
         their public representations — mirrors

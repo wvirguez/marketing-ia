@@ -334,6 +334,22 @@ class OfferAlreadySupersededError(ApiError):
         super().__init__(message, status_code=409, code="OFFER_ALREADY_SUPERSEDED")
 
 
+class CommercialOutcomeCorrectionTargetStaleError(ApiError):
+    """MVP-36A-R1 §7/§8: a CommercialOutcome correction may target only
+    the current leaf of its correction chain (the row with no successor
+    yet) — a second correction attempt against an already-superseded row,
+    whether sequential or genuinely concurrent, is a deterministic
+    conflict, never a silent branching chain. Mirrors
+    ``EvidenceCorrectionTargetStaleError``'s own precedent exactly, one
+    bounded context over. Distinct from ``IdempotencyKeyConflictError``
+    (reserved for a ``client_request_id`` collision against a different
+    logical request) — this is reserved for a structurally stale
+    *target*, regardless of the correction's own key."""
+
+    def __init__(self, message: str = "This Commercial Outcome has already been superseded by a later correction.") -> None:
+        super().__init__(message, status_code=409, code="COMMERCIAL_OUTCOME_CORRECTION_TARGET_STALE")
+
+
 class StrategicRecommendationNotAcceptedError(ApiError):
     """MVP-28B (frozen MVP-28A/-R1/-R2 contract, Model C): a StrategicDecision
     may be recorded only against a StrategicRecommendationCandidate whose own

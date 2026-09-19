@@ -11,13 +11,14 @@ codebase (see ``app/tracking/repository.py``).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.campaigns.models import Campaign
-from app.commercial.models import CommercialObjective, Offer
+from app.commercial.models import CommercialObjective, CommercialOutcome, Offer
 from app.core.ids import generate_public_id
 
 
@@ -116,6 +117,97 @@ class OfferRepository:
         return list(
             self.session.execute(
                 select(Offer).where(Offer.campaign_id == campaign_id).order_by(Offer.created_at.asc(), Offer.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+
+class CommercialOutcomeRepository:
+    """Data access for CommercialOutcome — MVP-36 (frozen by MVP-36A/-R1).
+    No method here calls ``session.commit()`` — see
+    ``app/commercial/service.py`` for the transaction-ownership boundary."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        campaign: Campaign,
+        content_distribution_id: uuid.UUID | None,
+        outcome_type: str,
+        quantity: int | None,
+        monetary_value: Decimal | None,
+        currency: str | None,
+        occurred_at: datetime,
+        external_reference: str | None,
+        client_request_id: str,
+        supersedes: CommercialOutcome | None = None,
+        correction_reason: str | None = None,
+    ) -> CommercialOutcome:
+        row = CommercialOutcome(
+            public_id=generate_public_id("OUT"),
+            workspace_id=campaign.workspace_id,
+            campaign_id=campaign.id,
+            content_distribution_id=content_distribution_id,
+            outcome_type=outcome_type,
+            quantity=quantity,
+            monetary_value=monetary_value,
+            currency=currency,
+            occurred_at=occurred_at,
+            external_reference=external_reference,
+            client_request_id=client_request_id,
+            supersedes_outcome_id=supersedes.id if supersedes is not None else None,
+            correction_reason=correction_reason,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_id(self, outcome_id: uuid.UUID) -> CommercialOutcome | None:
+        return self.session.get(CommercialOutcome, outcome_id)
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> CommercialOutcome | None:
+        return self.session.execute(
+            select(CommercialOutcome).where(
+                CommercialOutcome.workspace_id == workspace_id,
+                CommercialOutcome.client_request_id == client_request_id,
+            )
+        ).scalar_one_or_none()
+
+    def get_for_campaign_by_public_id(
+        self, *, campaign_id: uuid.UUID, public_id: str, for_update: bool = False
+    ) -> CommercialOutcome | None:
+        """Non-leaky, campaign-scoped resource lookup (mirrors
+        ``CommercialObjectiveRepository``'s own precedent exactly).
+        ``for_update=True`` locks the specific target row only, never the
+        whole Campaign (MVP-36A-R1 §8's TIP-ONLY correction-target rule
+        requires locking exactly the row being corrected)."""
+        query = select(CommercialOutcome).where(
+            CommercialOutcome.campaign_id == campaign_id, CommercialOutcome.public_id == public_id
+        )
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
+    def get_successor(self, outcome_id: uuid.UUID) -> CommercialOutcome | None:
+        """"Current"/effective (no successor yet) is always derived at
+        read time from the ``UNIQUE(supersedes_outcome_id)`` relationship
+        itself, never a stored flag — mirrors
+        ``DistributionMetricEvidenceRepository.get_successor`` exactly."""
+        return self.session.execute(
+            select(CommercialOutcome).where(CommercialOutcome.supersedes_outcome_id == outcome_id)
+        ).scalar_one_or_none()
+
+    def list_for_campaign(self, campaign_id: uuid.UUID) -> list[CommercialOutcome]:
+        return list(
+            self.session.execute(
+                select(CommercialOutcome)
+                .where(CommercialOutcome.campaign_id == campaign_id)
+                .order_by(CommercialOutcome.occurred_at.desc(), CommercialOutcome.created_at.desc(), CommercialOutcome.id.asc())
             )
             .scalars()
             .all()

@@ -238,6 +238,16 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         ForeignKey("commercial_objectives.id"), default=None, index=True
     )
     offer_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("offers.id"), default=None, index=True)
+    # MVP-36B: same reasoning as commercial_objective_id/offer_id above — a
+    # commercial.outcome.recorded/commercial.outcome.corrected event must
+    # identify its exact CommercialOutcome row. Nullable, single-column,
+    # matching every other AuditEvent subject FK exactly — no composite
+    # audit FK, no AuditEvent-specific candidate key (MVP-36A-R1 §12: the
+    # authoritative replacement link is the row's own supersedes_outcome_id,
+    # never a new audit-table column).
+    commercial_outcome_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("commercial_outcomes.id"), default=None, index=True
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,
