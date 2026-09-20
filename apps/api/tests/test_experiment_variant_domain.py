@@ -184,8 +184,8 @@ def test_writer_surface_is_append_only_and_has_no_lifecycle() -> None:
     public = {name for name in dir(ExperimentVariantRepository) if not name.startswith("_")}
     assert public == {
         "count_for_experiment", "counts_for_versions", "create", "exists_for_definition_version",
-        "get_by_workspace_and_request_id", "list_for_experiment", "list_labels_for_version",
-        "max_ordinal_for_version",
+        "get_by_workspace_and_request_id", "list_by_ids", "list_for_definition_version", "list_for_experiment",
+        "list_labels_for_version", "max_ordinal_for_version",
     }
     assert not {n for n in dir(ExperimentVariantService) if n.startswith(("update", "delete", "edit", "correct", "retire", "supersede"))}
     assert hasattr(ExperimentVariantService, "declare_variant")

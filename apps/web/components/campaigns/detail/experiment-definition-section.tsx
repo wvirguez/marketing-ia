@@ -25,6 +25,7 @@ import { ApiError } from "@/lib/api/client";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { ComparisonType, ExperimentPublic } from "@/types/strategy";
 import { ExperimentVariantsSection } from "./experiment-variants-section";
+import { ExecutionAuthorizationSection } from "./execution-authorization-section";
 import { MeasurementContractSection } from "./measurement-contract-section";
 
 const PROSE_MAX = 1000;
@@ -323,6 +324,16 @@ export function ExperimentDefinitionSection({
 
       {definition && (
         <MeasurementContractSection
+          campaignId={campaignId}
+          experiment={experiment}
+          definition={definition}
+          role={role}
+          onChanged={onChanged}
+        />
+      )}
+
+      {definition && (
+        <ExecutionAuthorizationSection
           campaignId={campaignId}
           experiment={experiment}
           definition={definition}

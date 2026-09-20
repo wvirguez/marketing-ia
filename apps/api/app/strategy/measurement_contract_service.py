@@ -37,10 +37,17 @@ _has_pinning_children`` seam ``ExperimentVariantService`` already
 participates in — Contract and Variant are independent, equal-weight
 siblings; this service never checks Variant's existence and vice versa.
 
-Contract freeze (MVP-39B §E/§19): deliberately NOT implemented here. A
-Contract version stays revisable indefinitely within this domain's own
-boundary (MVP39B-OBS-2) — a future Execution Authorization domain owns any
-future Contract-pinning seam.
+Contract freeze (MVP-39B §E/§19; resolved MVP-40, frozen Design Freeze
+§O/§P): a Contract revision is refused (``MeasurementContractFrozenByAuthorizationError``)
+while an ACTIVE ``ExecutionAuthorization`` pins the current Contract tip —
+checked here, under the same Experiment row lock, via
+``ExecutionAuthorizationRepository.exists_active_for_contract_version``.
+This is the ONLY place the freeze is enforced; ``ExecutionAuthorization``
+itself carries no ``status``/``frozen_at`` field. The freeze lifts
+automatically the moment no active Authorization remains for the
+Experiment (EXAUTH-DF-OBS-1: this reopens on revocation regardless of any
+real-world execution history, since Authorization deliberately carries no
+execution-start awareness).
 
 Only the two known unique violations on ``measurement_contract_versions``
 are translated (``experiment_id``+``version`` → ``MEASUREMENT_CONTRACT_
@@ -67,6 +74,7 @@ from app.core.api_errors import (
     IdempotencyKeyConflictError,
     MeasurementContractBaseStaleError,
     MeasurementContractDefinitionVersionNotCurrentError,
+    MeasurementContractFrozenByAuthorizationError,
     MeasurementContractStrategyStaleError,
     MeasurementContractSuccessCriterionRequiredError,
     MeasurementContractUnchangedError,
@@ -79,6 +87,7 @@ from app.strategy.models import (
     MeasurementContractVersion,
 )
 from app.strategy.repository import (
+    ExecutionAuthorizationRepository,
     ExperimentDefinitionRepository,
     ExperimentRepository,
     HypothesisRepository,
@@ -131,6 +140,7 @@ class ExperimentMeasurementContractService:
         self.experiments = ExperimentRepository(session)
         self.definitions = ExperimentDefinitionRepository(session)
         self.contracts = MeasurementContractRepository(session)
+        self.authorizations = ExecutionAuthorizationRepository(session)
         self.events = AuditEventRepository(session)
 
     # --- reads -------------------------------------------------------------
@@ -254,6 +264,11 @@ class ExperimentMeasurementContractService:
         contract_tip_version = contract_tip.version if contract_tip is not None else 0
         if base_version != contract_tip_version:
             raise MeasurementContractBaseStaleError()
+
+        if contract_tip is not None and self.authorizations.exists_active_for_contract_version(
+            contract_version_id=contract_tip.id
+        ):
+            raise MeasurementContractFrozenByAuthorizationError()
 
         definition_tip = self.definitions.get_tip(experiment_id=experiment_id, workspace_id=workspace_id)
         if definition_tip is None or definition_tip.id != requested_definition_id:

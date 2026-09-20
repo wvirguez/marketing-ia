@@ -6,16 +6,20 @@
 
 import { request } from "@/lib/api/client";
 import type {
+  AuthorizeExecutionRequest,
   CreateExperimentRequest,
   CreateHypothesisRequest,
   DeclareExperimentDefinitionRequest,
   DeclareMeasurementContractRequest,
   DeclareVariantRequest,
+  ExecutionAuthorizationHistoryResponse,
+  ExecutionAuthorizationPublic,
   ExperimentDefinitionPublic,
   ExperimentPublic,
   HypothesisPublic,
   MeasurementContractHistoryResponse,
   MeasurementContractPublic,
+  RevokeExecutionAuthorizationRequest,
   StrategyOutputResponse,
   VariantListResponse,
   VariantPublic,
@@ -136,5 +140,52 @@ export async function getMeasurementContractHistory(
   return request<MeasurementContractHistoryResponse>(
     `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/measurement-contract/history`,
     { method: "GET" },
+  );
+}
+
+// MVP-40: Execution Authorization. The client never names the Definition,
+// Contract or Variants — the server pins whatever is current.
+export async function authorizeExecution(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  payload: AuthorizeExecutionRequest,
+): Promise<ExecutionAuthorizationPublic> {
+  return request<ExecutionAuthorizationPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorization`,
+    { method: "POST", body: payload },
+  );
+}
+
+// MVP-40: the current ACTIVE Authorization, or null.
+export async function getExecutionAuthorization(
+  campaignPublicId: string,
+  experimentPublicId: string,
+): Promise<ExecutionAuthorizationPublic | null> {
+  return request<ExecutionAuthorizationPublic | null>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorization`,
+    { method: "GET" },
+  );
+}
+
+// MVP-40: the unpaginated ascending history (active and revoked alike).
+export async function getExecutionAuthorizationHistory(
+  campaignPublicId: string,
+  experimentPublicId: string,
+): Promise<ExecutionAuthorizationHistoryResponse> {
+  return request<ExecutionAuthorizationHistoryResponse>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorization/history`,
+    { method: "GET" },
+  );
+}
+
+// MVP-40: revokes the current ACTIVE Authorization (one-way; reason required).
+export async function revokeExecutionAuthorization(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  payload: RevokeExecutionAuthorizationRequest,
+): Promise<ExecutionAuthorizationPublic> {
+  return request<ExecutionAuthorizationPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorization/revoke`,
+    { method: "POST", body: payload },
   );
 }

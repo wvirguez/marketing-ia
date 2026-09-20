@@ -15,6 +15,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.strategy.models import (
+    EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH,
+    EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH,
+    EXECUTION_AUTHORIZATION_REVOKED_REASON_MAX_LENGTH,
+    EXECUTION_AUTHORIZATION_UNIT_OF_ASSIGNMENT_MAX_LENGTH,
     EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH,
     EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH,
     EXPERIMENT_DEFINITION_MAX_CONTROLLED_FACTORS,
@@ -26,6 +30,7 @@ from app.strategy.models import (
     MEASUREMENT_CONTRACT_SIGNAL_NAME_MAX_LENGTH,
     ComparisonType,
     Experiment,
+    ExecutionAuthorization,
     ExperimentDefinitionVersion,
     ExperimentVariant,
     ExpectedDirection,
@@ -678,4 +683,126 @@ def measurement_contract_to_public(
         decision_rule_intent=contract.decision_rule_intent,
         signals=[required_signal_to_public(signal) for signal in signals],
         created_at=contract.created_at,
+    )
+
+
+# MVP-40 (frozen Execution Authorization Design Freeze §B/§D/§AF): the
+# client never supplies definition_version_id/contract_version_id/Variant
+# ids — Authorization always pins whatever is CURRENT at write time. No
+# allocation, assignment, exposure, tracking, target, validity, or
+# execution-start field is ever accepted (``extra="forbid"``).
+class AuthorizeExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH)
+    unit_of_assignment: str = Field(min_length=1, max_length=EXECUTION_AUTHORIZATION_UNIT_OF_ASSIGNMENT_MAX_LENGTH)
+    allocation_design: str = Field(min_length=1, max_length=EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH)
+
+    @field_validator("client_request_id", "unit_of_assignment", "allocation_design", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _client_request_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator("unit_of_assignment")
+    @classmethod
+    def _unit_of_assignment_rules(cls, value: str) -> str:
+        return _require_single_line(_reject_nul(value))
+
+    @field_validator("allocation_design")
+    @classmethod
+    def _allocation_design_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class RevokeExecutionAuthorizationRequest(BaseModel):
+    """MVP-40 (frozen Design Freeze §L/§19): reason is required — pairs with
+    the DB-level ``revocation_pairing`` CHECK on ``revoked_at``/
+    ``revoked_reason``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=EXECUTION_AUTHORIZATION_REVOKED_REASON_MAX_LENGTH)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class ExecutionAuthorizationVariantPublic(BaseModel):
+    """MVP-40: one snapshotted Variant reference within an Authorization's
+    Variant-set — the durable ``ExperimentVariant`` row remains the sole
+    source of label/description (frozen §G)."""
+
+    id: str
+    label: str
+    condition_description: str
+
+
+class ExecutionAuthorizationPublic(BaseModel):
+    """MVP-40: one immutable Execution Authorization. Public ids only — no
+    internal UUID. No status/execution_started/assignment/exposure/
+    tracking-valid/measurement-ready/result/winner field exists anywhere —
+    ``active`` is the only derived state, exactly ``revoked_at IS NULL``."""
+
+    id: str
+    experiment_id: str
+    definition_version_id: str
+    contract_version_id: str
+    unit_of_assignment: str
+    allocation_design: str
+    variants: list[ExecutionAuthorizationVariantPublic]
+    # Informational only (frozen T4): counts of the pinned Contract's declared
+    # signals — never a claim that tracking exists, is implemented or valid.
+    signal_count: int
+    tracking_required_signal_count: int
+    active: bool
+    revoked_at: datetime | None
+    revoked_reason: str | None
+    superseded_by: str | None
+    created_at: datetime
+
+
+class ExecutionAuthorizationHistoryResponse(BaseModel):
+    experiment_id: str
+    current_id: str | None
+    authorizations: list[ExecutionAuthorizationPublic]
+
+
+def execution_authorization_to_public(
+    authorization: ExecutionAuthorization,
+    *,
+    experiment_public_id: str,
+    definition_version_public_id: str,
+    contract_version_public_id: str,
+    variants: list[ExecutionAuthorizationVariantPublic],
+    signal_count: int,
+    tracking_required_signal_count: int,
+    superseded_by_public_id: str | None,
+) -> ExecutionAuthorizationPublic:
+    return ExecutionAuthorizationPublic(
+        id=authorization.public_id,
+        experiment_id=experiment_public_id,
+        definition_version_id=definition_version_public_id,
+        contract_version_id=contract_version_public_id,
+        unit_of_assignment=authorization.unit_of_assignment,
+        allocation_design=authorization.allocation_design,
+        variants=variants,
+        signal_count=signal_count,
+        tracking_required_signal_count=tracking_required_signal_count,
+        active=authorization.revoked_at is None,
+        revoked_at=authorization.revoked_at,
+        revoked_reason=authorization.revoked_reason,
+        superseded_by=superseded_by_public_id,
+        created_at=authorization.created_at,
     )

@@ -634,3 +634,68 @@ class MeasurementContractSuccessCriterionRequiredError(ApiError):
 
     def __init__(self, message: str = "A CONTROLLED comparison requires a success_criterion.") -> None:
         super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED")
+
+
+class ExecutionAuthorizationStrategyStaleError(ApiError):
+    """MVP-40 (frozen Design Freeze §C/§Q): a new Execution Authorization may
+    only be created for an Experiment whose parent Strategy is still the
+    Campaign's current version — the same Option-A rule as every other
+    writer in this chain."""
+
+    def __init__(
+        self,
+        message: str = "This Experiment belongs to a Strategy that is no longer current and cannot be authorized.",
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_STRATEGY_STALE")
+
+
+class ExecutionAuthorizationNoMeasurementContractError(ApiError):
+    """MVP-40 (frozen Design Freeze §P): Authorization always requires an
+    existing Measurement Contract tip — there is no Authorization without
+    a Contract."""
+
+    def __init__(
+        self, message: str = "This Experiment has no Measurement Contract and cannot be authorized."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_NO_MEASUREMENT_CONTRACT")
+
+
+class ExecutionAuthorizationInsufficientVariantsError(ApiError):
+    """MVP-40 (frozen Design Freeze §I/§8): OBSERVATIONAL requires at least
+    one declared Variant; CONTROLLED requires at least two — derived from
+    ``comparison_type=CONTROLLED``'s own existing meaning, not an arbitrary
+    number."""
+
+    def __init__(
+        self, message: str = "This Experiment does not have enough declared Variants to be authorized."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_INSUFFICIENT_VARIANTS")
+
+
+class ExecutionAuthorizationNoneActiveError(ApiError):
+    """MVP-40 (frozen Design Freeze §19): revocation requires an active
+    Authorization to revoke. The revoke route names no explicit
+    Authorization id (at most one can ever be active per Experiment, per
+    the frozen single-active-Authorization invariant), so "already
+    revoked" and "never existed" are indistinguishable at this API shape
+    and collapse into this one typed error (EXAUTH-IMPL-OBS-1 — mirrors
+    ``CommercialObjectiveAlreadySupersededError``'s intent, adapted to a
+    route with no explicit target id)."""
+
+    def __init__(self, message: str = "There is no active Execution Authorization to revoke.") -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_NONE_ACTIVE")
+
+
+class MeasurementContractFrozenByAuthorizationError(ApiError):
+    """MVP-40 (frozen Design Freeze §O, MVP39B-OBS-2 resolution): a
+    Measurement Contract revision is refused while an ACTIVE Execution
+    Authorization pins the current Contract tip. Reopens automatically
+    once no active Authorization remains for the Experiment (§P)."""
+
+    def __init__(
+        self,
+        message: str = (
+            "This measurement contract is frozen by an active execution authorization and cannot be revised."
+        ),
+    ) -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_FROZEN_BY_AUTHORIZATION")

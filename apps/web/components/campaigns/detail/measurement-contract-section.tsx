@@ -156,6 +156,8 @@ function describeContractError(error: unknown): string {
         return "Este experimento pertenece a una versión de la estrategia que ya no es la vigente, por lo que no admite un nuevo contrato de medición.";
       case "MEASUREMENT_CONTRACT_BASE_STALE":
         return "El contrato de medición cambió mientras lo editabas. Se actualizó la vista con la versión vigente; revísala y vuelve a intentar.";
+      case "MEASUREMENT_CONTRACT_FROZEN_BY_AUTHORIZATION":
+        return "El contrato de medición está congelado por una autorización de ejecución activa. Revoca esa autorización para poder revisarlo.";
       case "MEASUREMENT_CONTRACT_UNCHANGED":
         return "No hay cambios respecto al contrato de medición vigente.";
       case "MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED":

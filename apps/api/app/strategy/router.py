@@ -39,6 +39,22 @@ plus four governed write routes and two governed read routes:
         the current tip (or ``null``) and the unpaginated version history.
         No freeze/execution/result endpoint exists — this domain implements
         none of those.
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-authorization
+    GET  /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-authorization
+    GET  /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-authorization/history
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-authorization/revoke
+        (MVP-40, frozen Execution Authorization Design Freeze) — asserts only
+        that ONE specific, immutable configuration (current Definition tip +
+        the complete current Variant set + current Measurement Contract tip)
+        has been authorized to begin future execution. The client never
+        supplies which Definition/Contract/Variants — Authorization always
+        pins whatever is current under lock. Idempotent on
+        ``client_request_id`` only (no ``base_version``: an Authorization is
+        never revised, only superseded). At most one ACTIVE Authorization
+        exists per Experiment; a new valid request automatically supersedes
+        the prior one. Revocation is one-way and requires a reason. No
+        allocation/assignment/exposure/tracking-validation/result/winner
+        endpoint or field exists anywhere in this surface.
 
 No other write endpoint exists here — Strategy/Positioning themselves
 remain writable only via the deterministic bootstrap
@@ -60,24 +76,32 @@ from app.auth.dependencies import get_current_user, get_current_workspace, requi
 from app.campaigns.service import CampaignAccessService
 from app.persistence.session import get_db
 from app.strategy.definition_service import ExperimentDefinitionService
+from app.strategy.execution_authorization_service import ExperimentExecutionAuthorizationService
 from app.strategy.measurement_contract_service import ExperimentMeasurementContractService
+from app.strategy.models import ExecutionAuthorization, ExecutionAuthorizationVariant
 from app.strategy.schemas import (
+    AuthorizeExecutionRequest,
     CreateExperimentRequest,
     CreateHypothesisRequest,
     CreateVariantRequest,
     DeclareExperimentDefinitionRequest,
     DeclareMeasurementContractRequest,
+    ExecutionAuthorizationHistoryResponse,
+    ExecutionAuthorizationPublic,
+    ExecutionAuthorizationVariantPublic,
     ExperimentDefinitionHistoryResponse,
     ExperimentDefinitionPublic,
     ExperimentPublic,
     HypothesisPublic,
     MeasurementContractHistoryResponse,
     MeasurementContractPublic,
+    RevokeExecutionAuthorizationRequest,
     StrategyOutputResponse,
     VariantListResponse,
     VariantPublic,
     comparison_label_for,
     definition_to_public,
+    execution_authorization_to_public,
     experiment_to_public,
     hypothesis_to_public,
     measurement_contract_label_for,
@@ -505,4 +529,195 @@ async def get_measurement_contract_history(
             )
             for version, signals in versions
         ],
+    )
+
+
+def _execution_authorization_to_public(
+    db: Session,
+    authorization: ExecutionAuthorization,
+    snapshot_rows: list[ExecutionAuthorizationVariant],
+    *,
+    experiment_public_id: str,
+    superseded_by_public_id: str | None,
+) -> ExecutionAuthorizationPublic:
+    """MVP-40: resolves the pinned Definition/Contract/Variant-set back to
+    their public ids for one Authorization row (no N+1 across a history
+    listing, since callers batch-load the Variant set once per row)."""
+    definition = ExperimentDefinitionService(db).definitions.get_by_id(authorization.definition_version_id)
+    contract = ExperimentMeasurementContractService(db).contracts.get_by_id(authorization.contract_version_id)
+    variant_rows = ExperimentVariantService(db).variants.list_by_ids(
+        variant_ids=[row.variant_id for row in snapshot_rows]
+    )
+    variants_by_id = {variant.id: variant for variant in variant_rows}
+    signals = (
+        ExperimentMeasurementContractService(db).contracts.list_signals_for_version(contract_version_id=contract.id)
+        if contract is not None
+        else []
+    )
+    return execution_authorization_to_public(
+        authorization,
+        experiment_public_id=experiment_public_id,
+        definition_version_public_id=definition.public_id if definition is not None else "",
+        contract_version_public_id=contract.public_id if contract is not None else "",
+        variants=[
+            ExecutionAuthorizationVariantPublic(
+                id=variant.public_id, label=variant.label, condition_description=variant.condition_description
+            )
+            for row in snapshot_rows
+            if (variant := variants_by_id.get(row.variant_id)) is not None
+        ],
+        signal_count=len(signals),
+        tracking_required_signal_count=sum(1 for signal in signals if signal.tracking_required),
+        superseded_by_public_id=superseded_by_public_id,
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-authorization",
+    response_model=ExecutionAuthorizationPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def authorize_execution(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    payload: AuthorizeExecutionRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExecutionAuthorizationPublic:
+    """Authorizes THIS SPECIFIC, current configuration (Experiment + current
+    Definition tip + the complete current Variant set + current Measurement
+    Contract tip) to begin future execution (MVP-40, frozen Execution
+    Authorization Design Freeze). Idempotent on ``client_request_id``: 201
+    for a new Authorization, 200 for a materially equal replay, 409
+    ``IDEMPOTENCY_KEY_CONFLICT`` for the same key against different or
+    since-changed material. A new valid request automatically supersedes
+    any prior active Authorization for the same Experiment — at most one
+    ACTIVE Authorization ever exists per Experiment. Any active workspace
+    membership may call this (MEMBER+, the same tier as Definition/Variant/
+    Contract). AUTHORIZATION != EXECUTION: it does not mean assignment,
+    allocation, delivery, exposure, tracking validation, measurement,
+    evidence, a result, or a winner exists."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    authorization, snapshot_rows, created = ExperimentExecutionAuthorizationService(db).authorize(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        client_request_id=payload.client_request_id,
+        unit_of_assignment=payload.unit_of_assignment,
+        allocation_design=payload.allocation_design,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return _execution_authorization_to_public(
+        db, authorization, snapshot_rows, experiment_public_id=experiment_public_id, superseded_by_public_id=None
+    )
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/execution-authorization",
+    response_model=ExecutionAuthorizationPublic | None,
+)
+async def get_execution_authorization(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExecutionAuthorizationPublic | None:
+    """The current ACTIVE Execution Authorization, or ``null`` if none is
+    active. Readable for any Experiment of the campaign, including one
+    under a superseded Strategy."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment, active, snapshot_rows = ExperimentExecutionAuthorizationService(db).get_current(
+        campaign=campaign, experiment_public_id=experiment_public_id
+    )
+    if active is None:
+        return None
+    return _execution_authorization_to_public(
+        db, active, snapshot_rows, experiment_public_id=experiment.public_id, superseded_by_public_id=None
+    )
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/execution-authorization/history",
+    response_model=ExecutionAuthorizationHistoryResponse,
+)
+async def get_execution_authorization_history(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExecutionAuthorizationHistoryResponse:
+    """Ascending, unpaginated history — every Authorization ever created for
+    this Experiment, active and revoked alike (mirrors the Contract history
+    route's own accepted MVP37B-OBS-2 limit)."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment, rows = ExperimentExecutionAuthorizationService(db).get_history(
+        campaign=campaign, experiment_public_id=experiment_public_id
+    )
+    public_ids_by_id = {authorization.id: authorization.public_id for authorization, _ in rows}
+    current = next((authorization for authorization, _ in rows if authorization.revoked_at is None), None)
+    return ExecutionAuthorizationHistoryResponse(
+        experiment_id=experiment.public_id,
+        current_id=current.public_id if current is not None else None,
+        authorizations=[
+            _execution_authorization_to_public(
+                db,
+                authorization,
+                snapshot_rows,
+                experiment_public_id=experiment.public_id,
+                superseded_by_public_id=(
+                    public_ids_by_id.get(authorization.superseded_by_execution_authorization_id)
+                    if authorization.superseded_by_execution_authorization_id is not None
+                    else None
+                ),
+            )
+            for authorization, snapshot_rows in rows
+        ],
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-authorization/revoke",
+    response_model=ExecutionAuthorizationPublic,
+    dependencies=[Depends(require_csrf)],
+)
+async def revoke_execution_authorization(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    payload: RevokeExecutionAuthorizationRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExecutionAuthorizationPublic:
+    """Revokes the current ACTIVE Execution Authorization for this Experiment
+    (MVP-40, frozen §L/§19) — one-way, non-reversible. A reason is required.
+    409 ``EXECUTION_AUTHORIZATION_NONE_ACTIVE`` if none is currently active.
+    Revocation withdraws authority to begin/continue future execution only —
+    it never means past assignment/exposure/evidence did not occur."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    authorization = ExperimentExecutionAuthorizationService(db).revoke(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        reason=payload.reason,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    snapshot_rows = ExperimentExecutionAuthorizationService(db).authorizations.list_variants_for_authorization(
+        authorization_id=authorization.id
+    )
+    return _execution_authorization_to_public(
+        db, authorization, snapshot_rows, experiment_public_id=experiment_public_id, superseded_by_public_id=None
     )

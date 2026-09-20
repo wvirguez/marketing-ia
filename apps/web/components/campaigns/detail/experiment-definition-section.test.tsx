@@ -11,9 +11,17 @@ vi.mock("@/lib/api/strategy", () => ({
   listVariants: vi.fn(),
   declareMeasurementContract: vi.fn(),
   getMeasurementContract: vi.fn(),
+  getExecutionAuthorization: vi.fn(),
+  getExecutionAuthorizationHistory: vi.fn(),
 }));
 
-import { declareExperimentDefinition, listVariants, getMeasurementContract } from "@/lib/api/strategy";
+import {
+  declareExperimentDefinition,
+  listVariants,
+  getMeasurementContract,
+  getExecutionAuthorization,
+  getExecutionAuthorizationHistory,
+} from "@/lib/api/strategy";
 
 const mockDeclare = vi.mocked(declareExperimentDefinition);
 
@@ -99,6 +107,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listVariants).mockResolvedValue({ experiment_id: "EXP-1", items: [], limit: 100, offset: 0, total: 0 });
   vi.mocked(getMeasurementContract).mockResolvedValue(null);
+  vi.mocked(getExecutionAuthorization).mockResolvedValue(null);
+  vi.mocked(getExecutionAuthorizationHistory).mockResolvedValue({
+    experiment_id: "EXP-1",
+    current_id: null,
+    authorizations: [],
+  });
   uuidCounter = 0;
   vi.spyOn(crypto, "randomUUID").mockImplementation(
     () => `uuid-${++uuidCounter}` as ReturnType<typeof crypto.randomUUID>,

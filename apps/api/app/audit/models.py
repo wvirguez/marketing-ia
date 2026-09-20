@@ -286,6 +286,17 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # MVP-40: same reasoning as measurement_contract_id above — a
+    # strategy.execution_authorization.authorized/...revoked event must
+    # identify its exact ExecutionAuthorization row. Nullable, single-column,
+    # matching every other AuditEvent subject FK exactly. No
+    # ExecutionAuthorizationVariant-level FK — one aggregate audit event
+    # covers the whole Authorization, its Variant-set snapshot included.
+    execution_authorization_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("execution_authorizations.id", name="fk_audit_events_execution_authorization_id"),
+        default=None,
+        index=True,
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

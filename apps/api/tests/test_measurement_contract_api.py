@@ -551,9 +551,12 @@ def test_no_evidence_measurement_or_tracking_row_is_ever_created(campaign_run_cl
 
 
 def test_no_experimental_or_execution_claim_table_or_column_exists() -> None:
+    # MVP-40: Execution Authorization is now intentionally governed, so the
+    # firewall is semantic — no allocation / assignment / randomization /
+    # contamination table exists (execution_auth* is legitimate now).
     assert not [
         t for t in Base.metadata.tables
-        if any(word in t for word in ("allocation", "randomiz", "contamination", "execution_auth"))
+        if any(word in t for word in ("allocation", "assignment", "randomiz", "contamination"))
     ]
     columns = set(MeasurementContractVersion.__table__.columns.keys()) | set(
         MeasurementContractRequiredSignal.__table__.columns.keys()

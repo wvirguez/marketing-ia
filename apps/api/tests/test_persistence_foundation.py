@@ -138,7 +138,14 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     to an immutable definition version, exactly like Variant; no evidence
     binding/tracking-implementation/allocation/exposure/execution-
     authorization/result/winner column, and no freeze/status column of any
-    kind). No Content
+    kind) — and the MVP-40 governed Execution Authorization persistence
+    contract (frozen Execution Authorization Discovery/Design Freeze;
+    owned by ``strategy`` — one append-only, single-active-per-Experiment
+    table pinning the exact Definition/Contract tips, plus its
+    Variant-set snapshot children; no allocation/assignment/exposure/
+    evidence-binding/tracking-validation/result/winner/validity/
+    causality column, and no execution-started column of any kind). No
+    Content
     Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
     Snapshot/Agent Run/Handoff/Return/Gate
@@ -222,6 +229,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "experiment_variants",
         "measurement_contract_versions",
         "measurement_contract_signals",
+        "execution_authorizations",
+        "execution_authorization_variants",
     }
 
 

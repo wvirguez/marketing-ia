@@ -100,7 +100,7 @@ def test_strategy_revision_migration_round_trip(monkeypatch):
 
             with engine.connect() as connection:
                 assert connection.scalar(text("select count(*) from strategy_revisions")) == 0
-                assert connection.scalar(text("select version_num from alembic_version")) == "2536e4a8cddc"  # MVP-39: current head, bumped from b41d7a90c2e5
+                assert connection.scalar(text("select version_num from alembic_version")) == "1fe7d6577113"  # MVP-40: current head, bumped from 2536e4a8cddc
 
             if cycle == 0:
                 command.downgrade(config, "eae9bb978d9c")

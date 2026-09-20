@@ -23,6 +23,8 @@ from app.core.ids import generate_public_id
 from app.orchestration.models import RunStageExecution
 from app.strategy.models import (
     Experiment,
+    ExecutionAuthorization,
+    ExecutionAuthorizationVariant,
     ExperimentDefinitionVersion,
     ExperimentVariant,
     Hypothesis,
@@ -496,6 +498,35 @@ class ExperimentVariantRepository:
             is not None
         )
 
+    def list_by_ids(self, *, variant_ids: list[uuid.UUID]) -> list[ExperimentVariant]:
+        """MVP-40: batched lookup for resolving an Authorization's
+        Variant-set snapshot back to its durable label/description/public_id
+        (no N+1). Order is not guaranteed — callers that need a specific
+        order re-key by id."""
+        if not variant_ids:
+            return []
+        return list(
+            self.session.execute(select(ExperimentVariant).where(ExperimentVariant.id.in_(variant_ids)))
+            .scalars()
+            .all()
+        )
+
+    def list_for_definition_version(self, *, definition_version_id: uuid.UUID) -> list[ExperimentVariant]:
+        """MVP-40: every Variant currently declared under one Definition
+        version, ordered by ordinal — the complete-snapshot source for
+        ``ExecutionAuthorizationService`` (frozen Design Freeze §7/§9). Read
+        under the same Experiment row lock the write already holds, so the
+        result is deterministic for the transaction that reads it."""
+        return list(
+            self.session.execute(
+                select(ExperimentVariant)
+                .where(ExperimentVariant.definition_version_id == definition_version_id)
+                .order_by(ExperimentVariant.ordinal.asc())
+            )
+            .scalars()
+            .all()
+        )
+
     def counts_for_versions(
         self, *, definition_version_ids: list[uuid.UUID], workspace_id: uuid.UUID
     ) -> dict[uuid.UUID, int]:
@@ -616,6 +647,15 @@ class MeasurementContractRepository:
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
 
+    def get_by_id(self, contract_version_id: uuid.UUID) -> MeasurementContractVersion | None:
+        """MVP-40: resolves a version from an already-trusted internal FK
+        reference (``ExecutionAuthorization.contract_version_id``) —
+        read-only, mirrors ``ExperimentDefinitionRepository.get_by_id``
+        exactly."""
+        return self.session.execute(
+            select(MeasurementContractVersion).where(MeasurementContractVersion.id == contract_version_id)
+        ).scalar_one_or_none()
+
     def get_tip(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> MeasurementContractVersion | None:
         return self.session.execute(
             select(MeasurementContractVersion)
@@ -702,3 +742,126 @@ class MeasurementContractRepository:
         return {
             version_id: (version_id in tips, tips.get(version_id)) for version_id in definition_version_ids
         }
+
+
+class ExecutionAuthorizationRepository:
+    """MVP-40: data access for ``ExecutionAuthorization`` and its
+    ``ExecutionAuthorizationVariant`` snapshot children. ``create`` persists
+    the Authorization row and every snapshot child as one atomic unit (same
+    flush sequence, same uncommitted transaction). Revocation/supersession
+    is a direct attribute mutation on an already-loaded row performed by the
+    service (mirrors ``CommercialObjectiveService.supersede_commercial_
+    objective``'s own exact pattern) — no separate repository write method
+    for it. No method here calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        experiment_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        definition_version_id: uuid.UUID,
+        contract_version_id: uuid.UUID,
+        variant_ids: list[uuid.UUID],
+        unit_of_assignment: str,
+        allocation_design: str,
+        client_request_id: str,
+    ) -> tuple[ExecutionAuthorization, list[ExecutionAuthorizationVariant]]:
+        row = ExecutionAuthorization(
+            public_id=generate_public_id("EXA"),
+            workspace_id=workspace_id,
+            experiment_id=experiment_id,
+            definition_version_id=definition_version_id,
+            contract_version_id=contract_version_id,
+            unit_of_assignment=unit_of_assignment,
+            allocation_design=allocation_design,
+            client_request_id=client_request_id,
+        )
+        self.session.add(row)
+        self.session.flush()  # assigns row.id before building the children's FK
+        snapshot_rows = [
+            ExecutionAuthorizationVariant(
+                workspace_id=workspace_id,
+                authorization_id=row.id,
+                experiment_id=experiment_id,
+                variant_id=variant_id,
+            )
+            for variant_id in variant_ids
+        ]
+        self.session.add_all(snapshot_rows)
+        self.session.flush()
+        return row, snapshot_rows
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExecutionAuthorization | None:
+        return self.session.execute(
+            select(ExecutionAuthorization)
+            .where(
+                ExecutionAuthorization.workspace_id == workspace_id,
+                ExecutionAuthorization.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_active_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, for_update: bool = False
+    ) -> ExecutionAuthorization | None:
+        query = select(ExecutionAuthorization).where(
+            ExecutionAuthorization.experiment_id == experiment_id,
+            ExecutionAuthorization.workspace_id == workspace_id,
+            ExecutionAuthorization.revoked_at.is_(None),
+        )
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
+    def exists_active_for_contract_version(self, *, contract_version_id: uuid.UUID) -> bool:
+        """MVP-40 (frozen Design Freeze §O): the Contract-freeze check
+        ``ExperimentMeasurementContractService.declare_or_revise`` performs
+        under its own Experiment row lock."""
+        return (
+            self.session.execute(
+                select(ExecutionAuthorization.id)
+                .where(
+                    ExecutionAuthorization.contract_version_id == contract_version_id,
+                    ExecutionAuthorization.revoked_at.is_(None),
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+    def list_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID
+    ) -> list[ExecutionAuthorization]:
+        """Ascending, unpaginated history (mirrors
+        ``MeasurementContractRepository.list_for_experiment``'s own accepted
+        limit)."""
+        return list(
+            self.session.execute(
+                select(ExecutionAuthorization)
+                .where(
+                    ExecutionAuthorization.experiment_id == experiment_id,
+                    ExecutionAuthorization.workspace_id == workspace_id,
+                )
+                .order_by(ExecutionAuthorization.created_at.asc(), ExecutionAuthorization.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_variants_for_authorization(
+        self, *, authorization_id: uuid.UUID
+    ) -> list[ExecutionAuthorizationVariant]:
+        return list(
+            self.session.execute(
+                select(ExecutionAuthorizationVariant).where(
+                    ExecutionAuthorizationVariant.authorization_id == authorization_id
+                )
+            )
+            .scalars()
+            .all()
+        )

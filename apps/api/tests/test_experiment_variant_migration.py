@@ -156,7 +156,12 @@ def test_variant_migration_round_trip(monkeypatch, postgres_engine):
 
             # Model <-> DB parity for BOTH tables the migration touches.
             for name in (TABLE, VERSIONS):
-                assert _constraint_definitions(engine, name) == _constraint_definitions(postgres_engine, name), name
+                expected = _constraint_definitions(postgres_engine, name)
+                if name == TABLE:
+                    # MVP-40 later added this candidate key (a successor migration's
+                    # concern, proven in test_execution_authorization_migration.py).
+                    expected.pop("uq_experiment_variants_id_experiment_workspace", None)
+                assert _constraint_definitions(engine, name) == expected, name
 
             if cycle == 0:
                 before = set(inspect(engine).get_table_names()) - {TABLE}

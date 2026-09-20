@@ -784,11 +784,12 @@ def test_definition_makes_no_experimental_claim(campaign_run_client: dict) -> No
         "changed_factor", "controlled_factors", "comparison_basis", "scope", "learning_intent",
         "non_conclusion_boundary", "client_request_id", "created_at",
     }
-    # MVP-38: Variant identity is now intentionally governed, so the firewall is
-    # semantic — no allocation / randomization / contamination / execution table.
+    # MVP-40: Execution Authorization is now intentionally governed, so the
+    # firewall is semantic — no allocation / assignment / randomization /
+    # contamination table exists (execution_auth* is legitimate now).
     assert not [
         t for t in Base.metadata.tables
-        if any(word in t for word in ("allocation", "randomiz", "contamination", "execution_auth"))
+        if any(word in t for word in ("allocation", "assignment", "randomiz", "contamination"))
     ]
 
 
@@ -797,8 +798,9 @@ def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_r
 
     spec = create_app().openapi()["paths"]
     pairs = {(method.upper(), path) for path, item in spec.items() for method in item if method in {"get", "post", "put", "patch", "delete"}}
-    # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38) + 3 measurement-contract routes (MVP-39)
-    assert len(pairs) == 104
+    # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38)
+    # + 3 measurement-contract routes (MVP-39) + 4 execution-authorization routes (MVP-40)
+    assert len(pairs) == 108
     prefix = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}"
     definition_pairs = {(m, p) for m, p in pairs if "definition" in p}
     assert definition_pairs == {("POST", f"{prefix}/definition-versions"), ("GET", f"{prefix}/definition-versions")}
@@ -810,7 +812,15 @@ def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_r
         ("GET", f"{prefix}/measurement-contract"),
         ("GET", f"{prefix}/measurement-contract/history"),
     }
-    # MVP-39: Measurement Contract is now intentionally governed, so the firewall is
-    # semantic — no allocation / exposure / execution-authorization / winner / attribution route.
-    for word in ("allocation", "randomiz", "exposure", "execution", "contamination", "winner", "attribution"):
+    authorization_pairs = {(m, p) for m, p in pairs if "execution-authorization" in p}
+    assert authorization_pairs == {
+        ("POST", f"{prefix}/execution-authorization"),
+        ("GET", f"{prefix}/execution-authorization"),
+        ("GET", f"{prefix}/execution-authorization/history"),
+        ("POST", f"{prefix}/execution-authorization/revoke"),
+    }
+    # MVP-40: Execution Authorization is now intentionally governed, so the
+    # firewall is semantic — no allocation / assignment / exposure / winner /
+    # attribution route exists (execution-authorization is legitimate now).
+    for word in ("allocation", "assignment", "randomiz", "exposure", "contamination", "winner", "attribution"):
         assert not [p for _, p in pairs if word in p], word

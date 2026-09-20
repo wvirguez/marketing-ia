@@ -102,11 +102,13 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -461,6 +463,17 @@ class ExperimentVariant(Base, UUIDPrimaryKeyMixin):
         UniqueConstraint(
             "workspace_id", "client_request_id", name="uq_experiment_variants_workspace_client_request_id"
         ),
+        # MVP-40: candidate key purely so ``execution_authorization_variants``
+        # can declare a composite tenant- and Experiment-safe FK on
+        # (variant_id, experiment_id, workspace_id) — the exact same
+        # "give it a real candidate key the moment a composite FK is
+        # foreseeable" pattern already applied to
+        # ``experiment_definition_versions``/``measurement_contract_versions``.
+        # ``id`` is already unique, so every existing row satisfies it — no
+        # backfill.
+        UniqueConstraint(
+            "id", "experiment_id", "workspace_id", name="uq_experiment_variants_id_experiment_workspace"
+        ),
         CheckConstraint("ordinal >= 1", name="ordinal_positive"),
         CheckConstraint(
             "char_length(btrim(label)) > 0 AND char_length(btrim(condition_description)) > 0",
@@ -679,4 +692,187 @@ class MeasurementContractRequiredSignal(Base, UUIDPrimaryKeyMixin):
         String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
     )
     tracking_required: Mapped[bool] = mapped_column(default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+EXECUTION_AUTHORIZATION_UNIT_OF_ASSIGNMENT_MAX_LENGTH = 200
+EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH = 2000
+EXECUTION_AUTHORIZATION_REVOKED_REASON_MAX_LENGTH = 1000
+EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH = 100
+
+
+class ExecutionAuthorization(Base, UUIDPrimaryKeyMixin):
+    """MVP-40 (frozen Execution Authorization Design Freeze): the immutable,
+    append-only record that ONE specific, immutable configuration —
+    (Experiment, the exact ``ExperimentDefinitionVersion`` tip, the complete
+    ``ExperimentVariant`` set existing under that tip, the exact
+    ``MeasurementContractVersion`` tip) — has been authorized to begin
+    future execution.
+
+    EXECUTION AUTHORIZATION != EXECUTION != ASSIGNMENT != EXPOSURE !=
+    EVIDENCE BINDING != TRACKING VALIDATION != EXPERIMENT RESULT != WINNER
+    != HYPOTHESIS VERDICT != EXPERIMENTAL VALIDITY != CAUSALITY. Nothing
+    here writes any table other than ``execution_authorizations``,
+    ``execution_authorization_variants`` and ``audit_events``, allocates a
+    unit, publishes/distributes content, creates evidence, or links to
+    Result/Winner/Learning/CommercialOutcome — no such column exists.
+
+    Subject (frozen Design Freeze §B): pinned by immutable identity
+    reference only, never a live/current join. ``unit_of_assignment``/
+    ``allocation_design`` are the embedded Execution Configuration (frozen
+    §D, model "EC1") — declared intent only, proving nothing about real
+    assignment/allocation/delivery/exposure.
+
+    Lifecycle (frozen §K, model "L4", mirrors ``CommercialObjective``/
+    ``Offer`` exactly): no status enum. ``revoked_at``/``revoked_reason`` —
+    both-null-or-both-set — derive "active" as ``revoked_at IS NULL``.
+    ``superseded_by_execution_authorization_id`` is set only for the
+    automatic-supersession case (frozen §M/§P). Revocation is one-shot and
+    non-reversible; recovery is always a brand-new Authorization, never a
+    reopened one — no Variant mutation exists anywhere (MVP38A-OBS-3
+    preserved, not resolved by mutating Variant).
+
+    Single active Authorization per Experiment (frozen §M): the partial
+    unique index below is the actual DB backstop, never relied on as
+    merely an application-level guard, mirroring
+    ``uq_strategic_decisions_current_recommendation``'s own precedent. A
+    new valid Authorization automatically, atomically supersedes the prior
+    active one in the same transaction — never two committed active rows.
+
+    Strategy (frozen §C, model "S1"): no FK, no persisted reference here.
+    Current Strategy is a create-time gate only, re-derived from
+    ``Hypothesis.strategy_id`` at write time, never stored — an
+    Authorization remains historically valid even after its governing
+    Strategy is later superseded.
+
+    Contract freeze (frozen §O/§P, MVP39B-OBS-2 resolution): NOT a column
+    on this table. ``ExperimentMeasurementContractService.declare_or_revise``
+    itself refuses a Contract revision while an ACTIVE Authorization pins
+    the current tip, and that refusal lifts automatically once no active
+    Authorization remains — the freeze is enforced entirely by the OTHER
+    writer, not by any field here (EXAUTH-DF-OBS-1: this reopens on
+    revocation regardless of any real-world execution history, since this
+    table deliberately carries no execution-start awareness).
+
+    Target/Content/Distribution/Tracking-implementation are all deliberately
+    absent (frozen §T/§U/§V/§W/§X): ``tracking_required`` on a RequiredSignal
+    remains declarative-only and is never mapped, verified, or bound here."""
+
+    __tablename__ = "execution_authorizations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["experiment_id", "workspace_id"],
+            ["experiments.id", "experiments.workspace_id"],
+            name="fk_execution_authorizations_experiment_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["definition_version_id", "experiment_id", "workspace_id"],
+            [
+                "experiment_definition_versions.id",
+                "experiment_definition_versions.experiment_id",
+                "experiment_definition_versions.workspace_id",
+            ],
+            name="fk_execution_authorizations_definition_version_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "measurement_contract_versions.id",
+                "measurement_contract_versions.experiment_id",
+                "measurement_contract_versions.workspace_id",
+            ],
+            name="fk_execution_authorizations_contract_version_workspace",
+        ),
+        # Plain self-FK (frozen §AC): same-workspace/same-Experiment safety
+        # for this specific reference is a WRITER invariant, not a DB
+        # constraint — it can only ever be set by the single atomic
+        # supersession transaction that already holds the Experiment lock
+        # and already knows both rows share the same Experiment (see
+        # ExecutionAuthorizationService._supersede). Explicit, shortened FK
+        # name: the naming convention's own derived name exceeds
+        # PostgreSQL's 63-character identifier limit.
+        ForeignKeyConstraint(
+            ["superseded_by_execution_authorization_id"],
+            ["execution_authorizations.id"],
+            name="fk_execution_authorizations_superseded_by_id",
+        ),
+        # MVP-40: candidate key purely so ``execution_authorization_variants``
+        # can declare a composite tenant-safe FK on (authorization_id,
+        # workspace_id).
+        UniqueConstraint("id", "workspace_id", name="uq_execution_authorizations_id_workspace"),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_execution_authorizations_workspace_client_request_id"
+        ),
+        # The actual DB backstop for "at most one ACTIVE Authorization per
+        # Experiment" (frozen §16) — mirrors
+        # uq_strategic_decisions_current_recommendation exactly.
+        Index(
+            "uq_execution_authorizations_experiment_active",
+            "experiment_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        CheckConstraint(
+            "(revoked_at IS NULL AND revoked_reason IS NULL) OR "
+            "(revoked_at IS NOT NULL AND revoked_reason IS NOT NULL)",
+            name="revocation_pairing",
+        ),
+        CheckConstraint(
+            "char_length(btrim(unit_of_assignment)) > 0 AND char_length(btrim(allocation_design)) > 0",
+            name="text_fields_nonblank",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    definition_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    contract_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    unit_of_assignment: Mapped[str] = mapped_column(String(EXECUTION_AUTHORIZATION_UNIT_OF_ASSIGNMENT_MAX_LENGTH))
+    allocation_design: Mapped[str] = mapped_column(String(EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH))
+    client_request_id: Mapped[str] = mapped_column(String(EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_reason: Mapped[str | None] = mapped_column(
+        String(EXECUTION_AUTHORIZATION_REVOKED_REASON_MAX_LENGTH), default=None
+    )
+    superseded_by_execution_authorization_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecutionAuthorizationVariant(Base, UUIDPrimaryKeyMixin):
+    """MVP-40: one immutable snapshot row per ``ExperimentVariant`` included
+    in an ``ExecutionAuthorization``'s Variant-set snapshot (frozen §G/§9).
+    Pure association — deliberately no ``public_id`` (never an independent
+    future FK target, mirrors ``ContentDistributionTrackingRequirement``'s
+    own no-public-id precedent, NOT ``MeasurementContractRequiredSignal``'s).
+    No ordinal/label duplication — the durable ``ExperimentVariant`` row
+    itself remains the sole source of display data.
+
+    Snapshot completeness (frozen §7/§9): every Variant existing under the
+    pinned DefinitionVersion at Authorization-creation time is included —
+    no selective/partial subset is possible through this writer. A Variant
+    declared afterward is never retroactively added to an already-created
+    Authorization's snapshot."""
+
+    __tablename__ = "execution_authorization_variants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["authorization_id", "workspace_id"],
+            ["execution_authorizations.id", "execution_authorizations.workspace_id"],
+            name="fk_execution_authorization_variants_authorization_workspace",
+        ),
+        ForeignKeyConstraint(
+            ["variant_id", "experiment_id", "workspace_id"],
+            ["experiment_variants.id", "experiment_variants.experiment_id", "experiment_variants.workspace_id"],
+            name="fk_execution_authorization_variants_variant_workspace",
+        ),
+        UniqueConstraint(
+            "authorization_id", "variant_id", name="uq_execution_authorization_variants_authorization_variant"
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    authorization_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    variant_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

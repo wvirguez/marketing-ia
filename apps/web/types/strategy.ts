@@ -215,3 +215,53 @@ export interface DeclareMeasurementContractRequest {
   decision_rule_intent: string | null;
   signals: RequiredSignalRequest[];
 }
+
+// MVP-40: mirrors apps/api/app/strategy/schemas.py::ExecutionAuthorizationPublic.
+// An Execution Authorization asserts only that ONE specific, immutable
+// configuration (the current Definition tip, the COMPLETE Variant set and the
+// current Measurement Contract tip, plus a declared-only Execution
+// Configuration) was authorized to begin future execution. There is
+// deliberately no status/execution_started/assignment/exposure/tracking-valid/
+// measurement-ready/result/winner/validity/causality field. `active` is the
+// only derived state (revoked_at is null); signal counts are informational
+// (a declared intent, never a claim that tracking exists or is valid).
+export interface ExecutionAuthorizationVariantPublic {
+  id: string;
+  label: string;
+  condition_description: string;
+}
+
+export interface ExecutionAuthorizationPublic {
+  id: string;
+  experiment_id: string;
+  definition_version_id: string;
+  contract_version_id: string;
+  unit_of_assignment: string;
+  allocation_design: string;
+  variants: ExecutionAuthorizationVariantPublic[];
+  signal_count: number;
+  tracking_required_signal_count: number;
+  active: boolean;
+  revoked_at: string | null;
+  revoked_reason: string | null;
+  superseded_by: string | null;
+  created_at: string;
+}
+
+export interface ExecutionAuthorizationHistoryResponse {
+  experiment_id: string;
+  current_id: string | null;
+  authorizations: ExecutionAuthorizationPublic[];
+}
+
+// The client NEVER supplies the Definition, Contract or Variants — the server
+// pins whatever is current under lock.
+export interface AuthorizeExecutionRequest {
+  client_request_id: string;
+  unit_of_assignment: string;
+  allocation_design: string;
+}
+
+export interface RevokeExecutionAuthorizationRequest {
+  reason: string;
+}
