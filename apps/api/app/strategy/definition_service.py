@@ -54,6 +54,7 @@ from app.strategy.repository import (
     ExperimentRepository,
     ExperimentVariantRepository,
     HypothesisRepository,
+    MeasurementContractRepository,
     StrategyRepository,
 )
 
@@ -89,34 +90,50 @@ class ExperimentDefinitionService:
         self.experiments = ExperimentRepository(session)
         self.definitions = ExperimentDefinitionRepository(session)
         self.variants = ExperimentVariantRepository(session)
+        self.contracts = MeasurementContractRepository(session)
         self.events = AuditEventRepository(session)
 
     # --- definition lock (derived) ---------------------------------------
 
     def _has_pinning_children(self, *, definition_version_id: uuid.UUID) -> bool:
-        """THE central Definition-lock seam (MVP-38B §E/§H). Must be called
-        with the Strategy and Experiment row locks already held. Today the
-        only pinning child is a Variant; a future pinning child (e.g. a
-        measurement contract) adds its own existence check HERE rather than
-        inventing separate lock semantics."""
-        return self.variants.exists_for_definition_version(definition_version_id=definition_version_id)
+        """THE central Definition-lock seam (MVP-38B §E/§H, extended MVP-39B
+        §17). Must be called with the Strategy and Experiment row locks
+        already held. Two independent, equal-weight pinning children exist
+        today — a Variant and a Measurement Contract (MVP-39) — neither
+        blocks the other (MVP-39B §20/§29: both check only THIS seam, never
+        each other). A future pinning child adds its own existence check
+        HERE rather than inventing separate lock semantics."""
+        return self.variants.exists_for_definition_version(
+            definition_version_id=definition_version_id
+        ) or self.contracts.exists_for_definition_version(definition_version_id=definition_version_id)
 
     def pin_states_for_versions(
         self, *, workspace_id: uuid.UUID, definition_version_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, tuple[int, bool]]:
-        """``{version_id: (variant_count, is_pinned)}`` — derived, batched
-        (one grouped query), never stored. ``is_pinned`` means only that a
-        governed pinning child exists; for MVP-38 it equals
-        ``variant_count > 0`` but is computed from the set of pinning
-        children so future children participate without changing
-        ``variant_count``."""
+    ) -> dict[uuid.UUID, tuple[int, bool, bool, int | None]]:
+        """``{version_id: (variant_count, is_pinned, has_measurement_contract,
+        measurement_contract_version)}`` — derived, batched (two grouped
+        queries total, never N+1), never stored.
+
+        ``variant_count`` keeps its exact MVP-38 meaning (Variant rows
+        only); a Contract never increments it (MVP-39B §38). ``is_pinned``
+        is WIDENED (MVP-39B §17/§38, an expected extension of the existing
+        derivation, not new semantics): true whenever EITHER a Variant OR a
+        Measurement Contract exists for that version — computed from the
+        set of pinning children, exactly as this method's own MVP-38
+        docstring already predicted, so a Contract-only version (no
+        Variant declared) is also correctly reported pinned."""
         variant_counts = self.variants.counts_for_versions(
             definition_version_ids=definition_version_ids, workspace_id=workspace_id
         )
-        return {
-            version_id: (variant_counts.get(version_id, 0), variant_counts.get(version_id, 0) > 0)
-            for version_id in definition_version_ids
-        }
+        contract_states = self.contracts.contract_states_for_versions(
+            definition_version_ids=definition_version_ids, workspace_id=workspace_id
+        )
+        result: dict[uuid.UUID, tuple[int, bool, bool, int | None]] = {}
+        for version_id in definition_version_ids:
+            variant_count = variant_counts.get(version_id, 0)
+            has_contract, contract_version = contract_states.get(version_id, (False, None))
+            result[version_id] = (variant_count, variant_count > 0 or has_contract, has_contract, contract_version)
+        return result
 
     # --- reads -----------------------------------------------------------
 

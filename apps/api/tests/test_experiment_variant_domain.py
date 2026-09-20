@@ -164,15 +164,19 @@ def test_the_definition_lock_is_decided_only_by_the_central_seam(db_session, mon
 
 
 def test_the_pin_state_is_derived_and_batched(db_session) -> None:
+    """MVP-39B §17/§38: ``is_pinned`` is now WIDENED (Variant OR Measurement
+    Contract), while ``variant_count`` keeps its exact MVP-38 meaning. A
+    Variant-only scenario never sets ``has_measurement_contract``; the
+    Contract-only case is covered by ``test_measurement_contract_domain.py``."""
     campaign, _s, _h, experiment, actor = build_current_experiment(db_session)
     version = _define(db_session, campaign, experiment, actor)
     service = ExperimentDefinitionService(db_session)
     states = service.pin_states_for_versions(workspace_id=campaign.workspace_id, definition_version_ids=[version.id])
-    assert states == {version.id: (0, False)}
+    assert states == {version.id: (0, False, False, None)}
     _declare(db_session, campaign, experiment, actor, version, label="A", key="k-1")
     _declare(db_session, campaign, experiment, actor, version, label="B", key="k-2")
     states = service.pin_states_for_versions(workspace_id=campaign.workspace_id, definition_version_ids=[version.id])
-    assert states == {version.id: (2, True)}
+    assert states == {version.id: (2, True, False, None)}
     assert service.pin_states_for_versions(workspace_id=campaign.workspace_id, definition_version_ids=[]) == {}
 
 

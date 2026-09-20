@@ -21,11 +21,17 @@ from app.strategy.models import (
     EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH,
     EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH,
     EXPERIMENT_VARIANT_LABEL_MAX_LENGTH,
+    MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH,
+    MEASUREMENT_CONTRACT_SIGNAL_DESCRIPTION_MAX_LENGTH,
+    MEASUREMENT_CONTRACT_SIGNAL_NAME_MAX_LENGTH,
     ComparisonType,
     Experiment,
     ExperimentDefinitionVersion,
     ExperimentVariant,
+    ExpectedDirection,
     Hypothesis,
+    MeasurementContractRequiredSignal,
+    MeasurementContractVersion,
     Positioning,
     Strategy,
 )
@@ -124,7 +130,13 @@ class ExperimentDefinitionPublic(BaseModel):
     # means only that — it is a lock indicator, never a validity/readiness/
     # causality claim, and it never changes ``comparison_label``.
     variant_count: int = 0
+    # MVP-39 (additive, derived, NEVER stored): ``is_pinned`` is WIDENED —
+    # true whenever EITHER a Variant OR a Measurement Contract exists for
+    # this version (MVP-39B §17/§38). ``variant_count`` keeps its exact
+    # MVP-38 meaning; a Contract never increments it.
     is_pinned: bool = False
+    has_measurement_contract: bool = False
+    measurement_contract_version: int | None = None
 
 
 class ExperimentPublic(BaseModel):
@@ -322,9 +334,10 @@ def definition_to_public(
     definition: ExperimentDefinitionVersion,
     *,
     experiment_public_id: str,
-    pin_state: tuple[int, bool] = (0, False),
+    pin_state: tuple[int, bool, bool, int | None] = (0, False, False, None),
 ) -> ExperimentDefinitionPublic:
-    """``pin_state`` is ``(variant_count, is_pinned)`` — derived by
+    """``pin_state`` is ``(variant_count, is_pinned, has_measurement_contract,
+    measurement_contract_version)`` — derived by
     ``ExperimentDefinitionService.pin_states_for_versions`` (batched)."""
     return ExperimentDefinitionPublic(
         id=definition.public_id,
@@ -342,6 +355,8 @@ def definition_to_public(
         created_at=definition.created_at,
         variant_count=pin_state[0],
         is_pinned=pin_state[1],
+        has_measurement_contract=pin_state[2],
+        measurement_contract_version=pin_state[3],
     )
 
 
@@ -350,7 +365,7 @@ def experiment_to_public(
     *,
     hypothesis_public_id: str,
     definition: ExperimentDefinitionVersion | None = None,
-    definition_pin_state: tuple[int, bool] = (0, False),
+    definition_pin_state: tuple[int, bool, bool, int | None] = (0, False, False, None),
 ) -> ExperimentPublic:
     """``definition`` is the Experiment's current definition tip (or None).
     An Experiment with no definition serializes ``definition=None`` and
@@ -453,4 +468,214 @@ def variant_to_public(
         label=variant.label,
         condition_description=variant.condition_description,
         created_at=variant.created_at,
+    )
+
+
+# MVP-39 (frozen MVP-39A/-39B): derived, read-time labels. Never persisted.
+# A label states that a Measurement Contract was DECLARED — never that it
+# is frozen, authorized, ready, or that evidence exists (MVP-39B §7/§39).
+LABEL_NO_MEASUREMENT_CONTRACT_DECLARED = "NO_MEASUREMENT_CONTRACT_DECLARED"
+LABEL_DECLARED_MEASUREMENT_INTENT = "DECLARED_MEASUREMENT_INTENT"
+
+
+def measurement_contract_label_for(contract: "MeasurementContractVersion | None") -> str:
+    return LABEL_NO_MEASUREMENT_CONTRACT_DECLARED if contract is None else LABEL_DECLARED_MEASUREMENT_INTENT
+
+
+def _signal_key(value: str) -> str:
+    """Comparison key used ONLY to detect logically duplicate RequiredSignal
+    names within one request (frozen MVP-39B §25); never stored, never used
+    to rewrite a name. Identical shape to ``_factor_key`` above and to
+    ``app/strategy/variant_service.py::label_key``."""
+    return " ".join(value.split()).casefold()
+
+
+def _optional_prose(value: Any) -> Any:
+    """"Before" coercion shared by every optional prose field in this
+    module: outer-trim, and an empty result becomes ``None`` rather than a
+    validation error — an optional field submitted blank is simply unset."""
+    if value is None or not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return stripped if stripped else None
+
+
+class RequiredSignalRequest(BaseModel):
+    """MVP-39B §I/§K: one declared RequiredSignal within a Measurement
+    Contract write — a first-class identity, never evidence itself. No
+    ``observed_value``/``score``/threshold/operator field is accepted
+    (``extra="forbid"``): that would smuggle Result-governance semantics
+    into a pre-execution declaration (MVP-39B §O/§AN). ``tracking_required``
+    is declarative only, never an FK (MVP-39B §AL)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=MEASUREMENT_CONTRACT_SIGNAL_NAME_MAX_LENGTH)
+    description: str = Field(min_length=1, max_length=MEASUREMENT_CONTRACT_SIGNAL_DESCRIPTION_MAX_LENGTH)
+    expected_direction: ExpectedDirection | None = None
+    evidence_requirement: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    tracking_required: bool = False
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def _strip_required_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("evidence_requirement", mode="before")
+    @classmethod
+    def _evidence_requirement_before(cls, value: Any) -> Any:
+        return _optional_prose(value)
+
+    @field_validator("name")
+    @classmethod
+    def _name_rules(cls, value: str) -> str:
+        return _require_single_line(_reject_nul(value))
+
+    @field_validator("description")
+    @classmethod
+    def _description_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator("evidence_requirement")
+    @classmethod
+    def _evidence_requirement_rules(cls, value: str | None) -> str | None:
+        return _reject_nul(value) if value is not None else None
+
+
+class DeclareMeasurementContractRequest(BaseModel):
+    """MVP-39B: the FULL-STATE Measurement Contract version write payload —
+    mirrors ``DeclareExperimentDefinitionRequest``'s own shape one level
+    down. The explicit tip pin (``definition_version_id``, an ``EXD-…``
+    id) is never silently substituted (MVP-39B §Y/§21), mirroring
+    ``CreateVariantRequest``. No allocation, exposure, tracking-
+    implementation, winner, result, or execution-authorization field is
+    ever accepted (``extra="forbid"``). At least one RequiredSignal is
+    required at the schema layer (``min_length=1``) — the database itself
+    cannot enforce this cross-row minimum (MVP39B-OBS-1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int = Field(strict=True, ge=0, le=2_147_483_646)
+    client_request_id: str = Field(min_length=1, max_length=EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH)
+    definition_version_id: str = Field(min_length=1, max_length=20)
+    measurement_window_days: int | None = Field(default=None, strict=True, ge=1, le=2_147_483_646)
+    minimum_evidence: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    success_criterion: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    analysis_method_intent: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    stopping_rule: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    decision_rule_intent: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    signals: list[RequiredSignalRequest] = Field(min_length=1)
+
+    @field_validator("client_request_id", "definition_version_id", mode="before")
+    @classmethod
+    def _strip_ids(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _client_request_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator("definition_version_id")
+    @classmethod
+    def _definition_version_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+    @field_validator(
+        "minimum_evidence", "success_criterion", "analysis_method_intent", "stopping_rule", "decision_rule_intent",
+        mode="before",
+    )
+    @classmethod
+    def _optional_prose_before(cls, value: Any) -> Any:
+        return _optional_prose(value)
+
+    @field_validator(
+        "minimum_evidence", "success_criterion", "analysis_method_intent", "stopping_rule", "decision_rule_intent"
+    )
+    @classmethod
+    def _optional_prose_rules(cls, value: str | None) -> str | None:
+        return _reject_nul(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def _signal_duplicate_rules(self) -> "DeclareMeasurementContractRequest":
+        seen: set[str] = set()
+        for signal in self.signals:
+            key = _signal_key(signal.name)
+            if key in seen:
+                raise ValueError("Required signal names must not contain duplicates.")
+            seen.add(key)
+        return self
+
+
+class RequiredSignalPublic(BaseModel):
+    """MVP-39: one immutable RequiredSignal. Public ids only (``RSG-…``) —
+    no internal UUID. No observed value, score, or result field exists."""
+
+    id: str
+    ordinal: int
+    name: str
+    description: str
+    expected_direction: str | None
+    evidence_requirement: str | None
+    tracking_required: bool
+
+
+class MeasurementContractPublic(BaseModel):
+    """MVP-39: one immutable Measurement Contract version. Public ids only
+    (``MSC-…``, ``EXP-…``, ``EXD-…``) — no internal UUID. No status,
+    frozen_at, execution_authorized, winner, or result field exists."""
+
+    id: str
+    experiment_id: str
+    definition_version_id: str
+    version: int
+    measurement_window_days: int | None
+    minimum_evidence: str | None
+    success_criterion: str | None
+    analysis_method_intent: str | None
+    stopping_rule: str | None
+    decision_rule_intent: str | None
+    signals: list[RequiredSignalPublic]
+    created_at: datetime
+
+
+class MeasurementContractHistoryResponse(BaseModel):
+    experiment_id: str
+    measurement_contract_label: str
+    current_version: int | None
+    versions: list[MeasurementContractPublic]
+
+
+def required_signal_to_public(signal: MeasurementContractRequiredSignal) -> RequiredSignalPublic:
+    return RequiredSignalPublic(
+        id=signal.public_id,
+        ordinal=signal.ordinal,
+        name=signal.name,
+        description=signal.description,
+        expected_direction=signal.expected_direction,
+        evidence_requirement=signal.evidence_requirement,
+        tracking_required=signal.tracking_required,
+    )
+
+
+def measurement_contract_to_public(
+    contract: MeasurementContractVersion,
+    *,
+    experiment_public_id: str,
+    definition_version_public_id: str,
+    signals: list[MeasurementContractRequiredSignal],
+) -> MeasurementContractPublic:
+    return MeasurementContractPublic(
+        id=contract.public_id,
+        experiment_id=experiment_public_id,
+        definition_version_id=definition_version_public_id,
+        version=contract.version,
+        measurement_window_days=contract.measurement_window_days,
+        minimum_evidence=contract.minimum_evidence,
+        success_criterion=contract.success_criterion,
+        analysis_method_intent=contract.analysis_method_intent,
+        stopping_rule=contract.stopping_rule,
+        decision_rule_intent=contract.decision_rule_intent,
+        signals=[required_signal_to_public(signal) for signal in signals],
+        created_at=contract.created_at,
     )

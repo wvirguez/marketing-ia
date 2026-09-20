@@ -477,3 +477,206 @@ class ExperimentVariant(Base, UUIDPrimaryKeyMixin):
     condition_description: Mapped[str] = mapped_column(String(EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH))
     client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH = 1000
+MEASUREMENT_CONTRACT_SIGNAL_NAME_MAX_LENGTH = 200
+MEASUREMENT_CONTRACT_SIGNAL_DESCRIPTION_MAX_LENGTH = 1000
+
+
+class ExpectedDirection(str, enum.Enum):
+    """MVP-39 (frozen MVP-39B §N): an optional pre-execution expectation for
+    one RequiredSignal. Stored as a plain ``String(20)`` guarded by a named
+    CHECK — not a native PostgreSQL enum — mirroring ``ComparisonType``'s
+    own precedent. Never reuses ``EvidenceRelationship.SUPPORTING``/
+    ``CONTRADICTING`` (``app/learning/models.py``): that vocabulary is
+    confirmed post-hoc — it relates an already-recorded Signal to a
+    Learning candidate, a different concept despite the superficial
+    resemblance (MVP39B-OBS-3, preserved, not resolved here)."""
+
+    INCREASE = "INCREASE"
+    DECREASE = "DECREASE"
+    TARGET = "TARGET"
+    NO_DIRECTION = "NO_DIRECTION"
+
+
+class MeasurementContractVersion(Base, UUIDPrimaryKeyMixin):
+    """MVP-39 (frozen MVP-39A/-39B): one immutable, append-only version of
+    an Experiment's PRE-EXECUTION measurement intent, bound to ONE immutable
+    ``ExperimentDefinitionVersion`` — the same physical shape as
+    ``ExperimentDefinitionVersion`` itself, one level down. The logical
+    "contract" is the Experiment's own slot; this table holds its N
+    versions (``version`` starts at 1; the current tip is the highest
+    ordinal). Its natural key is ``(experiment_id, version)``, not
+    ``(definition_version_id, version)``: once the first version exists the
+    Definition is permanently pinned (below), so ``definition_version_id``
+    never changes across the whole series.
+
+    MEASUREMENT CONTRACT != EVIDENCE != EVIDENCE BINDING != TRACKING
+    IMPLEMENTATION != MEASUREMENT EXECUTION != ALLOCATION != EXPOSURE !=
+    EXECUTION AUTHORIZATION != EXPERIMENT RESULT != WINNER != HYPOTHESIS
+    VERDICT != LEARNING VALIDATION != ATTRIBUTION != CAUSALITY. Nothing
+    here is an observed value, a score, a winner, a threshold/operator, or
+    a link to evidence, tracking or commercial outcomes — no such column
+    exists.
+
+    Immutability is structural by absence: no ``updated_at``, no
+    ``status``, no ``frozen_at``, no ``execution_authorized``, no
+    ``created_by`` (the audit event carries the actor), no repository
+    update/delete method. "At least one RequiredSignal" is a SERVICE-LEVEL
+    invariant only (MVP39B-OBS-1) — no PostgreSQL CHECK can prove a
+    cross-row minimum, the same class of gap as MVP37B-OBS-1/MVP38A-OBS-1.
+
+    Definition pinning (MVP-39B §D/§17): the first Contract version pins
+    the Definition immediately, exactly as ``ExperimentVariant`` does — both
+    are equal-weight, independent siblings under the ONE shared
+    ``ExperimentDefinitionService._has_pinning_children`` seam; neither
+    blocks the other. Definition pin != Contract freeze (MVP-39B §E/§18):
+    MVP-39 implements NO freeze mechanism at all — Contract revision stays
+    legal indefinitely within this domain's own boundary (MVP39B-OBS-2), a
+    future Execution Authorization domain owns any future Contract-pinning
+    seam, exactly mirroring how Variant added itself to Definition's own
+    seam rather than one being pre-built empty.
+
+    Ownership: direct ``workspace_id`` plus a composite tenant- and
+    Definition-safe FK against ``experiment_definition_versions(id,
+    experiment_id, workspace_id)`` — the existing MVP-38 candidate key,
+    reused, not duplicated."""
+
+    __tablename__ = "measurement_contract_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["definition_version_id", "experiment_id", "workspace_id"],
+            [
+                "experiment_definition_versions.id",
+                "experiment_definition_versions.experiment_id",
+                "experiment_definition_versions.workspace_id",
+            ],
+            name="fk_measurement_contract_versions_definition_version_workspace",
+        ),
+        UniqueConstraint("experiment_id", "version", name="uq_measurement_contract_versions_experiment_version"),
+        # MVP-39: candidate key purely so ``measurement_contract_signals``
+        # can declare a composite tenant- and Contract-safe FK on
+        # (contract_version_id, experiment_id, workspace_id) — the exact
+        # same additive-candidate-key pattern MVP-38 already used for
+        # ``experiment_variants``.
+        UniqueConstraint(
+            "id", "experiment_id", "workspace_id", name="uq_measurement_contract_versions_id_experiment_workspace"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "client_request_id",
+            name="uq_measurement_contract_versions_workspace_client_request_id",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "measurement_window_days IS NULL OR measurement_window_days > 0", name="window_days_positive"
+        ),
+        # All five Contract-level prose fields are OPTIONAL (frozen
+        # MVP-39B §U), but never blank-string when present — the same
+        # "required text nonblank" discipline extended to optional text.
+        CheckConstraint(
+            "(minimum_evidence IS NULL OR char_length(btrim(minimum_evidence)) > 0) AND "
+            "(success_criterion IS NULL OR char_length(btrim(success_criterion)) > 0) AND "
+            "(analysis_method_intent IS NULL OR char_length(btrim(analysis_method_intent)) > 0) AND "
+            "(stopping_rule IS NULL OR char_length(btrim(stopping_rule)) > 0) AND "
+            "(decision_rule_intent IS NULL OR char_length(btrim(decision_rule_intent)) > 0)",
+            name="optional_text_nonblank",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    definition_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    version: Mapped[int] = mapped_column(Integer)
+    # PRE-EXECUTION declarations only — none of these implies evidence
+    # exists, is bound, or is sufficient (MVP-39B §AK). Duration only: not
+    # anchored to Exposure, which does not exist (MVP-39B §Q).
+    measurement_window_days: Mapped[int | None] = mapped_column(Integer, default=None)
+    minimum_evidence: Mapped[str | None] = mapped_column(String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None)
+    success_criterion: Mapped[str | None] = mapped_column(String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None)
+    analysis_method_intent: Mapped[str | None] = mapped_column(
+        String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
+    )
+    stopping_rule: Mapped[str | None] = mapped_column(String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None)
+    decision_rule_intent: Mapped[str | None] = mapped_column(
+        String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
+    )
+    client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MeasurementContractRequiredSignal(Base, UUIDPrimaryKeyMixin):
+    """MVP-39 (frozen MVP-39B §I): a first-class, immutable child row of ONE
+    ``MeasurementContractVersion`` — a declared metric/observation the
+    Contract requires, with its own stable identity (a future evidence-
+    binding, Result-governance, or Tracking-readiness FK target — none of
+    which exists yet, MVP-39B §AK/§AL/§AN). NOT evidence: its mere
+    existence never means evidence exists, is bound, or is sufficient.
+
+    Immutable and append-only by absence: no ``updated_at``, no
+    ``created_by``, no repository update/delete method, no correction. No
+    ``observed_value``/``score``/threshold/operator field exists —
+    ``success_criterion`` (Contract-level, bounded prose) is the only
+    success-related field anywhere in this domain (MVP-39B §O).
+
+    Parentage: composite FK ``(contract_version_id, experiment_id,
+    workspace_id)`` to ``measurement_contract_versions`` — the database
+    proves the Signal's Experiment and workspace equal the parent
+    Contract's. ``ordinal`` is the 1-based declaration order within the
+    Contract version, assigned under the Experiment row lock (mirrors
+    ``ExperimentVariant.ordinal`` exactly). There is deliberately NO
+    maximum number of RequiredSignals (MVP-39B §J: the row-based precedent
+    already established by Variant/TrackingRequirement, not the JSONB-array
+    precedent of ``controlled_factors``) — a minimum of one is a
+    SERVICE-LEVEL invariant only (MVP39B-OBS-1).
+
+    ``tracking_required`` is declarative only — never an FK, never a claim
+    that tracking is implemented, validated, or that an event fired
+    (MVP-39B §AL)."""
+
+    __tablename__ = "measurement_contract_signals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "measurement_contract_versions.id",
+                "measurement_contract_versions.experiment_id",
+                "measurement_contract_versions.workspace_id",
+            ],
+            name="fk_measurement_contract_signals_contract_version_workspace",
+        ),
+        UniqueConstraint(
+            "contract_version_id", "ordinal", name="uq_measurement_contract_signals_contract_version_ordinal"
+        ),
+        UniqueConstraint(
+            "contract_version_id", "name", name="uq_measurement_contract_signals_contract_version_name"
+        ),
+        CheckConstraint("ordinal >= 1", name="ordinal_positive"),
+        CheckConstraint(
+            "char_length(btrim(name)) > 0 AND char_length(btrim(description)) > 0", name="text_fields_nonblank"
+        ),
+        CheckConstraint(
+            "expected_direction IS NULL OR expected_direction IN ('INCREASE', 'DECREASE', 'TARGET', 'NO_DIRECTION')",
+            name="expected_direction_valid",
+        ),
+        CheckConstraint(
+            "evidence_requirement IS NULL OR char_length(btrim(evidence_requirement)) > 0",
+            name="evidence_nonblank_if_present",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    contract_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    ordinal: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(MEASUREMENT_CONTRACT_SIGNAL_NAME_MAX_LENGTH))
+    description: Mapped[str] = mapped_column(String(MEASUREMENT_CONTRACT_SIGNAL_DESCRIPTION_MAX_LENGTH))
+    expected_direction: Mapped[str | None] = mapped_column(String(20), default=None)
+    evidence_requirement: Mapped[str | None] = mapped_column(
+        String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
+    )
+    tracking_required: Mapped[bool] = mapped_column(default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

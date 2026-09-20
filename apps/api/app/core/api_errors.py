@@ -578,3 +578,59 @@ class ExperimentVariantLabelDuplicateError(ApiError):
 
     def __init__(self, message: str = "A condition with this label already exists for this definition version.") -> None:
         super().__init__(message, status_code=409, code="EXPERIMENT_VARIANT_LABEL_DUPLICATE")
+
+
+class MeasurementContractStrategyStaleError(ApiError):
+    """MVP-39B §Z: a new Measurement Contract version may only be written
+    for an Experiment whose parent Strategy is still the Campaign's current
+    version — the same Option-A rule as
+    ``ExperimentDefinitionStrategyStaleError``/``ExperimentVariantStrategyStaleError``."""
+
+    def __init__(
+        self,
+        message: str = "This Experiment belongs to a Strategy that is no longer current and cannot receive a new measurement contract.",
+    ) -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_STRATEGY_STALE")
+
+
+class MeasurementContractBaseStaleError(ApiError):
+    """MVP-39B §X: ``base_version`` did not equal the Experiment's current
+    Measurement Contract tip at the moment the Experiment row was locked (or
+    two concurrent writers raced for the same ``(experiment_id, version)``).
+    Mirrors ``ExperimentDefinitionBaseStaleError``."""
+
+    def __init__(
+        self, message: str = "The measurement contract changed; refresh and retry from the current version."
+    ) -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_BASE_STALE")
+
+
+class MeasurementContractUnchangedError(ApiError):
+    """MVP-39B §X: a revision whose normalized content equals the current
+    tip is rejected — it would add a version carrying no new declaration."""
+
+    def __init__(self, message: str = "This revision is identical to the current measurement contract.") -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_UNCHANGED")
+
+
+class MeasurementContractDefinitionVersionNotCurrentError(ApiError):
+    """MVP-39B §Y: the requested ``definition_version_id`` resolves inside
+    the Experiment but is not the current tip at the moment the Experiment
+    row is locked — never silently rebased onto the current tip. Mirrors
+    ``ExperimentVariantDefinitionVersionNotCurrentError``."""
+
+    def __init__(
+        self, message: str = "The requested definition version is not the current version of this Experiment."
+    ) -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_DEFINITION_VERSION_NOT_CURRENT")
+
+
+class MeasurementContractSuccessCriterionRequiredError(ApiError):
+    """MVP-39B §U/§10: a CONTROLLED comparison requires ``success_criterion``
+    — a fact only the server knows (the pinned Definition's own
+    ``comparison_type``), so this cannot be expressed as a pure Pydantic
+    field validator on the request body alone (mirrors
+    ``EvidencePeriodInvalidError``'s own precedent exactly)."""
+
+    def __init__(self, message: str = "A CONTROLLED comparison requires a success_criterion.") -> None:
+        super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED")

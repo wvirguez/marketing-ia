@@ -27,6 +27,8 @@ from app.strategy.models import (
     ExperimentVariant,
     Hypothesis,
     HypothesisStatus,
+    MeasurementContractRequiredSignal,
+    MeasurementContractVersion,
     Positioning,
     Strategy,
     StrategyOrigin,
@@ -369,6 +371,14 @@ class ExperimentDefinitionRepository:
             )
         ).scalar_one_or_none()
 
+    def get_by_id(self, definition_version_id: uuid.UUID) -> ExperimentDefinitionVersion | None:
+        """MVP-39: resolves a version from an already-trusted internal FK
+        reference (``MeasurementContractVersion.definition_version_id``) —
+        read-only, mirrors ``HypothesisRepository.get_by_id`` exactly."""
+        return self.session.execute(
+            select(ExperimentDefinitionVersion).where(ExperimentDefinitionVersion.id == definition_version_id)
+        ).scalar_one_or_none()
+
     def get_tip(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> ExperimentDefinitionVersion | None:
         return self.session.execute(
             select(ExperimentDefinitionVersion)
@@ -529,3 +539,166 @@ class ExperimentVariantRepository:
             .offset(offset)
         ).all()
         return [(variant, version) for variant, version in rows]
+
+
+class MeasurementContractRepository:
+    """MVP-39: data access for ``MeasurementContractVersion`` and its
+    ``MeasurementContractRequiredSignal`` children. Append-only by
+    construction — exactly one write method (``create``), which persists
+    the Contract version and every RequiredSignal row as one atomic unit
+    (same flush sequence, same uncommitted transaction — an IntegrityError
+    on any row rolls the whole unit back together). No update or delete
+    method exists. No method here calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        experiment_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        definition_version_id: uuid.UUID,
+        version: int,
+        measurement_window_days: int | None,
+        minimum_evidence: str | None,
+        success_criterion: str | None,
+        analysis_method_intent: str | None,
+        stopping_rule: str | None,
+        decision_rule_intent: str | None,
+        client_request_id: str,
+        signals: list[dict],
+    ) -> tuple[MeasurementContractVersion, list[MeasurementContractRequiredSignal]]:
+        row = MeasurementContractVersion(
+            public_id=generate_public_id("MSC"),
+            workspace_id=workspace_id,
+            experiment_id=experiment_id,
+            definition_version_id=definition_version_id,
+            version=version,
+            measurement_window_days=measurement_window_days,
+            minimum_evidence=minimum_evidence,
+            success_criterion=success_criterion,
+            analysis_method_intent=analysis_method_intent,
+            stopping_rule=stopping_rule,
+            decision_rule_intent=decision_rule_intent,
+            client_request_id=client_request_id,
+        )
+        self.session.add(row)
+        self.session.flush()  # assigns row.id before building the children's FK
+        signal_rows = [
+            MeasurementContractRequiredSignal(
+                public_id=generate_public_id("RSG"),
+                workspace_id=workspace_id,
+                experiment_id=experiment_id,
+                contract_version_id=row.id,
+                ordinal=ordinal,
+                name=signal["name"],
+                description=signal["description"],
+                expected_direction=signal.get("expected_direction"),
+                evidence_requirement=signal.get("evidence_requirement"),
+                tracking_required=signal.get("tracking_required", False),
+            )
+            for ordinal, signal in enumerate(signals, start=1)
+        ]
+        self.session.add_all(signal_rows)
+        self.session.flush()
+        return row, signal_rows
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> MeasurementContractVersion | None:
+        return self.session.execute(
+            select(MeasurementContractVersion)
+            .where(
+                MeasurementContractVersion.workspace_id == workspace_id,
+                MeasurementContractVersion.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_tip(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> MeasurementContractVersion | None:
+        return self.session.execute(
+            select(MeasurementContractVersion)
+            .where(
+                MeasurementContractVersion.experiment_id == experiment_id,
+                MeasurementContractVersion.workspace_id == workspace_id,
+            )
+            .order_by(MeasurementContractVersion.version.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def list_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID
+    ) -> list[MeasurementContractVersion]:
+        return list(
+            self.session.execute(
+                select(MeasurementContractVersion)
+                .where(
+                    MeasurementContractVersion.experiment_id == experiment_id,
+                    MeasurementContractVersion.workspace_id == workspace_id,
+                )
+                .order_by(MeasurementContractVersion.version.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_signals_for_version(
+        self, *, contract_version_id: uuid.UUID
+    ) -> list[MeasurementContractRequiredSignal]:
+        return list(
+            self.session.execute(
+                select(MeasurementContractRequiredSignal)
+                .where(MeasurementContractRequiredSignal.contract_version_id == contract_version_id)
+                .order_by(MeasurementContractRequiredSignal.ordinal.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def signal_names_for_version(self, *, contract_version_id: uuid.UUID) -> list[str]:
+        """Only the ``name`` column of every RequiredSignal of one Contract
+        version (used for the normalized duplicate check within one write,
+        mirroring ``ExperimentVariantRepository.list_labels_for_version``)."""
+        return list(
+            self.session.execute(
+                select(MeasurementContractRequiredSignal.name).where(
+                    MeasurementContractRequiredSignal.contract_version_id == contract_version_id
+                )
+            ).scalars()
+        )
+
+    def exists_for_definition_version(self, *, definition_version_id: uuid.UUID) -> bool:
+        return (
+            self.session.execute(
+                select(MeasurementContractVersion.id)
+                .where(MeasurementContractVersion.definition_version_id == definition_version_id)
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+    def contract_states_for_versions(
+        self, *, definition_version_ids: list[uuid.UUID], workspace_id: uuid.UUID
+    ) -> dict[uuid.UUID, tuple[bool, int | None]]:
+        """``{version_id: (has_measurement_contract, tip_version_or_None)}``
+        — one grouped query for any number of versions (no N+1), mirroring
+        ``ExperimentVariantRepository.counts_for_versions``. Because a
+        Contract series' anchor ``definition_version_id`` never changes
+        once it exists (the Definition is pinned by then), at most one
+        version in a given series will ever carry a nonzero count here."""
+        if not definition_version_ids:
+            return {}
+        rows = self.session.execute(
+            select(MeasurementContractVersion.definition_version_id, func.max(MeasurementContractVersion.version))
+            .where(
+                MeasurementContractVersion.definition_version_id.in_(definition_version_ids),
+                MeasurementContractVersion.workspace_id == workspace_id,
+            )
+            .group_by(MeasurementContractVersion.definition_version_id)
+        ).all()
+        tips = {version_id: tip_version for version_id, tip_version in rows}
+        return {
+            version_id: (version_id in tips, tips.get(version_id)) for version_id in definition_version_ids
+        }

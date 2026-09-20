@@ -37,6 +37,8 @@ function definition(overrides: Partial<ExperimentDefinitionPublic> = {}): Experi
     created_at: "2026-01-01T00:00:00Z",
     variant_count: 0,
     is_pinned: false,
+    has_measurement_contract: false,
+    measurement_contract_version: null,
     ...overrides,
   };
 }

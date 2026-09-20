@@ -145,8 +145,10 @@ def test_first_declaration_creates_version_one(campaign_run_client: dict) -> Non
         "id", "experiment_id", "version", "comparison_question", "comparison_type", "changed_factor",
         "controlled_factors", "comparison_basis", "scope", "learning_intent", "non_conclusion_boundary",
         "non_conclusion_codes", "created_at", "variant_count", "is_pinned",
+        "has_measurement_contract", "measurement_contract_version",
     }
     assert data["variant_count"] == 0 and data["is_pinned"] is False
+    assert data["has_measurement_contract"] is False and data["measurement_contract_version"] is None
 
 
 def test_revision_appends_version_two_and_keeps_version_one_immutable(campaign_run_client: dict) -> None:
@@ -790,16 +792,25 @@ def test_definition_makes_no_experimental_claim(campaign_run_client: dict) -> No
     ]
 
 
-def test_route_surface_adds_exactly_the_frozen_definition_and_variant_routes() -> None:
+def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_routes() -> None:
     from app.main import create_app
 
     spec = create_app().openapi()["paths"]
     pairs = {(method.upper(), path) for path, item in spec.items() for method in item if method in {"get", "post", "put", "patch", "delete"}}
-    assert len(pairs) == 101  # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38)
+    # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38) + 3 measurement-contract routes (MVP-39)
+    assert len(pairs) == 104
     prefix = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}"
     definition_pairs = {(m, p) for m, p in pairs if "definition" in p}
     assert definition_pairs == {("POST", f"{prefix}/definition-versions"), ("GET", f"{prefix}/definition-versions")}
     variant_pairs = {(m, p) for m, p in pairs if "variant" in p}
     assert variant_pairs == {("POST", f"{prefix}/variants"), ("GET", f"{prefix}/variants")}
-    for word in ("allocation", "randomiz", "execution", "contamination", "winner", "measurement-contract"):
+    contract_pairs = {(m, p) for m, p in pairs if "measurement-contract" in p}
+    assert contract_pairs == {
+        ("POST", f"{prefix}/measurement-contract"),
+        ("GET", f"{prefix}/measurement-contract"),
+        ("GET", f"{prefix}/measurement-contract/history"),
+    }
+    # MVP-39: Measurement Contract is now intentionally governed, so the firewall is
+    # semantic — no allocation / exposure / execution-authorization / winner / attribution route.
+    for word in ("allocation", "randomiz", "exposure", "execution", "contamination", "winner", "attribution"):
         assert not [p for _, p in pairs if word in p], word

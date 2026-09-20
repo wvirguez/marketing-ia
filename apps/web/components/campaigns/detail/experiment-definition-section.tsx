@@ -25,6 +25,7 @@ import { ApiError } from "@/lib/api/client";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type { ComparisonType, ExperimentPublic } from "@/types/strategy";
 import { ExperimentVariantsSection } from "./experiment-variants-section";
+import { MeasurementContractSection } from "./measurement-contract-section";
 
 const PROSE_MAX = 1000;
 const FACTOR_MAX = 200;
@@ -304,7 +305,7 @@ export function ExperimentDefinitionSection({
           {definition?.is_pinned === true && (
             <span className="muted small-text">
               {" "}
-              La definición está fijada por condiciones declaradas y no admite una nueva versión.
+              La definición está fijada y no admite una nueva versión.
             </span>
           )}
         </div>
@@ -312,6 +313,16 @@ export function ExperimentDefinitionSection({
 
       {definition && (
         <ExperimentVariantsSection
+          campaignId={campaignId}
+          experiment={experiment}
+          definition={definition}
+          role={role}
+          onChanged={onChanged}
+        />
+      )}
+
+      {definition && (
+        <MeasurementContractSection
           campaignId={campaignId}
           experiment={experiment}
           definition={definition}

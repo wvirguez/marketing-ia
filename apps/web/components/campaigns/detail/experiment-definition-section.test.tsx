@@ -9,9 +9,11 @@ vi.mock("@/lib/api/strategy", () => ({
   declareExperimentDefinition: vi.fn(),
   declareVariant: vi.fn(),
   listVariants: vi.fn(),
+  declareMeasurementContract: vi.fn(),
+  getMeasurementContract: vi.fn(),
 }));
 
-import { declareExperimentDefinition, listVariants } from "@/lib/api/strategy";
+import { declareExperimentDefinition, listVariants, getMeasurementContract } from "@/lib/api/strategy";
 
 const mockDeclare = vi.mocked(declareExperimentDefinition);
 
@@ -39,6 +41,8 @@ function definition(overrides: Partial<ExperimentDefinitionPublic> = {}): Experi
     created_at: "2026-01-01T00:00:00Z",
     variant_count: 0,
     is_pinned: false,
+    has_measurement_contract: false,
+    measurement_contract_version: null,
     ...overrides,
   };
 }
@@ -94,6 +98,7 @@ function fillValid(overrides: Record<string, string> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listVariants).mockResolvedValue({ experiment_id: "EXP-1", items: [], limit: 100, offset: 0, total: 0 });
+  vi.mocked(getMeasurementContract).mockResolvedValue(null);
   uuidCounter = 0;
   vi.spyOn(crypto, "randomUUID").mockImplementation(
     () => `uuid-${++uuidCounter}` as ReturnType<typeof crypto.randomUUID>,
@@ -269,9 +274,14 @@ describe("ExperimentDefinitionSection — tip rendering and safe labels", () => 
     expect(screen.queryByText("Revisar comparación")).not.toBeInTheDocument();
   });
 
-  it("exposes no history, Variant, measurement, or execution control", () => {
+  it("exposes no history, allocation, exposure, execution, or result control", () => {
+    // MVP-39: "medición"/Measurement Contract is now a legitimately governed
+    // control (its own section renders "Declarar contrato de medición");
+    // "variante"/Variant is likewise governed ("Agregar condición"). What
+    // must still never exist: history UI, allocation, exposure, execution
+    // authorization, or a declared winner/result.
     renderSection(defined());
-    for (const forbidden of [/historial/i, /variante/i, /medición/i, /ejecutar/i, /ganador confirmado/i]) {
+    for (const forbidden of [/historial/i, /asignar/i, /exponer/i, /autorizar ejecución/i, /ganador confirmado/i]) {
       expect(screen.queryByRole("button", { name: forbidden })).not.toBeInTheDocument();
     }
   });
@@ -439,7 +449,7 @@ describe("ExperimentDefinitionSection — pinned definition (MVP-38)", () => {
   it("disables the revision control with an explanation when the definition is pinned", () => {
     renderSection(defined({ variant_count: 2, is_pinned: true }));
     expect(screen.getByText("Revisar comparación")).toBeDisabled();
-    expect(screen.getByText(/está fijada por condiciones declaradas y no admite una nueva versión/)).toBeInTheDocument();
+    expect(screen.getByText(/está fijada y no admite una nueva versión/)).toBeInTheDocument();
     expect(screen.getByText("Condiciones declaradas")).toBeInTheDocument();
   });
 

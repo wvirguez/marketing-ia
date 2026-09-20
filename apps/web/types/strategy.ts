@@ -52,6 +52,12 @@ export interface ExperimentDefinitionPublic {
   // (a lock indicator — never a validity/readiness/causality claim).
   variant_count: number;
   is_pinned: boolean;
+  // MVP-39: derived, never stored. `is_pinned` above is WIDENED — true
+  // whenever EITHER a Variant OR a Measurement Contract exists.
+  // `variant_count` keeps its exact MVP-38 meaning; a Contract never
+  // increments it.
+  has_measurement_contract: boolean;
+  measurement_contract_version: number | null;
 }
 
 // MVP-38: the immutable identity of ONE declared condition, pinned to one
@@ -139,4 +145,73 @@ export interface StrategyOutputResponse {
   positioning: PositioningPublic | null;
   hypotheses: HypothesisPublic[];
   experiments: ExperimentPublic[];
+}
+
+// MVP-39: an optional pre-execution expectation for one RequiredSignal.
+// Never the same concept as a Learning EvidenceRelationship.
+export type ExpectedDirection = "INCREASE" | "DECREASE" | "TARGET" | "NO_DIRECTION";
+
+// MVP-39: one immutable RequiredSignal — a declared metric/observation a
+// Measurement Contract requires. Not evidence itself: its existence never
+// means evidence exists, is bound, or is sufficient.
+export interface RequiredSignalPublic {
+  id: string;
+  ordinal: number;
+  name: string;
+  description: string;
+  expected_direction: ExpectedDirection | null;
+  evidence_requirement: string | null;
+  tracking_required: boolean;
+}
+
+// MVP-39: the request shape for one declared RequiredSignal.
+export interface RequiredSignalRequest {
+  name: string;
+  description: string;
+  expected_direction: ExpectedDirection | null;
+  evidence_requirement: string | null;
+  tracking_required: boolean;
+}
+
+// MVP-39: one immutable Measurement Contract version — the PRE-EXECUTION
+// declaration of how an Experiment's evidence is intended to be evaluated.
+// Mirrors apps/api/app/strategy/schemas.py::MeasurementContractPublic. No
+// status, frozen_at, execution_authorized, winner, or result field exists.
+export interface MeasurementContractPublic {
+  id: string;
+  experiment_id: string;
+  definition_version_id: string;
+  version: number;
+  measurement_window_days: number | null;
+  minimum_evidence: string | null;
+  success_criterion: string | null;
+  analysis_method_intent: string | null;
+  stopping_rule: string | null;
+  decision_rule_intent: string | null;
+  signals: RequiredSignalPublic[];
+  created_at: string;
+}
+
+export interface MeasurementContractHistoryResponse {
+  experiment_id: string;
+  measurement_contract_label: string;
+  current_version: number | null;
+  versions: MeasurementContractPublic[];
+}
+
+// MVP-39: the FULL-STATE Contract version write payload. `definition_version_id`
+// is the EXPLICIT pin (the current tip's `EXD-…` id) — the server never
+// substitutes it. base_version is 0 for the first declaration, otherwise the
+// current Contract tip version. At least one signal is required.
+export interface DeclareMeasurementContractRequest {
+  base_version: number;
+  client_request_id: string;
+  definition_version_id: string;
+  measurement_window_days: number | null;
+  minimum_evidence: string | null;
+  success_criterion: string | null;
+  analysis_method_intent: string | null;
+  stopping_rule: string | null;
+  decision_rule_intent: string | null;
+  signals: RequiredSignalRequest[];
 }

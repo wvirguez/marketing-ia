@@ -9,10 +9,13 @@ import type {
   CreateExperimentRequest,
   CreateHypothesisRequest,
   DeclareExperimentDefinitionRequest,
+  DeclareMeasurementContractRequest,
   DeclareVariantRequest,
   ExperimentDefinitionPublic,
   ExperimentPublic,
   HypothesisPublic,
+  MeasurementContractHistoryResponse,
+  MeasurementContractPublic,
   StrategyOutputResponse,
   VariantListResponse,
   VariantPublic,
@@ -93,6 +96,45 @@ export async function listVariants(
   const query = `?limit=${encodeURIComponent(String(page.limit))}&offset=${encodeURIComponent(String(page.offset))}`;
   return request<VariantListResponse>(
     `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/variants${query}`,
+    { method: "GET" },
+  );
+}
+
+// MVP-39: declares (base_version 0) or revises (base_version = current
+// Contract tip) an Experiment's PRE-EXECUTION Measurement Contract. One
+// route, full-state, append-only, idempotent on client_request_id (201 new
+// / 200 replay). The explicit tip pin (definition_version_id) is never
+// silently substituted. Writing is not freezing and not execution
+// authorization — there is no freeze endpoint in this domain.
+export async function declareMeasurementContract(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  payload: DeclareMeasurementContractRequest,
+): Promise<MeasurementContractPublic> {
+  return request<MeasurementContractPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/measurement-contract`,
+    { method: "POST", body: payload },
+  );
+}
+
+// MVP-39: the current Measurement Contract tip, or null if none declared.
+export async function getMeasurementContract(
+  campaignPublicId: string,
+  experimentPublicId: string,
+): Promise<MeasurementContractPublic | null> {
+  return request<MeasurementContractPublic | null>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/measurement-contract`,
+    { method: "GET" },
+  );
+}
+
+// MVP-39: the unpaginated ascending version history.
+export async function getMeasurementContractHistory(
+  campaignPublicId: string,
+  experimentPublicId: string,
+): Promise<MeasurementContractHistoryResponse> {
+  return request<MeasurementContractHistoryResponse>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/measurement-contract/history`,
     { method: "GET" },
   );
 }

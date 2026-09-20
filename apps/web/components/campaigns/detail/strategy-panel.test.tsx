@@ -12,6 +12,8 @@ vi.mock("@/lib/api/strategy", () => ({
   declareExperimentDefinition: vi.fn(),
   declareVariant: vi.fn(),
   listVariants: vi.fn(),
+  declareMeasurementContract: vi.fn(),
+  getMeasurementContract: vi.fn(),
 }));
 vi.mock("@/lib/api/strategic-approvals", () => ({
   getStrategicApprovals: vi.fn(),
@@ -299,6 +301,8 @@ describe("StrategyPanel — Experiment Definition (MVP-37)", () => {
     created_at: "2026-01-01T00:00:00Z",
     variant_count: 0,
     is_pinned: false,
+    has_measurement_contract: false,
+    measurement_contract_version: null,
   };
 
   it("shows the no-comparison state and a declare control under a definition-less experiment", async () => {

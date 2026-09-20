@@ -49,10 +49,16 @@ def _restore_logging_state_after_alembic():
                 logger.disabled = disabled
 
 
-def test_migration_is_a_single_step_after_its_predecessor_and_is_current_head():
+def test_migration_is_a_single_step_after_its_predecessor_and_is_an_ancestor_of_the_single_head():
+    # MVP-39 added a successor migration, so this revision is no longer the
+    # head itself — it must remain a single step after its predecessor and
+    # an ancestor of the one and only head (mirrors
+    # test_experiment_definition_migration.py's own MVP-38C fix exactly).
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     assert script.get_revision(REVISION).down_revision == PREDECESSOR
-    assert script.get_heads() == [REVISION]
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert REVISION in {revision.revision for revision in script.walk_revisions(base="base", head=heads[0])}
 
 
 def _constraint_definitions(engine, table) -> dict[str, tuple[str, str]]:
@@ -86,7 +92,7 @@ def test_variant_migration_round_trip(monkeypatch, postgres_engine):
             assert connection.scalar(text("select version_num from alembic_version")) == PREDECESSOR
 
         for cycle in range(2):
-            command.upgrade(config, "head")
+            command.upgrade(config, REVISION)
             inspector = inspect(engine)
 
             from app.strategy.models import ExperimentVariant

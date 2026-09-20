@@ -131,8 +131,14 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     execution column) — and the MVP-38 governed Variant identity
     persistence contract (frozen MVP-38A/-38B; owned by ``strategy`` — one
     append-only identity table pinned to an immutable definition version;
-    no role/allocation/exposure/measurement/result/execution column). No
-    Content
+    no role/allocation/exposure/measurement/result/execution column) — and
+    the MVP-39 governed Measurement Contract persistence contract (frozen
+    MVP-39A/-39B; owned by ``strategy`` — two append-only tables (the
+    Contract version and its first-class RequiredSignal children) pinned
+    to an immutable definition version, exactly like Variant; no evidence
+    binding/tracking-implementation/allocation/exposure/execution-
+    authorization/result/winner column, and no freeze/status column of any
+    kind). No Content
     Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
     Snapshot/Agent Run/Handoff/Return/Gate
@@ -214,6 +220,8 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "commercial_outcomes",
         "experiment_definition_versions",
         "experiment_variants",
+        "measurement_contract_versions",
+        "measurement_contract_signals",
     }
 
 

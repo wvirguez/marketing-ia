@@ -84,7 +84,7 @@ def test_content_plan_migration_round_trip(monkeypatch):
             assert "uq_experiments_id_workspace_id" in experiment_uniques
 
             with engine.connect() as connection:
-                assert connection.scalar(text("select version_num from alembic_version")) == "b41d7a90c2e5"  # MVP-38: current head, bumped from 7c2e91b4d0a8
+                assert connection.scalar(text("select version_num from alembic_version")) == "2536e4a8cddc"  # MVP-39: current head, bumped from b41d7a90c2e5
 
             if cycle == 0:
                 command.downgrade(config, "b27209ee89a1")

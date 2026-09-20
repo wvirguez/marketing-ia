@@ -27,6 +27,18 @@ plus four governed write routes and two governed read routes:
         paginated page (limit/offset/total) ordered by pinned version then
         ordinal. Identity only: no allocation, exposure, measurement, role or
         result, and no PATCH/PUT/DELETE.
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/measurement-contract
+    GET  /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/measurement-contract
+    GET  /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/measurement-contract/history
+        (MVP-39, frozen MVP-39A/-39B) — the append-only, versioned PRE-
+        EXECUTION measurement intent, pinned to the EXPLICITLY named current
+        Definition version (declaring the first one derives the Definition
+        lock, exactly like Variant — the two are independent siblings under
+        the same lock). One route declares (``base_version=0``), revises
+        (``base_version`` = current Contract tip) or replays; the GETs are
+        the current tip (or ``null``) and the unpaginated version history.
+        No freeze/execution/result endpoint exists — this domain implements
+        none of those.
 
 No other write endpoint exists here — Strategy/Positioning themselves
 remain writable only via the deterministic bootstrap
@@ -48,15 +60,19 @@ from app.auth.dependencies import get_current_user, get_current_workspace, requi
 from app.campaigns.service import CampaignAccessService
 from app.persistence.session import get_db
 from app.strategy.definition_service import ExperimentDefinitionService
+from app.strategy.measurement_contract_service import ExperimentMeasurementContractService
 from app.strategy.schemas import (
     CreateExperimentRequest,
     CreateHypothesisRequest,
     CreateVariantRequest,
     DeclareExperimentDefinitionRequest,
+    DeclareMeasurementContractRequest,
     ExperimentDefinitionHistoryResponse,
     ExperimentDefinitionPublic,
     ExperimentPublic,
     HypothesisPublic,
+    MeasurementContractHistoryResponse,
+    MeasurementContractPublic,
     StrategyOutputResponse,
     VariantListResponse,
     VariantPublic,
@@ -64,6 +80,8 @@ from app.strategy.schemas import (
     definition_to_public,
     experiment_to_public,
     hypothesis_to_public,
+    measurement_contract_label_for,
+    measurement_contract_to_public,
     positioning_to_public,
     strategy_to_public,
     variant_to_public,
@@ -104,7 +122,9 @@ async def get_strategy(
                 hypothesis_public_id=hypothesis_public_id_by_id[e.hypothesis_id],
                 definition=definition_tips.get(e.id),
                 definition_pin_state=(
-                    pin_states[definition_tips[e.id].id] if e.id in definition_tips else (0, False)
+                    pin_states[definition_tips[e.id].id]
+                    if e.id in definition_tips
+                    else (0, False, False, None)
                 ),
             )
             for e in experiments
@@ -348,4 +368,141 @@ async def list_experiment_variants(
         limit=limit,
         offset=offset,
         total=total,
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/measurement-contract",
+    response_model=MeasurementContractPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def write_measurement_contract(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    payload: DeclareMeasurementContractRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> MeasurementContractPublic:
+    """Declares (``base_version=0``) or revises (``base_version`` = current
+    Contract tip) an Experiment's PRE-EXECUTION Measurement Contract (MVP-39,
+    frozen MVP-39B). Full-state, append-only, idempotent on
+    ``client_request_id``: 201 for a new version, 200 for a materially equal
+    replay, 409 ``IDEMPOTENCY_KEY_CONFLICT`` for the same key with a
+    different request. Any active workspace membership may call this
+    (MEMBER+, the same tier as Definition/Variant). The named
+    ``definition_version_id`` must be the Experiment's current Definition
+    tip (never silently rebased); declaring the first Contract version pins
+    that Definition version, exactly like a Variant. Writing is not
+    freezing, not execution authorization, and not a claim that evidence
+    exists — there is no freeze endpoint in this domain."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    contract, signals, definition, created = ExperimentMeasurementContractService(db).declare_or_revise(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        base_version=payload.base_version,
+        client_request_id=payload.client_request_id,
+        definition_version_public_id=payload.definition_version_id,
+        measurement_window_days=payload.measurement_window_days,
+        minimum_evidence=payload.minimum_evidence,
+        success_criterion=payload.success_criterion,
+        analysis_method_intent=payload.analysis_method_intent,
+        stopping_rule=payload.stopping_rule,
+        decision_rule_intent=payload.decision_rule_intent,
+        signals=[
+            {
+                "name": signal.name,
+                "description": signal.description,
+                "expected_direction": signal.expected_direction.value if signal.expected_direction else None,
+                "evidence_requirement": signal.evidence_requirement,
+                "tracking_required": signal.tracking_required,
+            }
+            for signal in payload.signals
+        ],
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return measurement_contract_to_public(
+        contract,
+        experiment_public_id=experiment_public_id,
+        definition_version_public_id=definition.public_id,
+        signals=signals,
+    )
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/measurement-contract",
+    response_model=MeasurementContractPublic | None,
+)
+async def get_measurement_contract(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> MeasurementContractPublic | None:
+    """The current Measurement Contract tip, or ``null`` if none has been
+    declared. Readable for any Experiment of the campaign, including one
+    under a superseded Strategy."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment, tip, signals = ExperimentMeasurementContractService(db).get_current(
+        campaign=campaign, experiment_public_id=experiment_public_id
+    )
+    if tip is None:
+        return None
+    definition = ExperimentDefinitionService(db).definitions.get_by_id(tip.definition_version_id)
+    return measurement_contract_to_public(
+        tip,
+        experiment_public_id=experiment.public_id,
+        definition_version_public_id=definition.public_id if definition is not None else "",
+        signals=signals,
+    )
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/measurement-contract/history",
+    response_model=MeasurementContractHistoryResponse,
+)
+async def get_measurement_contract_history(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> MeasurementContractHistoryResponse:
+    """Ascending version history for one Experiment's Measurement Contract —
+    readable for any Experiment, including one under a superseded Strategy.
+    No pagination (mirrors the Definition history route's own accepted
+    MVP37B-OBS-2 limit)."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment, versions = ExperimentMeasurementContractService(db).get_history(
+        campaign=campaign, experiment_public_id=experiment_public_id
+    )
+    tip = versions[-1][0] if versions else None
+    definitions = ExperimentDefinitionService(db).definitions
+    return MeasurementContractHistoryResponse(
+        experiment_id=experiment.public_id,
+        measurement_contract_label=measurement_contract_label_for(tip),
+        current_version=tip.version if tip is not None else None,
+        versions=[
+            measurement_contract_to_public(
+                version,
+                experiment_public_id=experiment.public_id,
+                definition_version_public_id=(
+                    definition.public_id
+                    if (definition := definitions.get_by_id(version.definition_version_id)) is not None
+                    else ""
+                ),
+                signals=signals,
+            )
+            for version, signals in versions
+        ],
     )

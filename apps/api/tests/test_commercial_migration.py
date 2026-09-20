@@ -104,7 +104,7 @@ def test_commercial_objective_offer_migration_round_trip(monkeypatch):
                 # MVP-28B, MVP-29B, and MVP-30B each added one additive
                 # migration after this one — "head" now means
                 # b27209ee89a1, not this migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "b41d7a90c2e5"  # MVP-38: current head, bumped from 7c2e91b4d0a8
+                assert connection.scalar(text("select version_num from alembic_version")) == "2536e4a8cddc"  # MVP-39: current head, bumped from b41d7a90c2e5
 
             if cycle == 0:
                 # MVP-28B added one additive migration after this one, so
