@@ -25,6 +25,12 @@ SIGNAL_TABLE = "measurement_contract_signals"
 DEFINITIONS = "experiment_definition_versions"
 
 
+# Experiment Evidence Binding (7c1e9a4d2b68) later added this UNIQUE to a table created by THIS revision. This test
+# migrates only to its own revision, so the create_all application-test DB (current models) legitimately carries one
+# extra constraint; it is excluded from the parity comparison rather than the parity assertion being weakened.
+LATER_CONSTRAINTS = {"uq_contract_signals_id_contract_experiment_workspace"}
+
+
 @pytest.fixture(autouse=True)
 def _restore_logging_state_after_alembic():
     """See ``tests/test_commercial_migration.py``: ``alembic/env.py`` disables
@@ -168,7 +174,11 @@ def test_measurement_contract_migration_round_trip(monkeypatch, postgres_engine)
 
             # Model <-> DB parity for every table this migration touches.
             for name in (TABLE, SIGNAL_TABLE, DEFINITIONS):
-                assert _constraint_definitions(engine, name) == _constraint_definitions(postgres_engine, name), name
+                assert _constraint_definitions(engine, name) == {
+                    constraint: definition
+                    for constraint, definition in _constraint_definitions(postgres_engine, name).items()
+                    if constraint not in LATER_CONSTRAINTS
+                }, name
 
             if cycle == 0:
                 before = set(inspect(engine).get_table_names()) - {TABLE, SIGNAL_TABLE}

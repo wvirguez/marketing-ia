@@ -7,11 +7,15 @@
 import { request } from "@/lib/api/client";
 import type {
   AuthorizeExecutionRequest,
+  CreateEvidenceClaimRequest,
   CreateExperimentRequest,
   CreateHypothesisRequest,
   DeclareExperimentDefinitionRequest,
   DeclareMeasurementContractRequest,
   DeclareVariantRequest,
+  DisposeEvidenceClaimRequest,
+  EvidenceClaimListResponse,
+  EvidenceClaimPublic,
   ExecutionAuthorizationHistoryResponse,
   ExecutionAuthorizationPublic,
   ExperimentDefinitionPublic,
@@ -202,6 +206,50 @@ export async function startExecution(
 ): Promise<ExecutionAuthorizationPublic> {
   return request<ExecutionAuthorizationPublic>(
     `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorizations/${encodeURIComponent(authorizationPublicId)}/start`,
+    { method: "POST", body: payload },
+  );
+}
+
+function evidenceClaimsPath(campaignPublicId: string, experimentPublicId: string, startPublicId: string): string {
+  return `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-starts/${encodeURIComponent(startPublicId)}/evidence-claims`;
+}
+
+// Experiment Evidence Binding: a member CLAIMS that ONE metric datum (entry + metric name) is associated
+// with ONE required signal under ONE started execution attempt. PROVENANCE CLAIM ONLY — EXPERIMENT_LEVEL.
+// Idempotent on `client_request_id` (201 new, 200 replay).
+export async function createEvidenceClaim(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  startPublicId: string,
+  payload: CreateEvidenceClaimRequest,
+): Promise<EvidenceClaimPublic> {
+  return request<EvidenceClaimPublic>(evidenceClaimsPath(campaignPublicId, experimentPublicId, startPublicId), {
+    method: "POST",
+    body: payload,
+  });
+}
+
+// Every claim of one Start — active AND disposed — ascending and unpaginated.
+export async function listEvidenceClaims(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  startPublicId: string,
+): Promise<EvidenceClaimListResponse> {
+  return request<EvidenceClaimListResponse>(evidenceClaimsPath(campaignPublicId, experimentPublicId, startPublicId), {
+    method: "GET",
+  });
+}
+
+// One-way disposal (reason required; no reactivation; no idempotency key).
+export async function disposeEvidenceClaim(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  startPublicId: string,
+  claimPublicId: string,
+  payload: DisposeEvidenceClaimRequest,
+): Promise<EvidenceClaimPublic> {
+  return request<EvidenceClaimPublic>(
+    `${evidenceClaimsPath(campaignPublicId, experimentPublicId, startPublicId)}/${encodeURIComponent(claimPublicId)}/dispose`,
     { method: "POST", body: payload },
   );
 }

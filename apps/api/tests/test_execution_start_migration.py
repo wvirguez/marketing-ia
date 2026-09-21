@@ -24,6 +24,11 @@ PREDECESSOR = "1fe7d6577113"
 TABLE = "execution_start_attestations"
 AUDIT_FK = "fk_audit_events_execution_start_attestation_id"
 
+# Experiment Evidence Binding (7c1e9a4d2b68) later added this UNIQUE to a table created by THIS revision. This test
+# migrates only to its own revision, so the create_all application-test DB (current models) legitimately carries one
+# extra constraint; it is excluded from the parity comparison rather than the parity assertion being weakened.
+LATER_CONSTRAINTS = {"uq_execution_start_attestations_id_authorization_workspace"}
+
 
 @pytest.fixture(autouse=True)
 def _restore_logging_state_after_alembic():
@@ -160,8 +165,16 @@ def test_execution_start_migration_round_trip(monkeypatch, postgres_engine):
                 assert connection.scalar(text("select version_num from alembic_version")) == REVISION
 
             # Model <-> DB parity (constraints and indexes) against the create_all application-test DB.
-            assert _constraint_definitions(engine, TABLE) == _constraint_definitions(postgres_engine, TABLE)
-            assert _index_definitions(engine, TABLE) == _index_definitions(postgres_engine, TABLE)
+            assert _constraint_definitions(engine, TABLE) == {
+                name: definition
+                for name, definition in _constraint_definitions(postgres_engine, TABLE).items()
+                if name not in LATER_CONSTRAINTS
+            }
+            assert _index_definitions(engine, TABLE) == {
+                name: definition
+                for name, definition in _index_definitions(postgres_engine, TABLE).items()
+                if name not in LATER_CONSTRAINTS  # a UNIQUE constraint's backing index carries its name
+            }
 
             if cycle == 0:
                 command.downgrade(config, PREDECESSOR)

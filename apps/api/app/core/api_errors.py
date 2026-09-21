@@ -790,3 +790,42 @@ class ExecutionAuthorizationActiveStartedError(ApiError):
         ),
     ) -> None:
         super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_ACTIVE_STARTED")
+
+
+class EvidenceClaimSignalNotInPinnedContractError(ApiError):
+    """Experiment Evidence Binding: the RequiredSignal belongs to this
+    Experiment but NOT to the Measurement Contract version the started
+    Authorization pins (422). A signal of another Experiment, workspace or an
+    unknown id is the non-leaky ``ForbiddenError`` instead."""
+
+    def __init__(
+        self,
+        message: str = "This required signal does not belong to the measurement contract pinned by this execution.",
+    ) -> None:
+        super().__init__(message, status_code=422, code="EVIDENCE_CLAIM_SIGNAL_NOT_IN_PINNED_CONTRACT")
+
+
+class EvidenceClaimMetricNotInEntryError(ApiError):
+    """Experiment Evidence Binding: the named metric does not exist in the
+    referenced MetricEntry (exact match, no normalization) (422)."""
+
+    def __init__(self, message: str = "The named metric does not exist in this metric entry.") -> None:
+        super().__init__(message, status_code=422, code="EVIDENCE_CLAIM_METRIC_NOT_IN_ENTRY")
+
+
+class EvidenceClaimAlreadyActiveError(ApiError):
+    """Experiment Evidence Binding: an ACTIVE claim already exists for the
+    same (Start, RequiredSignal, MetricEntry, metric_name); a different
+    ``client_request_id`` never creates a second active row (409)."""
+
+    def __init__(self, message: str = "An active evidence claim already exists for this datum and required signal.") -> None:
+        super().__init__(message, status_code=409, code="EVIDENCE_CLAIM_ALREADY_ACTIVE")
+
+
+class EvidenceClaimAlreadyDisposedError(ApiError):
+    """Experiment Evidence Binding: disposal is one-way; a second dispose is
+    this deterministic conflict (409) — dispose carries no idempotency key
+    (EEB-DF-OBS-2)."""
+
+    def __init__(self, message: str = "This evidence claim has already been disposed.") -> None:
+        super().__init__(message, status_code=409, code="EVIDENCE_CLAIM_ALREADY_DISPOSED")

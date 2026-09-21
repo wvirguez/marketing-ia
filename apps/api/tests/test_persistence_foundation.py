@@ -232,6 +232,7 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "execution_authorizations",
         "execution_authorization_variants",
         "execution_start_attestations",
+        "experiment_evidence_claims",
     }
 
 

@@ -801,7 +801,8 @@ def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_r
     # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38)
     # + 3 measurement-contract routes (MVP-39) + 4 execution-authorization routes (MVP-40)
     # + 1 Governed Execution Start route
-    assert len(pairs) == 109
+    # + 3 Experiment Evidence Binding routes (create, list, dispose)
+    assert len(pairs) == 112
     prefix = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}"
     definition_pairs = {(m, p) for m, p in pairs if "definition" in p}
     assert definition_pairs == {("POST", f"{prefix}/definition-versions"), ("GET", f"{prefix}/definition-versions")}

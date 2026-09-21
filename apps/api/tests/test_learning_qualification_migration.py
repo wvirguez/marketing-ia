@@ -54,7 +54,7 @@ def test_qualification_migration_round_trip(monkeypatch):
                 # MVP-26, MVP-27, MVP-28B, MVP-29B, and MVP-30B each added
                 # one additive migration after this one — "head" now means
                 # b27209ee89a1, not this migration's own revision.
-                assert connection.scalar(text("select version_num from alembic_version")) == "53b4bd83a005"  # Execution Start: current head, bumped from 1fe7d6577113
+                assert connection.scalar(text("select version_num from alembic_version")) == "7c1e9a4d2b68"  # Experiment Evidence Binding: current head, bumped from 53b4bd83a005
             if cycle == 0:
                 # Explicit target, not a relative "-1": MVP-26 added a
                 # further migration on top of this one, so "one step down"

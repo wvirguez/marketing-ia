@@ -16,6 +16,11 @@ vi.mock("@/lib/api/strategy", () => ({
   getExecutionAuthorizationHistory: vi.fn(),
   revokeExecutionAuthorization: vi.fn(),
   startExecution: vi.fn(),
+  // Experiment Evidence Binding: the claims section mounts beneath a started attempt.
+  listEvidenceClaims: vi.fn(),
+  createEvidenceClaim: vi.fn(),
+  disposeEvidenceClaim: vi.fn(),
+  getMeasurementContract: vi.fn(),
 }));
 
 import {
@@ -23,6 +28,7 @@ import {
   getExecutionAuthorization,
   getExecutionAuthorizationHistory,
   revokeExecutionAuthorization,
+  listEvidenceClaims,
 } from "@/lib/api/strategy";
 
 const mockAuthorize = vi.mocked(authorizeExecution);
@@ -109,6 +115,7 @@ function fillAuthorize(unit = "Visitante (sesión)", design = "División 50/50 p
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listEvidenceClaims).mockResolvedValue({ experiment_id: "EXP-1", start_id: "", claims: [] });
   mockGet.mockResolvedValue(null);
   mockHistory.mockResolvedValue(history([]));
   uuidCounter = 0;

@@ -307,6 +307,17 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # Experiment Evidence Binding: a strategy.evidence_claim.claimed/...disposed
+    # event must identify its exact ExperimentEvidenceClaim row. Nullable,
+    # single-column, matching every other AuditEvent subject FK. Deliberately
+    # NO metric_entry/RequiredSignal/strategy/hypothesis FK is written for
+    # this capability: the claim row is the source of detailed provenance, and
+    # a Strategy FK would invert the canonical lock order (EXSTART-IMPL-OBS-1).
+    experiment_evidence_claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("experiment_evidence_claims.id", name="fk_audit_events_experiment_evidence_claim_id"),
+        default=None,
+        index=True,
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

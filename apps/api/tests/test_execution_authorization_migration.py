@@ -27,6 +27,12 @@ VARIANT_KEY = "uq_experiment_variants_id_experiment_workspace"
 ACTIVE_INDEX = "uq_execution_authorizations_experiment_active"
 
 
+# Experiment Evidence Binding (7c1e9a4d2b68) later added this UNIQUE to a table created by THIS revision. This test
+# migrates only to its own revision, so the create_all application-test DB (current models) legitimately carries one
+# extra constraint; it is excluded from the parity comparison rather than the parity assertion being weakened.
+LATER_CONSTRAINTS = {"uq_execution_authorizations_id_contract_experiment_workspace"}
+
+
 @pytest.fixture(autouse=True)
 def _restore_logging_state_after_alembic():
     """See ``tests/test_commercial_migration.py``: ``alembic/env.py`` disables
@@ -204,9 +210,17 @@ def test_execution_authorization_migration_round_trip(monkeypatch, postgres_engi
 
             # Model <-> DB parity for every table this migration touches (constraints and indexes).
             for name in (TABLE, SNAPSHOT_TABLE, VARIANTS):
-                assert _constraint_definitions(engine, name) == _constraint_definitions(postgres_engine, name), name
+                assert _constraint_definitions(engine, name) == {
+                    constraint: definition
+                    for constraint, definition in _constraint_definitions(postgres_engine, name).items()
+                    if constraint not in LATER_CONSTRAINTS
+                }, name
             for name in (TABLE, SNAPSHOT_TABLE):
-                assert _index_definitions(engine, name) == _index_definitions(postgres_engine, name), name
+                assert _index_definitions(engine, name) == {
+                    index: definition
+                    for index, definition in _index_definitions(postgres_engine, name).items()
+                    if index not in LATER_CONSTRAINTS  # a UNIQUE constraint's backing index carries its name
+                }, name
 
             if cycle == 0:
                 before = set(inspect(engine).get_table_names()) - {TABLE, SNAPSHOT_TABLE}

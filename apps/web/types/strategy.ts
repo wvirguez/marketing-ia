@@ -287,3 +287,90 @@ export interface StartExecutionRequest {
   client_request_id: string;
   started_at: string;
 }
+
+// Experiment Evidence Binding: mirrors apps/api/app/strategy/schemas.py::EvidenceClaimPublic.
+// An evidence claim is a human PROVENANCE CLAIM ONLY — a member asserted that ONE metric datum
+// (metric entry + metric name) is associated with ONE required signal under ONE started execution
+// attempt, at EXPERIMENT level. It is NOT eligibility, validation, currentness, sufficiency,
+// correctness, tracking validity, assignment, exposure, Variant attribution, measurement, a result,
+// a winner, attribution or causality — so no such field exists here.
+// `later_correction_exists` is a read-time OBSERVATION (never stored, never a status).
+export interface EvidenceClaimAuthorizationRef {
+  id: string;
+  revoked_at: string | null;
+  revoked_reason: string | null;
+}
+
+export interface EvidenceClaimStartRef {
+  id: string;
+  started_at: string;
+}
+
+export interface EvidenceClaimSignalRef {
+  id: string;
+  name: string;
+  expected_direction: string | null;
+  tracking_required: boolean;
+  contract_version_id: string;
+  contract_version: number | null;
+}
+
+export interface EvidenceClaimDatum {
+  metric_entry_id: string;
+  metric_name: string;
+  value: string | number | null;
+  period_start: string | null;
+  period_end: string | null;
+  channel: string | null;
+  source: string | null;
+  entry_created_at: string | null;
+}
+
+export interface EvidenceClaimDistributionContext {
+  distribution_id: string | null;
+  evidence_id: string;
+  source_reference: string | null;
+  supersedes_evidence_id: string | null;
+  superseded_by_evidence_id: string | null;
+  correction_reason: string | null;
+}
+
+export interface EvidenceClaimPublic {
+  id: string;
+  experiment_id: string;
+  semantics: string;
+  scope: "EXPERIMENT_LEVEL";
+  reporter_note: string;
+  claimed_by: string | null;
+  created_at: string;
+  is_disposed: boolean;
+  disposed_at: string | null;
+  disposed_by: string | null;
+  disposal_reason: string | null;
+  authorization: EvidenceClaimAuthorizationRef;
+  start: EvidenceClaimStartRef;
+  required_signal: EvidenceClaimSignalRef | null;
+  datum: EvidenceClaimDatum;
+  distribution: EvidenceClaimDistributionContext | null;
+  later_correction_exists: boolean;
+  excluded_from_aggregate_and_analysis: boolean;
+}
+
+export interface EvidenceClaimListResponse {
+  experiment_id: string;
+  start_id: string;
+  claims: EvidenceClaimPublic[];
+}
+
+// Exactly the four frozen inputs — no note, variant, eligibility, assignment, exposure or result.
+export interface CreateEvidenceClaimRequest {
+  client_request_id: string;
+  required_signal_id: string;
+  metric_entry_id: string;
+  metric_name: string;
+}
+
+// Exactly a required reason — dispose carries no idempotency key.
+export interface DisposeEvidenceClaimRequest {
+  reason: string;
+}

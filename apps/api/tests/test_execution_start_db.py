@@ -152,6 +152,9 @@ def test_the_constraint_set_is_exactly_the_frozen_one_with_no_check_and_no_specu
         ("pk_execution_start_attestations", "p"),
         ("uq_execution_start_attestations_authorization_id", "u"),
         ("uq_execution_start_attestations_workspace_client_request_id", "u"),
+        # Experiment Evidence Binding: the one candidate key added later, and NOT speculative — the claim table's
+        # composite FK1 (start_id, authorization_id, workspace_id) is its concrete inbound reference.
+        ("uq_execution_start_attestations_id_authorization_workspace", "u"),
         ("fk_execution_start_attestations_authorization_workspace", "f"),
         ("fk_execution_start_attestations_workspace_id_workspaces", "f"),
     }

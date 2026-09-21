@@ -159,6 +159,13 @@ class MetricValue(Base, UUIDPrimaryKeyMixin):
     §I), unlike Content Piece's own explicit field list."""
 
     __tablename__ = "metric_values"
+    __table_args__ = (
+        # Experiment Evidence Binding (frozen Design Freeze §F, MV1): the
+        # natural identity the pipeline already relies on, now DB-enforced —
+        # required by ``experiment_evidence_claims``' composite FK so the
+        # database itself guarantees a claimed metric name exists in the entry.
+        UniqueConstraint("metric_entry_id", "metric_name", name="uq_metric_values_metric_entry_id_metric_name"),
+    )
 
     metric_entry_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("metric_entries.id"), index=True)
     metric_name: Mapped[str] = mapped_column(String(_METRIC_NAME_MAX_LENGTH))

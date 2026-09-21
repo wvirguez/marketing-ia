@@ -9,11 +9,13 @@ none of those exist on the underlying models in the first place.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Annotated, Any
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.measurement.models import MetricSource
 from app.strategy.models import (
     EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH,
     EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH,
@@ -24,6 +26,9 @@ from app.strategy.models import (
     EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH,
     EXPERIMENT_DEFINITION_MAX_CONTROLLED_FACTORS,
     EXPERIMENT_DEFINITION_PROSE_MAX_LENGTH,
+    EXPERIMENT_EVIDENCE_CLAIM_CLIENT_REQUEST_ID_MAX_LENGTH,
+    EXPERIMENT_EVIDENCE_CLAIM_DISPOSAL_REASON_MAX_LENGTH,
+    EXPERIMENT_EVIDENCE_CLAIM_METRIC_NAME_MAX_LENGTH,
     EXPERIMENT_VARIANT_DESCRIPTION_MAX_LENGTH,
     EXPERIMENT_VARIANT_LABEL_MAX_LENGTH,
     MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH,
@@ -871,4 +876,207 @@ def execution_authorization_to_public(
         superseded_by=superseded_by_public_id,
         execution_start=execution_start,
         created_at=authorization.created_at,
+    )
+
+
+# --- Experiment Evidence Binding (frozen Design Freeze §B/§AH) ---------------
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only; the service owns the dataclass
+    from app.strategy.experiment_evidence_claim_service import EvidenceClaimView
+
+EVIDENCE_CLAIM_SEMANTICS = "PROVENANCE CLAIM ONLY — NOT ELIGIBILITY OR VALIDATION"
+EVIDENCE_CLAIM_REPORTER_NOTE = (
+    "claimed_by is the member who asserted this experiment association; "
+    "it is not necessarily the member who originally reported the metric."
+)
+
+
+class CreateEvidenceClaimRequest(BaseModel):
+    """Experiment Evidence Binding: exactly the four frozen inputs.
+    ``extra="forbid"`` — no note, Variant, eligibility, assignment, exposure,
+    result or validity field is ever accepted. ``metric_name`` is matched
+    EXACTLY against the entry (no normalization), so it is not stripped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=EXPERIMENT_EVIDENCE_CLAIM_CLIENT_REQUEST_ID_MAX_LENGTH)
+    required_signal_id: str = Field(min_length=1, max_length=20)
+    metric_entry_id: str = Field(min_length=1, max_length=20)
+    metric_name: str = Field(min_length=1, max_length=EXPERIMENT_EVIDENCE_CLAIM_METRIC_NAME_MAX_LENGTH)
+
+    @field_validator("client_request_id", "required_signal_id", "metric_entry_id", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("client_request_id", "required_signal_id", "metric_entry_id", "metric_name")
+    @classmethod
+    def _text_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class DisposeEvidenceClaimRequest(BaseModel):
+    """Experiment Evidence Binding: exactly a required, non-blank ``reason``
+    (pairs with the DB ``disposal_complete`` CHECK). No idempotency key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=EXPERIMENT_EVIDENCE_CLAIM_DISPOSAL_REASON_MAX_LENGTH)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class EvidenceClaimAuthorizationRef(BaseModel):
+    """Literal facts only: ``revoked_at``/``revoked_reason`` are exposed as
+    stored and imply no eligibility (frozen R2)."""
+
+    id: str
+    revoked_at: datetime | None
+    revoked_reason: str | None
+
+
+class EvidenceClaimStartRef(BaseModel):
+    """``started_at`` is the operator-ATTESTED instant, shown literally beside
+    the datum period — no temporal comparison is made (frozen T1)."""
+
+    id: str
+    started_at: datetime
+
+
+class EvidenceClaimSignalRef(BaseModel):
+    """``tracking_required`` is declarative only — never a claim that tracking
+    is implemented or valid."""
+
+    id: str
+    name: str
+    expected_direction: str | None
+    tracking_required: bool
+    contract_version_id: str
+    contract_version: int | None
+
+
+class EvidenceClaimDatum(BaseModel):
+    metric_entry_id: str
+    metric_name: str
+    value: Decimal | None
+    period_start: date | None
+    period_end: date | None
+    channel: str | None
+    source: MetricSource | None
+    entry_created_at: datetime | None
+
+
+class EvidenceClaimDistributionContext(BaseModel):
+    """Present only when the datum's MetricEntry is owned by a
+    ``DistributionMetricEvidence`` row. Such entries are excluded from the
+    aggregate listing and the analysis pipeline by design (MVP-19B §37/§39)."""
+
+    distribution_id: str | None
+    evidence_id: str
+    source_reference: str | None
+    supersedes_evidence_id: str | None
+    superseded_by_evidence_id: str | None
+    correction_reason: str | None
+
+
+class EvidenceClaimPublic(BaseModel):
+    """ONE evidence claim. Public ids only. ``semantics``/``scope``/
+    ``reporter_note`` are constants. ``later_correction_exists`` is a read-time
+    observation — never stored, never a status, never valid/invalid. No
+    eligibility/validity/variant/assignment/exposure/result/winner field exists."""
+
+    id: str
+    experiment_id: str
+    semantics: Literal["PROVENANCE CLAIM ONLY — NOT ELIGIBILITY OR VALIDATION"] = EVIDENCE_CLAIM_SEMANTICS
+    scope: Literal["EXPERIMENT_LEVEL"] = "EXPERIMENT_LEVEL"
+    reporter_note: str = EVIDENCE_CLAIM_REPORTER_NOTE
+    claimed_by: str | None
+    created_at: datetime
+    is_disposed: bool
+    disposed_at: datetime | None
+    disposed_by: str | None
+    disposal_reason: str | None
+    authorization: EvidenceClaimAuthorizationRef
+    start: EvidenceClaimStartRef
+    required_signal: EvidenceClaimSignalRef | None
+    datum: EvidenceClaimDatum
+    distribution: EvidenceClaimDistributionContext | None
+    later_correction_exists: bool
+    excluded_from_aggregate_and_analysis: bool
+
+
+class EvidenceClaimListResponse(BaseModel):
+    experiment_id: str
+    start_id: str
+    claims: list[EvidenceClaimPublic]
+
+
+def evidence_claim_to_public(view: "EvidenceClaimView", *, experiment_public_id: str) -> EvidenceClaimPublic:
+    claim = view.claim
+    entry = view.entry
+    signal = view.signal
+    evidence = view.evidence
+    return EvidenceClaimPublic(
+        id=claim.public_id,
+        experiment_id=experiment_public_id,
+        claimed_by=view.claimed_by_public_id,
+        created_at=claim.created_at,
+        is_disposed=claim.disposed_at is not None,
+        disposed_at=claim.disposed_at,
+        disposed_by=view.disposed_by_public_id,
+        disposal_reason=claim.disposal_reason,
+        authorization=EvidenceClaimAuthorizationRef(
+            id=view.authorization.public_id,
+            revoked_at=view.authorization.revoked_at,
+            revoked_reason=view.authorization.revoked_reason,
+        ),
+        start=EvidenceClaimStartRef(id=view.start.public_id, started_at=view.start.started_at),
+        required_signal=(
+            EvidenceClaimSignalRef(
+                id=signal.public_id,
+                name=signal.name,
+                expected_direction=signal.expected_direction,
+                tracking_required=signal.tracking_required,
+                contract_version_id=view.contract_version.public_id if view.contract_version is not None else "",
+                contract_version=view.contract_version.version if view.contract_version is not None else None,
+            )
+            if signal is not None
+            else None
+        ),
+        datum=EvidenceClaimDatum(
+            metric_entry_id=entry.public_id if entry is not None else "",
+            metric_name=claim.metric_name,
+            value=view.value,
+            period_start=entry.period_start if entry is not None else None,
+            period_end=entry.period_end if entry is not None else None,
+            channel=entry.channel if entry is not None else None,
+            source=entry.source if entry is not None else None,
+            entry_created_at=entry.created_at if entry is not None else None,
+        ),
+        distribution=(
+            EvidenceClaimDistributionContext(
+                distribution_id=view.distribution.public_id if view.distribution is not None else None,
+                evidence_id=evidence.public_id,
+                source_reference=evidence.source_reference,
+                supersedes_evidence_id=(
+                    view.supersedes_evidence.public_id if view.supersedes_evidence is not None else None
+                ),
+                superseded_by_evidence_id=(
+                    view.superseded_by_evidence.public_id if view.superseded_by_evidence is not None else None
+                ),
+                correction_reason=evidence.correction_reason,
+            )
+            if evidence is not None
+            else None
+        ),
+        later_correction_exists=view.later_correction_exists,
+        excluded_from_aggregate_and_analysis=evidence is not None,
     )

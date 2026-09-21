@@ -42,6 +42,7 @@ import type {
   ExperimentDefinitionPublic,
   ExperimentPublic,
 } from "@/types/strategy";
+import { EvidenceClaimsSection } from "./evidence-claims-section";
 
 const UNIT_MAX = 200;
 const DESIGN_MAX = 2000;
@@ -331,6 +332,11 @@ export function ExecutionAuthorizationSection({
 
   const past = history.filter((entry) => entry.id !== current?.id);
   const started = current?.execution_start ?? null;
+  // Experiment Evidence Binding: claims belong to a STARTED attempt, not to an active Authorization — a late
+  // claim after revocation is allowed (R2), so the most recent started attempt stays claimable and readable.
+  const claimsTarget = started
+    ? current
+    : ([...history].reverse().find((entry) => entry.execution_start !== null) ?? null);
 
   return (
     <div style={{ marginTop: 12 }}>
@@ -602,6 +608,16 @@ export function ExecutionAuthorizationSection({
             ))}
           </ol>
         </div>
+      )}
+
+      {claimsTarget?.execution_start && (
+        <EvidenceClaimsSection
+          key={claimsTarget.execution_start.id}
+          campaignId={campaignId}
+          experimentId={experiment.id}
+          startId={claimsTarget.execution_start.id}
+          role={role}
+        />
       )}
     </div>
   );

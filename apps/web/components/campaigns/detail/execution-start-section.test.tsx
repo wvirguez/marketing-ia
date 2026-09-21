@@ -19,12 +19,18 @@ vi.mock("@/lib/api/strategy", () => ({
   getExecutionAuthorizationHistory: vi.fn(),
   revokeExecutionAuthorization: vi.fn(),
   startExecution: vi.fn(),
+  // Experiment Evidence Binding: the claims section mounts beneath a started attempt.
+  listEvidenceClaims: vi.fn(),
+  createEvidenceClaim: vi.fn(),
+  disposeEvidenceClaim: vi.fn(),
+  getMeasurementContract: vi.fn(),
 }));
 
 import {
   getExecutionAuthorization,
   getExecutionAuthorizationHistory,
   startExecution,
+  listEvidenceClaims,
 } from "@/lib/api/strategy";
 
 const mockGet = vi.mocked(getExecutionAuthorization);
@@ -126,6 +132,7 @@ async function confirmAndSubmit() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listEvidenceClaims).mockResolvedValue({ experiment_id: "EXP-1", start_id: "", claims: [] });
   mockGet.mockResolvedValue(null);
   mockHistory.mockResolvedValue(history([]));
   uuidCounter = 0;
@@ -336,6 +343,15 @@ describe("Execution Start — started state", () => {
   });
 });
 
+// The Evidence Claims section renders beneath a started attempt and legitimately carries NEGATED wording
+// ("no es … validación"); it has its own dedicated firewall tests (evidence-claims-section.test.tsx). This
+// firewall guards the Execution Start / Authorization copy, so the scan excludes that separate section.
+function startSectionText(container: HTMLElement): string {
+  const clone = container.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('[data-testid="evidence-claims-section"]').forEach((node) => node.remove());
+  return clone.textContent ?? "";
+}
+
 describe("Execution Start — language firewall", () => {
   const FORBIDDEN_CLAIMS = [/en ejecución/i, /ejecución verificada/i, /ganador/i, /éxito/i, /válid/i, /ejecutándose/i];
   const FORBIDDEN_CONTROLS = /asign(ar|ación)\b.*(unidad|celda)|exponer|exposición|resultado|ganador|detener|finalizar|completar|pausar|reanudar/i;
@@ -347,7 +363,7 @@ describe("Execution Start — language firewall", () => {
     await withActive(started);
     const { container } = renderSection();
     await screen.findByText("Inicio atestiguado por una persona");
-    for (const claim of FORBIDDEN_CLAIMS) expect(container.textContent ?? "").not.toMatch(claim);
+    for (const claim of FORBIDDEN_CLAIMS) expect(startSectionText(container)).not.toMatch(claim);
     for (const button of screen.getAllByRole("button")) expect(button.textContent ?? "").not.toMatch(FORBIDDEN_CONTROLS);
   });
 

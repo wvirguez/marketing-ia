@@ -27,6 +27,7 @@ from app.strategy.models import (
     ExecutionAuthorizationVariant,
     ExecutionStartAttestation,
     ExperimentDefinitionVersion,
+    ExperimentEvidenceClaim,
     ExperimentVariant,
     Hypothesis,
     HypothesisStatus,
@@ -698,6 +699,22 @@ class MeasurementContractRepository:
             .all()
         )
 
+    def get_signal_by_public_id_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str
+    ) -> MeasurementContractRequiredSignal | None:
+        """Experiment Evidence Binding: resolves a RequiredSignal by its public
+        id STRICTLY inside one Experiment and workspace — a foreign or unknown
+        id is indistinguishable from a missing one. Deliberately NOT scoped to
+        a Contract version: whether the signal belongs to the pinned Contract
+        is a separate, typed (422) check made by the caller."""
+        return self.session.execute(
+            select(MeasurementContractRequiredSignal).where(
+                MeasurementContractRequiredSignal.public_id == public_id,
+                MeasurementContractRequiredSignal.experiment_id == experiment_id,
+                MeasurementContractRequiredSignal.workspace_id == workspace_id,
+            )
+        ).scalar_one_or_none()
+
     def signal_names_for_version(self, *, contract_version_id: uuid.UUID) -> list[str]:
         """Only the ``name`` column of every RequiredSignal of one Contract
         version (used for the normalized duplicate check within one write,
@@ -929,6 +946,28 @@ class ExecutionStartAttestationRepository:
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
 
+    def get_with_authorization_by_public_id(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str
+    ) -> tuple[ExecutionStartAttestation, ExecutionAuthorization] | None:
+        """Experiment Evidence Binding: resolves a Start by its public id
+        STRICTLY inside one Experiment and workspace (through its
+        Authorization), together with that Authorization. A foreign or
+        unknown id is indistinguishable from a missing one."""
+        row = self.session.execute(
+            select(ExecutionStartAttestation, ExecutionAuthorization)
+            .join(
+                ExecutionAuthorization,
+                (ExecutionAuthorization.id == ExecutionStartAttestation.authorization_id)
+                & (ExecutionAuthorization.workspace_id == ExecutionStartAttestation.workspace_id),
+            )
+            .where(
+                ExecutionStartAttestation.public_id == public_id,
+                ExecutionStartAttestation.workspace_id == workspace_id,
+                ExecutionAuthorization.experiment_id == experiment_id,
+            )
+        ).first()
+        return (row[0], row[1]) if row is not None else None
+
     def exists_for_authorization(self, *, authorization_id: uuid.UUID) -> bool:
         return (
             self.session.execute(
@@ -959,4 +998,113 @@ class ExecutionStartAttestationRepository:
                 .limit(1)
             ).first()
             is not None
+        )
+
+
+class ExperimentEvidenceClaimRepository:
+    """Experiment Evidence Binding: data access for ``ExperimentEvidenceClaim``.
+    Append-only except for the ONE-WAY disposal (``dispose``); there is
+    deliberately NO retarget, reactivate or delete method. No method here
+    calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        workspace_id: uuid.UUID,
+        start_id: uuid.UUID,
+        authorization_id: uuid.UUID,
+        experiment_id: uuid.UUID,
+        contract_version_id: uuid.UUID,
+        required_signal_id: uuid.UUID,
+        metric_entry_id: uuid.UUID,
+        metric_name: str,
+        client_request_id: str,
+        claimed_by_user_id: uuid.UUID,
+    ) -> ExperimentEvidenceClaim:
+        row = ExperimentEvidenceClaim(
+            public_id=generate_public_id("ECL"),
+            workspace_id=workspace_id,
+            start_id=start_id,
+            authorization_id=authorization_id,
+            experiment_id=experiment_id,
+            contract_version_id=contract_version_id,
+            required_signal_id=required_signal_id,
+            metric_entry_id=metric_entry_id,
+            metric_name=metric_name,
+            client_request_id=client_request_id,
+            claimed_by_user_id=claimed_by_user_id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def dispose(
+        self, claim: ExperimentEvidenceClaim, *, disposed_at, disposed_by_user_id: uuid.UUID, reason: str
+    ) -> None:
+        """The single, one-way state change. The caller holds the claim row
+        ``FOR UPDATE`` and has verified it is not yet disposed."""
+        claim.disposed_at = disposed_at
+        claim.disposed_by_user_id = disposed_by_user_id
+        claim.disposal_reason = reason
+        self.session.flush()
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExperimentEvidenceClaim | None:
+        return self.session.execute(
+            select(ExperimentEvidenceClaim)
+            .where(
+                ExperimentEvidenceClaim.workspace_id == workspace_id,
+                ExperimentEvidenceClaim.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_active_for_material(
+        self, *, start_id: uuid.UUID, required_signal_id: uuid.UUID, metric_entry_id: uuid.UUID, metric_name: str
+    ) -> ExperimentEvidenceClaim | None:
+        return self.session.execute(
+            select(ExperimentEvidenceClaim)
+            .where(
+                ExperimentEvidenceClaim.start_id == start_id,
+                ExperimentEvidenceClaim.required_signal_id == required_signal_id,
+                ExperimentEvidenceClaim.metric_entry_id == metric_entry_id,
+                ExperimentEvidenceClaim.metric_name == metric_name,
+                ExperimentEvidenceClaim.disposed_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_for_start_by_public_id(
+        self, *, start_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str, for_update: bool = False
+    ) -> ExperimentEvidenceClaim | None:
+        """Non-leaky lookup STRICTLY inside one Start and workspace."""
+        query = select(ExperimentEvidenceClaim).where(
+            ExperimentEvidenceClaim.public_id == public_id,
+            ExperimentEvidenceClaim.start_id == start_id,
+            ExperimentEvidenceClaim.workspace_id == workspace_id,
+        )
+        if for_update:
+            query = query.with_for_update()
+        return self.session.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
+
+    def list_for_start(self, *, start_id: uuid.UUID, workspace_id: uuid.UUID) -> list[ExperimentEvidenceClaim]:
+        """Ascending, unpaginated history — active AND disposed claims alike
+        (mirrors the accepted Authorization/Contract history limit,
+        EEB-DF-OBS-4)."""
+        return list(
+            self.session.execute(
+                select(ExperimentEvidenceClaim)
+                .where(
+                    ExperimentEvidenceClaim.start_id == start_id,
+                    ExperimentEvidenceClaim.workspace_id == workspace_id,
+                )
+                .order_by(ExperimentEvidenceClaim.created_at.asc(), ExperimentEvidenceClaim.id.asc())
+                .execution_options(populate_existing=True)
+            )
+            .scalars()
+            .all()
         )

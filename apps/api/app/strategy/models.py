@@ -666,6 +666,18 @@ class MeasurementContractRequiredSignal(Base, UUIDPrimaryKeyMixin):
         UniqueConstraint(
             "contract_version_id", "name", name="uq_measurement_contract_signals_contract_version_name"
         ),
+        # Experiment Evidence Binding (frozen Design Freeze §K): candidate key
+        # purely so ``experiment_evidence_claims`` can declare a composite FK
+        # proving the claim's RequiredSignal belongs to the claim's Contract
+        # version, Experiment and workspace. Explicit shortened name: the
+        # convention-style name would exceed PostgreSQL's 63-character limit.
+        UniqueConstraint(
+            "id",
+            "contract_version_id",
+            "experiment_id",
+            "workspace_id",
+            name="uq_contract_signals_id_contract_experiment_workspace",
+        ),
         CheckConstraint("ordinal >= 1", name="ordinal_positive"),
         CheckConstraint(
             "char_length(btrim(name)) > 0 AND char_length(btrim(description)) > 0", name="text_fields_nonblank"
@@ -804,6 +816,17 @@ class ExecutionAuthorization(Base, UUIDPrimaryKeyMixin):
         # can declare a composite tenant-safe FK on (authorization_id,
         # workspace_id).
         UniqueConstraint("id", "workspace_id", name="uq_execution_authorizations_id_workspace"),
+        # Experiment Evidence Binding (frozen Design Freeze §K): candidate key
+        # purely so ``experiment_evidence_claims`` can prove the claim's
+        # Authorization pins the claim's Contract version within the claim's
+        # Experiment and workspace.
+        UniqueConstraint(
+            "id",
+            "contract_version_id",
+            "experiment_id",
+            "workspace_id",
+            name="uq_execution_authorizations_id_contract_experiment_workspace",
+        ),
         UniqueConstraint(
             "workspace_id", "client_request_id", name="uq_execution_authorizations_workspace_client_request_id"
         ),
@@ -908,9 +931,11 @@ class ExecutionStartAttestation(Base, UUIDPrimaryKeyMixin):
 
     Cardinality ``ExecutionAuthorization 1 : 0..1 ExecutionStartAttestation``
     is DB-enforced by ``UNIQUE(authorization_id)``. Tenant safety is the
-    composite FK to the existing ``(id, workspace_id)`` candidate key. No
-    speculative candidate key is declared on this table (no concrete inbound
-    FK targets it yet — same discipline as ``TrackingPlan``).
+    composite FK to the existing ``(id, workspace_id)`` candidate key. The one
+    candidate key declared here, ``(id, authorization_id, workspace_id)``,
+    exists purely because ``experiment_evidence_claims`` declares a composite
+    FK to it (Experiment Evidence Binding, frozen Design Freeze §K) — the
+    first concrete inbound FK to this table.
 
     Immutable and append-only by absence: no ``updated_at``, no
     ``created_by`` (the audit event carries the actor), no ``status``, no
@@ -931,6 +956,12 @@ class ExecutionStartAttestation(Base, UUIDPrimaryKeyMixin):
         UniqueConstraint(
             "workspace_id", "client_request_id", name="uq_execution_start_attestations_workspace_client_request_id"
         ),
+        UniqueConstraint(
+            "id",
+            "authorization_id",
+            "workspace_id",
+            name="uq_execution_start_attestations_id_authorization_workspace",
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -939,3 +970,133 @@ class ExecutionStartAttestation(Base, UUIDPrimaryKeyMixin):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     client_request_id: Mapped[str] = mapped_column(String(EXECUTION_START_CLIENT_REQUEST_ID_MAX_LENGTH))
+
+
+EXPERIMENT_EVIDENCE_CLAIM_CLIENT_REQUEST_ID_MAX_LENGTH = 100
+EXPERIMENT_EVIDENCE_CLAIM_METRIC_NAME_MAX_LENGTH = 100
+EXPERIMENT_EVIDENCE_CLAIM_DISPOSAL_REASON_MAX_LENGTH = 1000
+
+
+class ExperimentEvidenceClaim(Base, UUIDPrimaryKeyMixin):
+    """Experiment Evidence Binding (frozen Design Freeze): a human PROVENANCE
+    CLAIM that authenticated member ``claimed_by_user_id``, at server time
+    ``created_at``, associated ONE metric datum ``(metric_entry_id,
+    metric_name)`` with ONE ``MeasurementContractRequiredSignal`` under ONE
+    started execution attempt (``start_id``).
+
+    EVIDENCE CLAIM != ELIGIBILITY != TEMPORAL VALIDITY != CURRENTNESS !=
+    SUFFICIENCY != CORRECTNESS != TRACKING VALIDITY != ASSIGNMENT != EXPOSURE
+    != VARIANT ATTRIBUTION != COMPARABILITY != MEASUREMENT != EXPERIMENT
+    RESULT != WINNER != HYPOTHESIS VERDICT != EXPERIMENTAL VALIDITY !=
+    ATTRIBUTION != CAUSALITY != LEARNING VALIDITY. The claim is EXPERIMENT-
+    LEVEL only: no Variant, Assignment, Exposure, eligibility or validity
+    column exists, and the metric value/period/channel/source are never
+    copied here (they are read through the datum FKs).
+
+    Semantic owner: the Start (``start_id``). ``authorization_id``,
+    ``experiment_id`` and ``contract_version_id`` are INTEGRITY columns only,
+    never independent semantic identities — they exist so the database can
+    prove (composite FK2/FK3) that the Start's Authorization and the
+    RequiredSignal share ONE Experiment and ONE Contract version, and (FK1)
+    that the Start belongs to that Authorization. ``workspace_id`` is shared
+    by every composite FK, so no cross-workspace claim can commit. Campaign
+    match of the MetricEntry to the Experiment's campaign is SERVICE-enforced
+    only (``Experiment`` has no ``campaign_id`` and an FK to Strategy would
+    invert the canonical lock order — EEB-DF-OBS-1).
+
+    Lifecycle: append-only claim with ONE-WAY disposal — ``disposed_at``/
+    ``disposed_by_user_id``/``disposal_reason`` are all-null-or-all-set; no
+    status enum ("active" is ``disposed_at IS NULL``). Disposal means only
+    that the workspace no longer intends future consumers to consider this
+    claim; it never means the assertion did not happen or that the evidence,
+    Experiment or claim was false or invalid. Nothing is ever rewritten,
+    retargeted or deleted; a corrected datum requires a NEW claim.
+
+    ``claimed_by_user_id`` is who asserted the experiment association — not
+    necessarily who originally reported the metric (a MetricEntry records no
+    reporter, EEB-DISC-OBS-3)."""
+
+    __tablename__ = "experiment_evidence_claims"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["start_id", "authorization_id", "workspace_id"],
+            [
+                "execution_start_attestations.id",
+                "execution_start_attestations.authorization_id",
+                "execution_start_attestations.workspace_id",
+            ],
+            name="fk_experiment_evidence_claims_start_authorization",
+        ),
+        ForeignKeyConstraint(
+            ["authorization_id", "contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "execution_authorizations.id",
+                "execution_authorizations.contract_version_id",
+                "execution_authorizations.experiment_id",
+                "execution_authorizations.workspace_id",
+            ],
+            name="fk_experiment_evidence_claims_authorization_contract",
+        ),
+        ForeignKeyConstraint(
+            ["required_signal_id", "contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "measurement_contract_signals.id",
+                "measurement_contract_signals.contract_version_id",
+                "measurement_contract_signals.experiment_id",
+                "measurement_contract_signals.workspace_id",
+            ],
+            name="fk_experiment_evidence_claims_signal_contract",
+        ),
+        ForeignKeyConstraint(
+            ["metric_entry_id", "workspace_id"],
+            ["metric_entries.id", "metric_entries.workspace_id"],
+            name="fk_experiment_evidence_claims_metric_entry_workspace",
+        ),
+        # The DB guarantees the named metric actually exists in the entry.
+        ForeignKeyConstraint(
+            ["metric_entry_id", "metric_name"],
+            ["metric_values.metric_entry_id", "metric_values.metric_name"],
+            name="fk_experiment_evidence_claims_metric_value",
+        ),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_experiment_evidence_claims_workspace_client_request_id"
+        ),
+        # The DB backstop for "at most one ACTIVE claim per material datum":
+        # a disposed claim does not block a new claim of the same material.
+        Index(
+            "uq_experiment_evidence_claims_active_datum",
+            "start_id",
+            "required_signal_id",
+            "metric_entry_id",
+            "metric_name",
+            unique=True,
+            postgresql_where=text("disposed_at IS NULL"),
+        ),
+        CheckConstraint(
+            "(disposed_at IS NULL AND disposed_by_user_id IS NULL AND disposal_reason IS NULL) OR "
+            "(disposed_at IS NOT NULL AND disposed_by_user_id IS NOT NULL AND disposal_reason IS NOT NULL)",
+            name="disposal_complete",
+        ),
+        CheckConstraint(
+            "disposal_reason IS NULL OR char_length(btrim(disposal_reason)) > 0",
+            name="disposal_reason_nonblank",
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    start_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    authorization_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column (FK1/FK2)
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column (FK2/FK3)
+    contract_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column (FK2/FK3)
+    required_signal_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    metric_entry_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FKs above
+    metric_name: Mapped[str] = mapped_column(String(EXPERIMENT_EVIDENCE_CLAIM_METRIC_NAME_MAX_LENGTH))
+    client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_EVIDENCE_CLAIM_CLIENT_REQUEST_ID_MAX_LENGTH))
+    claimed_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    disposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    disposed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), default=None)
+    disposal_reason: Mapped[str | None] = mapped_column(
+        String(EXPERIMENT_EVIDENCE_CLAIM_DISPOSAL_REASON_MAX_LENGTH), default=None
+    )

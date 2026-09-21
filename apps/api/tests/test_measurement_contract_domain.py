@@ -254,6 +254,8 @@ def test_writer_surface_is_append_only_and_has_no_lifecycle() -> None:
         "create", "get_by_id", "get_by_workspace_and_request_id", "get_tip", "list_for_experiment",
         "list_signals_for_version", "signal_names_for_version", "exists_for_definition_version",
         "contract_states_for_versions",
+        # Experiment Evidence Binding: a read-only strict-scope RequiredSignal lookup — still no write/lifecycle method.
+        "get_signal_by_public_id_for_experiment",
     }
     assert not {
         n for n in dir(ExperimentMeasurementContractService) if n.startswith(("update", "delete", "edit", "correct", "retire", "freeze"))

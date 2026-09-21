@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from app.campaigns.models import Campaign
@@ -92,6 +92,32 @@ class MetricEntryRepository:
         if not entry_ids:
             return []
         return list(self.session.execute(select(MetricEntry).where(MetricEntry.id.in_(entry_ids))).scalars().all())
+
+    def exists_later_in_grouping(self, entry: MetricEntry) -> bool:
+        """Experiment Evidence Binding (read-time observation only, never
+        stored, never a gate): true when a LATER aggregate entry exists for
+        the same ``(campaign, period_start, period_end, channel)`` grouping —
+        i.e. ``entry`` is not the latest row of its grouping under the same
+        ``created_at DESC, id DESC`` ordering ``list_for_campaign`` uses.
+        Distribution-owned entries are excluded from the comparison (they are
+        isolated from the aggregate grouping, MVP-19B §37/§39)."""
+        return (
+            self.session.execute(
+                select(MetricEntry.id)
+                .where(
+                    MetricEntry.campaign_id == entry.campaign_id,
+                    MetricEntry.period_start == entry.period_start,
+                    MetricEntry.period_end == entry.period_end,
+                    MetricEntry.channel == entry.channel,
+                    tuple_(MetricEntry.created_at, MetricEntry.id) > tuple_(entry.created_at, entry.id),
+                    ~select(DistributionMetricEvidence.id)
+                    .where(DistributionMetricEvidence.metric_entry_id == MetricEntry.id)
+                    .exists(),
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
 
     def list_for_campaign(self, campaign_id: uuid.UUID) -> list[MetricEntry]:
         """Full history, every correction preserved — ordered so the

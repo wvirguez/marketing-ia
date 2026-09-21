@@ -56,6 +56,23 @@ plus four governed write routes and two governed read routes:
         allocation/assignment/exposure/tracking-validation/result/winner
         endpoint or field exists anywhere in this surface.
 
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-authorizations/{authorization_id}/start
+        (Governed Execution Start) — a human ATTESTS that execution of ONE named
+        Authorization began; idempotent on ``client_request_id``.
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-starts/{start_id}/evidence-claims
+    GET  /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-starts/{start_id}/evidence-claims
+    POST /api/v1/campaigns/{campaign_id}/experiments/{experiment_id}/execution-starts/{start_id}/evidence-claims/{claim_id}/dispose
+        (Experiment Evidence Binding, frozen Design Freeze) — a member CLAIMS that
+        ONE metric datum (entry + metric name) is associated with ONE
+        RequiredSignal under ONE started execution attempt. PROVENANCE CLAIM
+        ONLY, EXPERIMENT_LEVEL: never eligibility, validation, currentness,
+        sufficiency, tracking validity, assignment, exposure, Variant
+        attribution, measurement, a result, a winner or causality. Create is
+        idempotent on ``client_request_id``; the GET lists every claim of the
+        Start (active AND disposed, ascending, unpaginated); dispose is one-way
+        and requires a reason. There is no get-one, list-by-signal or
+        list-by-Experiment route and no PATCH/PUT/DELETE.
+
 No other write endpoint exists here — Strategy/Positioning themselves
 remain writable only via the deterministic bootstrap
 (``app/strategy/service.py::record_strategy``) or the separate governed
@@ -78,16 +95,21 @@ from app.persistence.session import get_db
 from app.strategy.definition_service import ExperimentDefinitionService
 from app.strategy.execution_authorization_service import ExperimentExecutionAuthorizationService
 from app.strategy.execution_start_service import ExperimentExecutionStartService
+from app.strategy.experiment_evidence_claim_service import ExperimentEvidenceClaimService
 from app.strategy.measurement_contract_service import ExperimentMeasurementContractService
 from app.strategy.models import ExecutionAuthorization, ExecutionAuthorizationVariant
 from app.strategy.repository import ExecutionStartAttestationRepository
 from app.strategy.schemas import (
     AuthorizeExecutionRequest,
+    CreateEvidenceClaimRequest,
     CreateExperimentRequest,
     CreateHypothesisRequest,
     CreateVariantRequest,
     DeclareExperimentDefinitionRequest,
     DeclareMeasurementContractRequest,
+    DisposeEvidenceClaimRequest,
+    EvidenceClaimListResponse,
+    EvidenceClaimPublic,
     ExecutionAuthorizationHistoryResponse,
     ExecutionAuthorizationPublic,
     ExecutionAuthorizationVariantPublic,
@@ -105,6 +127,7 @@ from app.strategy.schemas import (
     VariantPublic,
     comparison_label_for,
     definition_to_public,
+    evidence_claim_to_public,
     execution_authorization_to_public,
     experiment_to_public,
     hypothesis_to_public,
@@ -790,3 +813,120 @@ async def start_execution(
     return _execution_authorization_to_public(
         db, authorization, snapshot_rows, experiment_public_id=experiment_public_id, superseded_by_public_id=None
     )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-starts/{start_public_id}/evidence-claims",
+    response_model=EvidenceClaimPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_evidence_claim(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    start_public_id: str,
+    payload: CreateEvidenceClaimRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> EvidenceClaimPublic:
+    """A member CLAIMS that ONE metric datum ``(metric_entry_id, metric_name)``
+    is associated with ONE RequiredSignal under THIS started execution attempt
+    (Experiment Evidence Binding, frozen Design Freeze). Idempotent on
+    ``client_request_id``: 201 for a new claim, 200 for a matching replay (the
+    original claim in its CURRENT state, even if since disposed or after the
+    Authorization was revoked), 409 ``IDEMPOTENCY_KEY_CONFLICT`` for the same
+    key with different material, 409 ``EVIDENCE_CLAIM_ALREADY_ACTIVE`` for a
+    different key against an already-active claim of the same material. Any
+    active workspace membership may call this (MEMBER+); the audit actor is
+    always the USER. PROVENANCE CLAIM ONLY — EXPERIMENT_LEVEL: it does not mean
+    the datum is eligible, current, sufficient, correct, temporally valid or
+    tracked, and it asserts no Variant, assignment, exposure, result, winner,
+    attribution or causality. Late claims after revocation are allowed."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    service = ExperimentEvidenceClaimService(db)
+    claim, created = service.create(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        start_public_id=start_public_id,
+        client_request_id=payload.client_request_id,
+        required_signal_public_id=payload.required_signal_id,
+        metric_entry_public_id=payload.metric_entry_id,
+        metric_name=payload.metric_name,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return evidence_claim_to_public(service.view_for_claim(claim), experiment_public_id=experiment_public_id)
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/execution-starts/{start_public_id}/evidence-claims",
+    response_model=EvidenceClaimListResponse,
+)
+async def list_evidence_claims(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    start_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> EvidenceClaimListResponse:
+    """Every claim of this Start — active AND disposed — ascending and
+    unpaginated (the accepted history convention, EEB-DF-OBS-4). Readable for
+    any Experiment of the campaign, including one under a superseded
+    Strategy."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    experiment, views = ExperimentEvidenceClaimService(db).list_for_start(
+        campaign=campaign, experiment_public_id=experiment_public_id, start_public_id=start_public_id
+    )
+    return EvidenceClaimListResponse(
+        experiment_id=experiment.public_id,
+        start_id=start_public_id,
+        claims=[evidence_claim_to_public(view, experiment_public_id=experiment.public_id) for view in views],
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-starts/{start_public_id}/evidence-claims/{claim_public_id}/dispose",
+    response_model=EvidenceClaimPublic,
+    dependencies=[Depends(require_csrf)],
+)
+async def dispose_evidence_claim(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    start_public_id: str,
+    claim_public_id: str,
+    payload: DisposeEvidenceClaimRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> EvidenceClaimPublic:
+    """ONE-WAY disposal of a claim (a reason is required; no reactivation, no
+    idempotency key). Any active workspace member may dispose any claim of the
+    workspace (MEMBER+); the audit actor is always the USER. Disposal means
+    only that the workspace no longer intends future consumers to consider this
+    claim — it never means the assertion did not happen or that the evidence,
+    Experiment or claim was false or invalid. 409
+    ``EVIDENCE_CLAIM_ALREADY_DISPOSED`` for a claim already disposed. The
+    disposed claim stays readable."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    service = ExperimentEvidenceClaimService(db)
+    claim = service.dispose(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        start_public_id=start_public_id,
+        claim_public_id=claim_public_id,
+        reason=payload.reason,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    return evidence_claim_to_public(service.view_for_claim(claim), experiment_public_id=experiment_public_id)
