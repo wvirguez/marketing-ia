@@ -240,3 +240,15 @@ describe("MeasurementContractSection — negative surface", () => {
     }
   });
 });
+
+describe("MeasurementContractSection — Governed Execution Start freeze copy", () => {
+  it("explains that a started execution freezes the contract permanently, even after revocation", async () => {
+    mockDeclare.mockRejectedValue(new ApiError(409, "MEASUREMENT_CONTRACT_FROZEN_BY_EXECUTION_START", "frozen"));
+    renderSection(definition());
+    await userEvent.click(screen.getByText("Declarar contrato de medición"));
+    fillFirstSignal();
+    await userEvent.click(screen.getByText("Confirmar contrato"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/congelado de forma permanente/));
+    expect(screen.getByRole("alert")).toHaveTextContent(/nuevo experimento/);
+  });
+});

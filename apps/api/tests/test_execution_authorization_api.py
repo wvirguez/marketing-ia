@@ -135,9 +135,10 @@ def test_creation_returns_201_and_the_frozen_public_shape(campaign_run_client: d
     assert set(data) == {
         "id", "experiment_id", "definition_version_id", "contract_version_id", "unit_of_assignment",
         "allocation_design", "variants", "signal_count", "tracking_required_signal_count", "active",
-        "revoked_at", "revoked_reason", "superseded_by", "created_at",
+        "revoked_at", "revoked_reason", "superseded_by", "execution_start", "created_at",
     }
     assert data["active"] is True and data["revoked_at"] is None and data["superseded_by"] is None
+    assert data["execution_start"] is None
     assert len(data["variants"]) == 1 and set(data["variants"][0]) == {"id", "label", "condition_description"}
     assert data["signal_count"] == 1 and data["tracking_required_signal_count"] == 0
 

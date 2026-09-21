@@ -264,7 +264,7 @@ def test_writer_surface_is_append_only_and_has_no_lifecycle_column() -> None:
     public = {name for name in dir(ExecutionAuthorizationRepository) if not name.startswith("_")}
     assert public == {
         "create", "exists_active_for_contract_version", "get_active_for_experiment",
-        "get_by_workspace_and_request_id", "list_for_experiment", "list_variants_for_authorization",
+        "get_by_public_id_for_experiment", "get_by_workspace_and_request_id", "list_for_experiment", "list_variants_for_authorization",
     }
     assert not {
         n for n in dir(ExperimentExecutionAuthorizationService)

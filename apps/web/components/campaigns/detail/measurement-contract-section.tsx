@@ -158,6 +158,8 @@ function describeContractError(error: unknown): string {
         return "El contrato de medición cambió mientras lo editabas. Se actualizó la vista con la versión vigente; revísala y vuelve a intentar.";
       case "MEASUREMENT_CONTRACT_FROZEN_BY_AUTHORIZATION":
         return "El contrato de medición está congelado por una autorización de ejecución activa. Revoca esa autorización para poder revisarlo.";
+      case "MEASUREMENT_CONTRACT_FROZEN_BY_EXECUTION_START":
+        return "El contrato de medición está congelado de forma permanente porque se atestiguó el inicio de la ejecución. Revocar la autorización no lo reabre; para corregirlo hay que crear un nuevo experimento.";
       case "MEASUREMENT_CONTRACT_UNCHANGED":
         return "No hay cambios respecto al contrato de medición vigente.";
       case "MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED":

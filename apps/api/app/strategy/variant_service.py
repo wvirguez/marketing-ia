@@ -46,6 +46,7 @@ from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign
 from app.core.api_errors import (
+    ExperimentVariantFrozenByExecutionStartError,
     ExperimentVariantDefinitionVersionNotCurrentError,
     ExperimentVariantLabelDuplicateError,
     ExperimentVariantStrategyStaleError,
@@ -54,6 +55,7 @@ from app.core.api_errors import (
 )
 from app.strategy.models import Experiment, ExperimentDefinitionVersion, ExperimentVariant
 from app.strategy.repository import (
+    ExecutionStartAttestationRepository,
     ExperimentDefinitionRepository,
     ExperimentRepository,
     ExperimentVariantRepository,
@@ -77,6 +79,7 @@ class ExperimentVariantService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.strategies = StrategyRepository(session)
+        self.starts = ExecutionStartAttestationRepository(session)
         self.hypotheses = HypothesisRepository(session)
         self.experiments = ExperimentRepository(session)
         self.definitions = ExperimentDefinitionRepository(session)
@@ -167,6 +170,14 @@ class ExperimentVariantService:
         current_strategy = self.strategies.get_current_for_campaign(campaign_id)
         if current_strategy is None or current_strategy.id != strategy_id:
             raise ExperimentVariantStrategyStaleError()
+
+        # Governed Execution Start (frozen V2): once ANY Start exists for this
+        # Experiment no further Variant may be declared — permanent, surviving
+        # Authorization revocation. Checked under the same Strategy+Experiment
+        # locks, after replay resolution (so a retry of an earlier declaration
+        # still replays). Recovery is a new Experiment lineage.
+        if self.starts.exists_for_experiment(experiment_id=experiment_id, workspace_id=workspace_id):
+            raise ExperimentVariantFrozenByExecutionStartError()
 
         tip = self.definitions.get_tip(experiment_id=experiment_id, workspace_id=workspace_id)
         if tip is None or tip.id != requested_id:

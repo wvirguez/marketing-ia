@@ -17,6 +17,15 @@
 // across retryable failures (a lost response replays as a 200); it rotates
 // only on a successful write or IDEMPOTENCY_KEY_CONFLICT (a re-authorization
 // needs a fresh key by design).
+//
+// Governed Execution Start: an active member can ATTEST that execution of the
+// active authorization began at a stated instant. This is a HUMAN DECLARATION —
+// the system never verifies it externally and it is never shown as a fact about
+// the outside world. It does not mean assignment, delivery, exposure, evidence,
+// a result or validity. It cannot be corrected and permanently freezes the
+// measurement contract lineage and further condition declaration. The attested
+// instant (`started_at`) and the server record time (`created_at`) are always
+// displayed separately. There is no stop/complete/assign/expose control.
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -24,6 +33,7 @@ import {
   getExecutionAuthorization,
   getExecutionAuthorizationHistory,
   revokeExecutionAuthorization,
+  startExecution,
 } from "@/lib/api/strategy";
 import { ApiError } from "@/lib/api/client";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
@@ -57,6 +67,16 @@ function describeAuthorizationError(error: unknown): string {
         return "Este experimento no tiene suficientes condiciones declaradas para ser autorizado.";
       case "EXECUTION_AUTHORIZATION_NONE_ACTIVE":
         return "No hay una autorización activa que revocar. Se actualizó la vista.";
+      case "EXECUTION_AUTHORIZATION_ACTIVE_STARTED":
+        return "La autorización activa ya tiene un inicio atestiguado. Revócala explícitamente antes de autorizar de nuevo.";
+      case "EXECUTION_START_AUTHORIZATION_NOT_ACTIVE":
+        return "Esta autorización ya no está activa, por lo que no puede registrarse su inicio. Se actualizó la vista.";
+      case "EXECUTION_START_ALREADY_STARTED":
+        return "Esta autorización ya tiene un inicio atestiguado. Se actualizó la vista.";
+      case "EXECUTION_START_AUTHORIZATION_STALE":
+        return "La configuración del experimento cambió después de autorizarla (por ejemplo, se declaró otra condición). Autoriza de nuevo antes de registrar el inicio.";
+      case "EXECUTION_START_TIME_INVALID":
+        return "La fecha y hora del inicio no son admisibles: no pueden ser anteriores a la autorización ni estar en el futuro.";
       case "IDEMPOTENCY_KEY_CONFLICT":
         return "Esta solicitud no coincide con un envío anterior o la configuración vigente cambió. Revisa los datos e inténtalo de nuevo.";
     }
@@ -66,6 +86,25 @@ function describeAuthorizationError(error: unknown): string {
 
 function formatDate(value: string): string {
   return new Date(value).toLocaleString("es");
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+// `datetime-local` value (local time, second precision) for an instant.
+function toLocalInputValue(instant: Date): string {
+  return (
+    `${instant.getFullYear()}-${pad(instant.getMonth() + 1)}-${pad(instant.getDate())}` +
+    `T${pad(instant.getHours())}:${pad(instant.getMinutes())}:${pad(instant.getSeconds())}`
+  );
+}
+
+// Default attested instant: max(now, authorization creation), rounded UP to the next whole second so the
+// server's strict "not before the authorization" floor is never missed by input truncation.
+function defaultStartInput(authorizationCreatedAt: string): string {
+  const base = Math.max(Date.now(), new Date(authorizationCreatedAt).getTime());
+  return toLocalInputValue(new Date(Math.ceil(base / 1000) * 1000));
 }
 
 export function ExecutionAuthorizationSection({
@@ -86,7 +125,9 @@ export function ExecutionAuthorizationSection({
   const [listError, setListError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
 
-  const [mode, setMode] = useState<"idle" | "authorize" | "revoke">("idle");
+  const [mode, setMode] = useState<"idle" | "authorize" | "revoke" | "start">("idle");
+  const [startedAtInput, setStartedAtInput] = useState("");
+  const [startConfirmed, setStartConfirmed] = useState(false);
   const [unit, setUnit] = useState("");
   const [design, setDesign] = useState("");
   const [reason, setReason] = useState("");
@@ -95,6 +136,9 @@ export function ExecutionAuthorizationSection({
   // Lazy state initializer: the initial key is generated exactly once.
   const [initialClientRequestId] = useState(() => crypto.randomUUID());
   const clientRequestIdRef = useRef(initialClientRequestId);
+  // Start idempotency: the key is kept across retries of the SAME attested instant and rotated when the
+  // instant changes (the material is the authorization plus started_at) or on success/conflict.
+  const startAttemptRef = useRef<{ key: string; startedAt: string } | null>(null);
   const idPrefix = `execution-authorization-${experiment.id}`;
 
   const requiredVariants = minimumVariants(definition.comparison_type);
@@ -138,11 +182,21 @@ export function ExecutionAuthorizationSection({
     setMode("revoke");
   }
 
+  function openStart() {
+    if (!current) return;
+    setStartedAtInput(defaultStartInput(current.created_at));
+    setStartConfirmed(false);
+    setError("");
+    setMode("start");
+  }
+
   function close() {
     setMode("idle");
     setUnit("");
     setDesign("");
     setReason("");
+    setStartedAtInput("");
+    setStartConfirmed(false);
   }
 
   async function submitAuthorize() {
@@ -227,13 +281,63 @@ export function ExecutionAuthorizationSection({
     }
   }
 
+  async function submitStart() {
+    if (pending || !current) return;
+    const attested = new Date(startedAtInput);
+    if (startedAtInput.trim().length === 0 || Number.isNaN(attested.getTime())) {
+      setError("Indica la fecha y hora en que comenzó la ejecución.");
+      return;
+    }
+    if (!startConfirmed) {
+      setError("Debes confirmar que entiendes las consecuencias de declarar el inicio.");
+      return;
+    }
+    const startedAt = attested.toISOString();
+    if (startAttemptRef.current === null || startAttemptRef.current.startedAt !== startedAt) {
+      startAttemptRef.current = { key: crypto.randomUUID(), startedAt };
+    }
+    setPending(true);
+    setError("");
+    try {
+      await startExecution(campaignId, experiment.id, current.id, {
+        client_request_id: startAttemptRef.current.key,
+        started_at: startedAt,
+      });
+      startAttemptRef.current = null;
+      close();
+      setReloadToken((token) => token + 1);
+      onChanged();
+    } catch (caught) {
+      const code = caught instanceof ApiError ? caught.code : null;
+      if (code === "IDEMPOTENCY_KEY_CONFLICT") {
+        startAttemptRef.current = null;
+      }
+      setError(describeAuthorizationError(caught));
+      if (
+        code === "EXECUTION_START_AUTHORIZATION_NOT_ACTIVE" ||
+        code === "EXECUTION_START_ALREADY_STARTED" ||
+        code === "EXECUTION_START_AUTHORIZATION_STALE"
+      ) {
+        // The state moved on: discard the draft and refetch, never retry blindly.
+        startAttemptRef.current = null;
+        close();
+        onChanged();
+        setReloadToken((token) => token + 1);
+      }
+    } finally {
+      setPending(false);
+    }
+  }
+
   const past = history.filter((entry) => entry.id !== current?.id);
+  const started = current?.execution_start ?? null;
 
   return (
     <div style={{ marginTop: 12 }}>
       <p className="muted small-text">
         <strong>Autorización de ejecución</strong>
         {current ? " · activa" : ""}
+        {started ? " · con inicio atestiguado" : ""}
       </p>
 
       <p className="muted small-text" style={{ marginTop: 4 }}>
@@ -284,6 +388,14 @@ export function ExecutionAuthorizationSection({
           </dd>
           <dt>Autorizada</dt>
           <dd>{formatDate(current.created_at)}</dd>
+          {started && (
+            <>
+              <dt>Inicio atestiguado por una persona</dt>
+              <dd>{formatDate(started.started_at)}</dd>
+              <dt>Registrado en el sistema</dt>
+              <dd>{formatDate(started.created_at)}</dd>
+            </>
+          )}
         </dl>
       )}
 
@@ -296,8 +408,16 @@ export function ExecutionAuthorizationSection({
       <p className="muted small-text" style={{ marginTop: 4 }}>
         Autorizar no significa que la ejecución, la asignación, la exposición, la validación del seguimiento, la
         medición o un resultado hayan ocurrido. Solo registra que esta configuración exacta fue aprobada para comenzar
-        más adelante. Mientras haya una autorización activa, el contrato de medición no admite revisiones.
+        más adelante. Mientras haya una autorización activa, el contrato de medición no admite revisiones. Una vez
+        atestiguado el inicio, el contrato de medición y las condiciones declaradas quedan congelados de forma
+        permanente, aunque la autorización se revoque.
       </p>
+      {started && (
+        <p className="muted small-text" style={{ marginTop: 4 }}>
+          El inicio es una declaración de una persona; el sistema no verifica externamente que la ejecución haya
+          comenzado y no implica asignación, entrega, exposición, evidencia ni resultado alguno.
+        </p>
+      )}
 
       {error && mode === "idle" && (
         <p role="alert" className="settings-feedback">
@@ -307,9 +427,30 @@ export function ExecutionAuthorizationSection({
 
       {canAuthorize(role) && mode === "idle" && (
         <div className="settings-form-actions" style={{ marginTop: 8 }}>
-          <button type="button" className="button" onClick={openAuthorize}>
-            {current ? "Volver a autorizar configuración" : "Autorizar configuración"}
-          </button>
+          {started ? (
+            <>
+              <button
+                type="button"
+                className="button"
+                disabled
+                aria-describedby={`${idPrefix}-reauthorize-blocked`}
+              >
+                Volver a autorizar configuración
+              </button>
+              <span id={`${idPrefix}-reauthorize-blocked`} className="muted small-text">
+                Esta autorización ya tiene un inicio atestiguado; revócala explícitamente antes de autorizar de nuevo.
+              </span>
+            </>
+          ) : (
+            <button type="button" className="button" onClick={openAuthorize}>
+              {current ? "Volver a autorizar configuración" : "Autorizar configuración"}
+            </button>
+          )}
+          {current && !started && (
+            <button type="button" className="button" onClick={openStart}>
+              Registrar inicio de ejecución
+            </button>
+          )}
           {current && (
             <button type="button" className="button" onClick={openRevoke}>
               Revocar autorización
@@ -322,7 +463,8 @@ export function ExecutionAuthorizationSection({
         <div className="panel" style={{ marginTop: 8 }}>
           <p className="muted small-text">
             Se fijarán la versión vigente de la definición, todas las condiciones declaradas y la versión vigente del
-            contrato de medición. Una nueva autorización reemplaza la activa.
+            contrato de medición. Una nueva autorización reemplaza la activa solo si esta aún no tiene un inicio
+            atestiguado.
           </p>
           <div className="settings-field">
             <label htmlFor={`${idPrefix}-unit`}>Unidad de asignación</label>
@@ -359,11 +501,59 @@ export function ExecutionAuthorizationSection({
         </div>
       )}
 
+      {mode === "start" && (
+        <div className="panel" style={{ marginTop: 8 }}>
+          <p className="muted small-text">
+            Vas a declarar, como persona, que la ejecución de esta autorización comenzó. Es una declaración: el sistema
+            no la verifica externamente. No se puede corregir. Congela de forma permanente el contrato de medición y la
+            declaración de nuevas condiciones de este experimento, incluso si luego revocas la autorización; para
+            corregir algo tendrás que crear un nuevo experimento.
+          </p>
+          <div className="settings-field">
+            <label htmlFor={`${idPrefix}-started-at`}>Inicio atestiguado (fecha y hora)</label>
+            <input
+              id={`${idPrefix}-started-at`}
+              type="datetime-local"
+              step="1"
+              value={startedAtInput}
+              disabled={pending}
+              onChange={(event) => setStartedAtInput(event.target.value)}
+            />
+          </div>
+          <div className="settings-field">
+            <label htmlFor={`${idPrefix}-start-confirm`}>
+              <input
+                id={`${idPrefix}-start-confirm`}
+                type="checkbox"
+                checked={startConfirmed}
+                disabled={pending}
+                onChange={(event) => setStartConfirmed(event.target.checked)}
+              />{" "}
+              Entiendo que es una declaración mía, que no se puede corregir y que congela el contrato y las condiciones.
+            </label>
+          </div>
+          <div className="settings-form-actions" style={{ marginTop: 8 }}>
+            <button type="button" className="button primary" disabled={pending} onClick={submitStart}>
+              Confirmar inicio declarado
+            </button>
+            <button type="button" className="button" disabled={pending} onClick={close}>
+              Cancelar
+            </button>
+          </div>
+          {error && (
+            <p role="alert" className="settings-feedback">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+
       {mode === "revoke" && (
         <div className="panel" style={{ marginTop: 8 }}>
           <p className="muted small-text">
             La revocación retira la autoridad para comenzar o continuar la ejecución futura. No significa que una
-            asignación, exposición o evidencia pasada no haya ocurrido. No se puede deshacer.
+            asignación, exposición o evidencia pasada no haya ocurrido. No se puede deshacer. Si la autorización tiene un
+            inicio atestiguado, este se conserva y el congelamiento del contrato y de las condiciones permanece.
           </p>
           <div className="settings-field">
             <label htmlFor={`${idPrefix}-reason`}>Motivo de la revocación</label>
@@ -405,6 +595,9 @@ export function ExecutionAuthorizationSection({
                     ? `reemplazada por ${entry.superseded_by}`
                     : "revocada"}
                 {entry.revoked_reason ? ` — ${entry.revoked_reason}` : ""}
+                {entry.execution_start
+                  ? ` · inicio atestiguado ${formatDate(entry.execution_start.started_at)} (registrado ${formatDate(entry.execution_start.created_at)})`
+                  : ""}
               </li>
             ))}
           </ol>

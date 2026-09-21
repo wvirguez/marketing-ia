@@ -750,9 +750,13 @@ class ExecutionAuthorization(Base, UUIDPrimaryKeyMixin):
     itself refuses a Contract revision while an ACTIVE Authorization pins
     the current tip, and that refusal lifts automatically once no active
     Authorization remains — the freeze is enforced entirely by the OTHER
-    writer, not by any field here (EXAUTH-DF-OBS-1: this reopens on
-    revocation regardless of any real-world execution history, since this
-    table deliberately carries no execution-start awareness).
+    writer, not by any field here. The ACTIVE-Authorization freeze reopens
+    on revocation ONLY while no ``ExecutionStartAttestation`` exists for the
+    Experiment (EXAUTH-DF-OBS-1, resolved by the Governed Execution Start
+    design, model C1): once any Start exists the Contract lineage — and
+    further Variant declaration — stay permanently frozen even after
+    revocation. This table itself still carries no execution-start column;
+    the Start is its own append-only row (``ExecutionStartAttestation``).
 
     Target/Content/Distribution/Tracking-implementation are all deliberately
     absent (frozen §T/§U/§V/§W/§X): ``tracking_required`` on a RequiredSignal
@@ -876,3 +880,62 @@ class ExecutionAuthorizationVariant(Base, UUIDPrimaryKeyMixin):
     experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
     variant_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+EXECUTION_START_CLIENT_REQUEST_ID_MAX_LENGTH = 100
+
+
+class ExecutionStartAttestation(Base, UUIDPrimaryKeyMixin):
+    """Governed Execution Start (frozen Governed Execution Start Design
+    Freeze): the immutable, append-only record that an active workspace
+    member ATTESTS that execution of ONE specific ``ExecutionAuthorization``
+    began at an attested instant.
+
+    EXECUTION START ATTESTATION != VERIFIED EXTERNAL EXECUTION !=
+    ASSIGNMENT != DELIVERY != DISTRIBUTION != EXPOSURE != EVIDENCE !=
+    MEASUREMENT != EXPERIMENT RESULT != WINNER != HYPOTHESIS VERDICT !=
+    EXPERIMENTAL VALIDITY != CAUSALITY. The Core OS cannot observe external
+    execution — this is human attestation only, never machine ingestion.
+
+    ``started_at`` = the operator-attested execution-start instant
+    (required, timezone-aware, NO server default). ``created_at`` = the
+    server record time (``server_default=func.now()``). Both are stored and
+    never conflated: ``started_at`` is the future window-anchor candidate,
+    ``created_at`` is record chronology. ``started_at >=
+    authorization.created_at`` and ``started_at <= now + 5 minutes`` are
+    SERVICE-LEVEL invariants only (cross-row / clock-relative — no DB CHECK
+    can express them, EXPROV-DISC-OBS-6).
+
+    Cardinality ``ExecutionAuthorization 1 : 0..1 ExecutionStartAttestation``
+    is DB-enforced by ``UNIQUE(authorization_id)``. Tenant safety is the
+    composite FK to the existing ``(id, workspace_id)`` candidate key. No
+    speculative candidate key is declared on this table (no concrete inbound
+    FK targets it yet — same discipline as ``TrackingPlan``).
+
+    Immutable and append-only by absence: no ``updated_at``, no
+    ``created_by`` (the audit event carries the actor), no ``status``, no
+    ``ended_at``, no repository update/delete method. Experiment, Definition,
+    Contract, Variant snapshot and Campaign are all DERIVED through the
+    Authorization — never denormalized here. Any Start for an Experiment
+    permanently freezes its Contract lineage and further Variant declaration
+    (EXAUTH-DF-OBS-1 resolution); recovery is a new Experiment lineage."""
+
+    __tablename__ = "execution_start_attestations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["authorization_id", "workspace_id"],
+            ["execution_authorizations.id", "execution_authorizations.workspace_id"],
+            name="fk_execution_start_attestations_authorization_workspace",
+        ),
+        UniqueConstraint("authorization_id", name="uq_execution_start_attestations_authorization_id"),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_execution_start_attestations_workspace_client_request_id"
+        ),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    authorization_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    client_request_id: Mapped[str] = mapped_column(String(EXECUTION_START_CLIENT_REQUEST_ID_MAX_LENGTH))

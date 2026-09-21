@@ -9,16 +9,17 @@ none of those exist on the underlying models in the first place.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.strategy.models import (
     EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH,
     EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH,
     EXECUTION_AUTHORIZATION_REVOKED_REASON_MAX_LENGTH,
     EXECUTION_AUTHORIZATION_UNIT_OF_ASSIGNMENT_MAX_LENGTH,
+    EXECUTION_START_CLIENT_REQUEST_ID_MAX_LENGTH,
     EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH,
     EXPERIMENT_DEFINITION_FACTOR_MAX_LENGTH,
     EXPERIMENT_DEFINITION_MAX_CONTROLLED_FACTORS,
@@ -719,6 +720,48 @@ class AuthorizeExecutionRequest(BaseModel):
         return _reject_nul(value)
 
 
+# Governed Execution Start: ``started_at`` must stay decodable, not merely
+# storable (the same lesson as CommercialOutcome.occurred_at, MVP-36B-R2/R3).
+# Locally defined — no cross-domain sharing. Eight whole calendar days are
+# reserved at each end so a UTC-offset input can never overflow decoding; the
+# service's own floor (the Authorization's creation) is far tighter anyway.
+_STARTED_AT_MIN = datetime(1, 1, 9, tzinfo=timezone.utc)
+_STARTED_AT_MAX = datetime(9999, 12, 23, 23, 59, 59, 999999, tzinfo=timezone.utc)
+
+
+def _require_decodable_started_at(value: datetime) -> datetime:
+    if value < _STARTED_AT_MIN or value > _STARTED_AT_MAX:
+        raise ValueError(
+            "started_at must be between 0001-01-09T00:00:00Z and 9999-12-23T23:59:59.999999Z (UTC instant)"
+        )
+    return value
+
+
+StartedAt = Annotated[AwareDatetime, AfterValidator(_require_decodable_started_at)]
+
+
+class StartExecutionRequest(BaseModel):
+    """Governed Execution Start: exactly ``client_request_id`` and the
+    operator-attested ``started_at`` (timezone-aware; a naive datetime is
+    rejected). ``extra="forbid"`` — no assignment, unit, cohort, exposure,
+    evidence, note or reference field is ever accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=EXECUTION_START_CLIENT_REQUEST_ID_MAX_LENGTH)
+    started_at: StartedAt
+
+    @field_validator("client_request_id", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _client_request_id_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
 class RevokeExecutionAuthorizationRequest(BaseModel):
     """MVP-40 (frozen Design Freeze §L/§19): reason is required — pairs with
     the DB-level ``revocation_pairing`` CHECK on ``revoked_at``/
@@ -749,11 +792,29 @@ class ExecutionAuthorizationVariantPublic(BaseModel):
     condition_description: str
 
 
+class ExecutionStartPublic(BaseModel):
+    """Governed Execution Start: the embedded, immutable human attestation
+    that execution of ONE Authorization began. ``started_at`` is the
+    operator-ATTESTED instant (future window-anchor candidate);
+    ``created_at`` is the SERVER record time (chronology/audit ordering) —
+    both are always exposed and never interchangeable. No executing/
+    completed/valid/successful field exists: this is attestation only, never
+    verified external execution, assignment, delivery, exposure, evidence or
+    a result."""
+
+    id: str
+    started_at: datetime
+    created_at: datetime
+
+
 class ExecutionAuthorizationPublic(BaseModel):
     """MVP-40: one immutable Execution Authorization. Public ids only — no
-    internal UUID. No status/execution_started/assignment/exposure/
-    tracking-valid/measurement-ready/result/winner field exists anywhere —
-    ``active`` is the only derived state, exactly ``revoked_at IS NULL``."""
+    internal UUID. No status/assignment/exposure/tracking-valid/
+    measurement-ready/result/winner field exists anywhere — ``active`` is the
+    only derived state, exactly ``revoked_at IS NULL``. The single nullable
+    ``execution_start`` object embeds the human attestation that execution of
+    THIS Authorization began (Governed Execution Start); it is never a
+    verified fact, never an executing/completed/valid state."""
 
     id: str
     experiment_id: str
@@ -770,6 +831,9 @@ class ExecutionAuthorizationPublic(BaseModel):
     revoked_at: datetime | None
     revoked_reason: str | None
     superseded_by: str | None
+    # Governed Execution Start: null until a Start is attested. The ONLY new
+    # field — no executing/completed/valid/successful state is exposed.
+    execution_start: ExecutionStartPublic | None = None
     created_at: datetime
 
 
@@ -789,6 +853,7 @@ def execution_authorization_to_public(
     signal_count: int,
     tracking_required_signal_count: int,
     superseded_by_public_id: str | None,
+    execution_start: ExecutionStartPublic | None = None,
 ) -> ExecutionAuthorizationPublic:
     return ExecutionAuthorizationPublic(
         id=authorization.public_id,
@@ -804,5 +869,6 @@ def execution_authorization_to_public(
         revoked_at=authorization.revoked_at,
         revoked_reason=authorization.revoked_reason,
         superseded_by=superseded_by_public_id,
+        execution_start=execution_start,
         created_at=authorization.created_at,
     )

@@ -699,3 +699,94 @@ class MeasurementContractFrozenByAuthorizationError(ApiError):
         ),
     ) -> None:
         super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_FROZEN_BY_AUTHORIZATION")
+
+
+class ExecutionStartAuthorizationNotActiveError(ApiError):
+    """Governed Execution Start: a Start may only be attested under an ACTIVE
+    Execution Authorization (frozen §24)."""
+
+    def __init__(
+        self, message: str = "This execution authorization is no longer active and cannot be started."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_START_AUTHORIZATION_NOT_ACTIVE")
+
+
+class ExecutionStartAlreadyStartedError(ApiError):
+    """Governed Execution Start: at most one Start per Authorization
+    (``UNIQUE(authorization_id)``); a different ``client_request_id`` against
+    an already-started Authorization is this deterministic conflict, never a
+    second row."""
+
+    def __init__(self, message: str = "Execution has already been attested as started for this authorization.") -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_START_ALREADY_STARTED")
+
+
+class ExecutionStartTimeInvalidError(ApiError):
+    """Governed Execution Start: ``started_at`` must not precede the
+    Authorization's creation and must not be more than the frozen future
+    tolerance ahead of the server clock (422, matching
+    ``EvidencePeriodInvalidError``'s own precedent)."""
+
+    def __init__(self, message: str = "The attested start time is not valid for this authorization.") -> None:
+        super().__init__(message, status_code=422, code="EXECUTION_START_TIME_INVALID")
+
+
+class ExecutionStartAuthorizationStaleError(ApiError):
+    """Governed Execution Start (frozen §17/§O): the Authorization no longer
+    represents the current executable configuration (Definition tip,
+    Contract tip or complete live Variant set changed since it was
+    authorized). The snapshot is never silently refreshed — re-authorize."""
+
+    def __init__(
+        self,
+        message: str = (
+            "This execution authorization no longer matches the current experiment configuration; "
+            "authorize again before starting."
+        ),
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_START_AUTHORIZATION_STALE")
+
+
+class MeasurementContractFrozenByExecutionStartError(ApiError):
+    """Governed Execution Start (EXAUTH-DF-OBS-1, model C1): once ANY
+    Execution Start exists for the Experiment its Measurement Contract
+    lineage is permanently frozen — revoking the Authorization does not lift
+    it (unlike ``MeasurementContractFrozenByAuthorizationError``). Recovery is
+    a new Experiment lineage."""
+
+    def __init__(
+        self,
+        message: str = (
+            "This measurement contract is permanently frozen because execution has been attested as started."
+        ),
+    ) -> None:
+        super().__init__(message, status_code=409, code="MEASUREMENT_CONTRACT_FROZEN_BY_EXECUTION_START")
+
+
+class ExperimentVariantFrozenByExecutionStartError(ApiError):
+    """Governed Execution Start (frozen V2): once ANY Execution Start exists
+    for the Experiment no further Variant may be declared, even after the
+    Authorization is revoked. Recovery is a new Experiment lineage."""
+
+    def __init__(
+        self,
+        message: str = (
+            "No further conditions can be declared because execution has been attested as started."
+        ),
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_VARIANT_FROZEN_BY_EXECUTION_START")
+
+
+class ExecutionAuthorizationActiveStartedError(ApiError):
+    """Governed Execution Start (frozen A2): ``authorize()`` never silently
+    supersedes an active Authorization that has already been started. The
+    operator must revoke it explicitly first."""
+
+    def __init__(
+        self,
+        message: str = (
+            "The active execution authorization has already been started; revoke it explicitly before "
+            "authorizing again."
+        ),
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXECUTION_AUTHORIZATION_ACTIVE_STARTED")

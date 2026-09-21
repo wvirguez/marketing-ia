@@ -15,6 +15,7 @@ vi.mock("@/lib/api/strategy", () => ({
   getExecutionAuthorization: vi.fn(),
   getExecutionAuthorizationHistory: vi.fn(),
   revokeExecutionAuthorization: vi.fn(),
+  startExecution: vi.fn(),
 }));
 
 import {
@@ -79,6 +80,7 @@ function authorization(overrides: Partial<ExecutionAuthorizationPublic> = {}): E
     revoked_at: null,
     revoked_reason: null,
     superseded_by: null,
+    execution_start: null,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };

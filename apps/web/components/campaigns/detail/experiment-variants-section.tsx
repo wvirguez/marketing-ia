@@ -48,6 +48,8 @@ function describeVariantError(error: unknown): string {
         return "La definición cambió mientras declarabas la condición. Se actualizó la vista; revísala y vuelve a intentar.";
       case "EXPERIMENT_VARIANT_STRATEGY_STALE":
         return "Este experimento pertenece a una versión de la estrategia que ya no es la vigente, por lo que no admite nuevas condiciones.";
+      case "EXPERIMENT_VARIANT_FROZEN_BY_EXECUTION_START":
+        return "No se pueden declarar más condiciones porque se atestiguó el inicio de la ejecución. Revocar la autorización no lo reabre; para cambiarlas hay que crear un nuevo experimento.";
       case "EXPERIMENT_VARIANT_LABEL_DUPLICATE":
         return "Ya existe una condición con esa etiqueta para esta versión de la definición.";
       case "IDEMPOTENCY_KEY_CONFLICT":

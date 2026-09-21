@@ -800,7 +800,8 @@ def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_r
     pairs = {(method.upper(), path) for path, item in spec.items() for method in item if method in {"get", "post", "put", "patch", "delete"}}
     # 97 before MVP-37 + 2 definition routes (MVP-37) + 2 variant routes (MVP-38)
     # + 3 measurement-contract routes (MVP-39) + 4 execution-authorization routes (MVP-40)
-    assert len(pairs) == 108
+    # + 1 Governed Execution Start route
+    assert len(pairs) == 109
     prefix = "/api/v1/campaigns/{campaign_public_id}/experiments/{experiment_public_id}"
     definition_pairs = {(m, p) for m, p in pairs if "definition" in p}
     assert definition_pairs == {("POST", f"{prefix}/definition-versions"), ("GET", f"{prefix}/definition-versions")}
@@ -818,6 +819,8 @@ def test_route_surface_adds_exactly_the_frozen_definition_variant_and_contract_r
         ("GET", f"{prefix}/execution-authorization"),
         ("GET", f"{prefix}/execution-authorization/history"),
         ("POST", f"{prefix}/execution-authorization/revoke"),
+        # Governed Execution Start: the one new command surface.
+        ("POST", f"{prefix}/execution-authorizations/{{authorization_public_id}}/start"),
     }
     # MVP-40: Execution Authorization is now intentionally governed, so the
     # firewall is semantic — no allocation / assignment / exposure / winner /

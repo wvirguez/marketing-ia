@@ -25,6 +25,7 @@ from app.strategy.models import (
     Experiment,
     ExecutionAuthorization,
     ExecutionAuthorizationVariant,
+    ExecutionStartAttestation,
     ExperimentDefinitionVersion,
     ExperimentVariant,
     Hypothesis,
@@ -818,6 +819,21 @@ class ExecutionAuthorizationRepository:
             query = query.with_for_update().execution_options(populate_existing=True)
         return self.session.execute(query).scalar_one_or_none()
 
+    def get_by_public_id_for_experiment(
+        self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str, for_update: bool = False
+    ) -> ExecutionAuthorization | None:
+        """Governed Execution Start: resolves an Authorization by its public
+        id STRICTLY inside one Experiment and workspace (a foreign or
+        unknown id is indistinguishable from a missing one)."""
+        query = select(ExecutionAuthorization).where(
+            ExecutionAuthorization.public_id == public_id,
+            ExecutionAuthorization.experiment_id == experiment_id,
+            ExecutionAuthorization.workspace_id == workspace_id,
+        )
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.session.execute(query).scalar_one_or_none()
+
     def exists_active_for_contract_version(self, *, contract_version_id: uuid.UUID) -> bool:
         """MVP-40 (frozen Design Freeze §O): the Contract-freeze check
         ``ExperimentMeasurementContractService.declare_or_revise`` performs
@@ -864,4 +880,83 @@ class ExecutionAuthorizationRepository:
             )
             .scalars()
             .all()
+        )
+
+
+class ExecutionStartAttestationRepository:
+    """Governed Execution Start: data access for ``ExecutionStartAttestation``.
+    Append-only by construction — there is deliberately NO update, delete or
+    correction method. No method here calls ``session.commit()``."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        workspace_id: uuid.UUID,
+        authorization_id: uuid.UUID,
+        started_at,
+        client_request_id: str,
+    ) -> ExecutionStartAttestation:
+        row = ExecutionStartAttestation(
+            public_id=generate_public_id("EXS"),
+            workspace_id=workspace_id,
+            authorization_id=authorization_id,
+            started_at=started_at,
+            client_request_id=client_request_id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExecutionStartAttestation | None:
+        return self.session.execute(
+            select(ExecutionStartAttestation)
+            .where(
+                ExecutionStartAttestation.workspace_id == workspace_id,
+                ExecutionStartAttestation.client_request_id == client_request_id,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def get_for_authorization(self, *, authorization_id: uuid.UUID) -> ExecutionStartAttestation | None:
+        return self.session.execute(
+            select(ExecutionStartAttestation)
+            .where(ExecutionStartAttestation.authorization_id == authorization_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
+    def exists_for_authorization(self, *, authorization_id: uuid.UUID) -> bool:
+        return (
+            self.session.execute(
+                select(ExecutionStartAttestation.id)
+                .where(ExecutionStartAttestation.authorization_id == authorization_id)
+                .limit(1)
+            ).first()
+            is not None
+        )
+
+    def exists_for_experiment(self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID) -> bool:
+        """The permanent post-start freeze predicate (EXAUTH-DF-OBS-1, model
+        C1): true when ANY Authorization of this Experiment has a Start,
+        derived through Start -> Authorization (never a denormalized flag).
+        Callers hold the Experiment row lock."""
+        return (
+            self.session.execute(
+                select(ExecutionStartAttestation.id)
+                .join(
+                    ExecutionAuthorization,
+                    (ExecutionAuthorization.id == ExecutionStartAttestation.authorization_id)
+                    & (ExecutionAuthorization.workspace_id == ExecutionStartAttestation.workspace_id),
+                )
+                .where(
+                    ExecutionAuthorization.experiment_id == experiment_id,
+                    ExecutionAuthorization.workspace_id == workspace_id,
+                )
+                .limit(1)
+            ).first()
+            is not None
         )

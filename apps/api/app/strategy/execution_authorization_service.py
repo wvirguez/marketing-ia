@@ -45,9 +45,14 @@ Authorization existed, mark it revoked/superseded in the SAME transaction
 -> audit event(s) -> commit.
 
 Single active Authorization per Experiment (frozen §M/§16): a NEW valid
-Authorization request, when one is already active, automatically and
-atomically supersedes it -- never two committed active rows, backstopped by
-the partial unique index ``uq_execution_authorizations_experiment_active``.
+Authorization request, when one is already active AND NOT YET STARTED,
+automatically and atomically supersedes it -- never two committed active
+rows, backstopped by the partial unique index
+``uq_execution_authorizations_experiment_active``. If the active
+Authorization has already been started (an ``ExecutionStartAttestation``
+exists), ``authorize()`` REFUSES (``ExecutionAuthorizationActiveStartedError``,
+Governed Execution Start frozen A2): a create call never silently ends a
+started execution -- the operator must revoke explicitly first.
 
 Contract freeze (frozen §O/§13, MVP39B-OBS-2 resolution): NOT implemented
 here as a field on this table. The freeze itself lives entirely in
@@ -80,6 +85,7 @@ from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign
 from app.core.api_errors import (
+    ExecutionAuthorizationActiveStartedError,
     ExecutionAuthorizationInsufficientVariantsError,
     ExecutionAuthorizationNoMeasurementContractError,
     ExecutionAuthorizationNoneActiveError,
@@ -98,6 +104,7 @@ from app.strategy.models import (
 )
 from app.strategy.repository import (
     ExecutionAuthorizationRepository,
+    ExecutionStartAttestationRepository,
     ExperimentDefinitionRepository,
     ExperimentRepository,
     ExperimentVariantRepository,
@@ -124,6 +131,7 @@ class ExperimentExecutionAuthorizationService:
         self.contracts = MeasurementContractRepository(session)
         self.variants = ExperimentVariantRepository(session)
         self.authorizations = ExecutionAuthorizationRepository(session)
+        self.starts = ExecutionStartAttestationRepository(session)
         self.events = AuditEventRepository(session)
 
     # --- reads -----------------------------------------------------------
@@ -228,6 +236,14 @@ class ExperimentExecutionAuthorizationService:
         previous_active = self.authorizations.get_active_for_experiment(
             experiment_id=experiment_id, workspace_id=workspace_id, for_update=True
         )
+        # Governed Execution Start (frozen A2): an active Authorization that has
+        # already been started is NEVER silently superseded — the operator must
+        # revoke it explicitly first. An unstarted one keeps the existing
+        # auto-supersession behavior exactly.
+        if previous_active is not None and self.starts.exists_for_authorization(
+            authorization_id=previous_active.id
+        ):
+            raise ExecutionAuthorizationActiveStartedError()
 
         try:
             # The partial unique index (uq_execution_authorizations_experiment_active,

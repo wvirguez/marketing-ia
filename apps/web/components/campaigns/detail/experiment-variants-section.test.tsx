@@ -380,3 +380,14 @@ describe("ExperimentVariantsSection — scope firewall", () => {
     expect(screen.queryAllByRole("combobox")).toHaveLength(0);
   });
 });
+
+describe("ExperimentVariantsSection — Governed Execution Start freeze copy", () => {
+  it("explains that a started execution permanently stops further condition declaration", async () => {
+    mockDeclare.mockRejectedValue(new ApiError(409, "EXPERIMENT_VARIANT_FROZEN_BY_EXECUTION_START", "frozen"));
+    renderSection(definition());
+    await openAndFill();
+    await userEvent.click(screen.getByText("Confirmar condición"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/No se pueden declarar más condiciones/));
+    expect(screen.getByRole("alert")).toHaveTextContent(/nuevo experimento/);
+  });
+});

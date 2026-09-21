@@ -77,8 +77,10 @@ from app.campaigns.service import CampaignAccessService
 from app.persistence.session import get_db
 from app.strategy.definition_service import ExperimentDefinitionService
 from app.strategy.execution_authorization_service import ExperimentExecutionAuthorizationService
+from app.strategy.execution_start_service import ExperimentExecutionStartService
 from app.strategy.measurement_contract_service import ExperimentMeasurementContractService
 from app.strategy.models import ExecutionAuthorization, ExecutionAuthorizationVariant
+from app.strategy.repository import ExecutionStartAttestationRepository
 from app.strategy.schemas import (
     AuthorizeExecutionRequest,
     CreateExperimentRequest,
@@ -89,6 +91,7 @@ from app.strategy.schemas import (
     ExecutionAuthorizationHistoryResponse,
     ExecutionAuthorizationPublic,
     ExecutionAuthorizationVariantPublic,
+    ExecutionStartPublic,
     ExperimentDefinitionHistoryResponse,
     ExperimentDefinitionPublic,
     ExperimentPublic,
@@ -96,6 +99,7 @@ from app.strategy.schemas import (
     MeasurementContractHistoryResponse,
     MeasurementContractPublic,
     RevokeExecutionAuthorizationRequest,
+    StartExecutionRequest,
     StrategyOutputResponse,
     VariantListResponse,
     VariantPublic,
@@ -569,7 +573,18 @@ def _execution_authorization_to_public(
         signal_count=len(signals),
         tracking_required_signal_count=sum(1 for signal in signals if signal.tracking_required),
         superseded_by_public_id=superseded_by_public_id,
+        execution_start=_execution_start_public(db, authorization),
     )
+
+
+def _execution_start_public(db: Session, authorization: ExecutionAuthorization) -> ExecutionStartPublic | None:
+    """Governed Execution Start: the embedded attestation for one
+    Authorization, or ``None`` when none has been attested. Attestation only
+    — no derived executing/completed/valid state."""
+    start = ExecutionStartAttestationRepository(db).get_for_authorization(authorization_id=authorization.id)
+    if start is None:
+        return None
+    return ExecutionStartPublic(id=start.public_id, started_at=start.started_at, created_at=start.created_at)
 
 
 @router.post(
@@ -704,7 +719,9 @@ async def revoke_execution_authorization(
     (MVP-40, frozen §L/§19) — one-way, non-reversible. A reason is required.
     409 ``EXECUTION_AUTHORIZATION_NONE_ACTIVE`` if none is currently active.
     Revocation withdraws authority to begin/continue future execution only —
-    it never means past assignment/exposure/evidence did not occur."""
+    it never means past assignment/exposure/evidence did not occur. If a
+    human already attested the execution start, that attestation is kept
+    untouched and the Contract/Variant freeze it caused remains permanent."""
     campaign = CampaignAccessService(db).get_authorized_campaign(
         workspace_id=workspace.id, campaign_public_id=campaign_public_id
     )
@@ -718,6 +735,58 @@ async def revoke_execution_authorization(
     snapshot_rows = ExperimentExecutionAuthorizationService(db).authorizations.list_variants_for_authorization(
         authorization_id=authorization.id
     )
+    return _execution_authorization_to_public(
+        db, authorization, snapshot_rows, experiment_public_id=experiment_public_id, superseded_by_public_id=None
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-authorizations/{authorization_public_id}/start",
+    response_model=ExecutionAuthorizationPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def start_execution(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    authorization_public_id: str,
+    payload: StartExecutionRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExecutionAuthorizationPublic:
+    """A human ATTESTS that execution of THIS specific ACTIVE Execution
+    Authorization began at ``started_at`` (Governed Execution Start, frozen
+    Design Freeze). Idempotent on ``client_request_id``: 201 for a new
+    attestation, 200 for a matching replay (even after the Authorization was
+    revoked), 409 ``IDEMPOTENCY_KEY_CONFLICT`` for the same key with a
+    different Authorization/instant, 409 ``EXECUTION_START_ALREADY_STARTED``
+    for a different key against an already-started Authorization. Any active
+    workspace membership may call this (MEMBER+, the same tier as
+    authorize/revoke); the audit actor is always the USER. HUMAN ATTESTATION
+    ONLY: it does not verify that external execution occurred and does not
+    mean assignment, delivery, exposure, evidence, a result, a winner or
+    validity. It permanently freezes this Experiment's Measurement Contract
+    lineage and further Variant declaration, and cannot be corrected."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    authorization, _start, created = ExperimentExecutionStartService(db).start(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        authorization_public_id=authorization_public_id,
+        client_request_id=payload.client_request_id,
+        started_at=payload.started_at,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    snapshot_rows = ExperimentExecutionAuthorizationService(db).authorizations.list_variants_for_authorization(
+        authorization_id=authorization.id
+    )
+    # A started Authorization is never auto-superseded (frozen A2), so it has no successor link.
     return _execution_authorization_to_public(
         db, authorization, snapshot_rows, experiment_public_id=experiment_public_id, superseded_by_public_id=None
     )

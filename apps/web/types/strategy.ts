@@ -221,7 +221,7 @@ export interface DeclareMeasurementContractRequest {
 // configuration (the current Definition tip, the COMPLETE Variant set and the
 // current Measurement Contract tip, plus a declared-only Execution
 // Configuration) was authorized to begin future execution. There is
-// deliberately no status/execution_started/assignment/exposure/tracking-valid/
+// deliberately no status/executing/assignment/exposure/tracking-valid/
 // measurement-ready/result/winner/validity/causality field. `active` is the
 // only derived state (revoked_at is null); signal counts are informational
 // (a declared intent, never a claim that tracking exists or is valid).
@@ -229,6 +229,18 @@ export interface ExecutionAuthorizationVariantPublic {
   id: string;
   label: string;
   condition_description: string;
+}
+
+// Governed Execution Start: mirrors apps/api/app/strategy/schemas.py::ExecutionStartPublic.
+// A HUMAN ATTESTATION that execution of one Authorization began — never verified
+// external execution, assignment, delivery, exposure, evidence, a result or
+// validity. `started_at` is the operator-attested instant; `created_at` is the
+// server record time. Both are always shown and never interchangeable. There is
+// deliberately no executing/completed/valid/successful field.
+export interface ExecutionStartPublic {
+  id: string;
+  started_at: string;
+  created_at: string;
 }
 
 export interface ExecutionAuthorizationPublic {
@@ -245,6 +257,8 @@ export interface ExecutionAuthorizationPublic {
   revoked_at: string | null;
   revoked_reason: string | null;
   superseded_by: string | null;
+  // null until a human attests the start (Governed Execution Start).
+  execution_start: ExecutionStartPublic | null;
   created_at: string;
 }
 
@@ -264,4 +278,12 @@ export interface AuthorizeExecutionRequest {
 
 export interface RevokeExecutionAuthorizationRequest {
   reason: string;
+}
+
+// Governed Execution Start: exactly the idempotency key and the operator-attested
+// instant (an offset-aware ISO string). No assignment, unit, cohort, exposure,
+// evidence, note or reference field exists.
+export interface StartExecutionRequest {
+  client_request_id: string;
+  started_at: string;
 }

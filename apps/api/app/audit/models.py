@@ -297,6 +297,16 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # Governed Execution Start: a strategy.execution_start.attested event must
+    # identify its exact ExecutionStartAttestation row. Nullable,
+    # single-column, matching every other AuditEvent subject FK. The
+    # convention-derived FK name would exceed PostgreSQL's 63-character
+    # identifier limit, so the name is explicit.
+    execution_start_attestation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("execution_start_attestations.id", name="fk_audit_events_execution_start_attestation_id"),
+        default=None,
+        index=True,
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

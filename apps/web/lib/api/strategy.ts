@@ -20,6 +20,7 @@ import type {
   MeasurementContractHistoryResponse,
   MeasurementContractPublic,
   RevokeExecutionAuthorizationRequest,
+  StartExecutionRequest,
   StrategyOutputResponse,
   VariantListResponse,
   VariantPublic,
@@ -186,6 +187,21 @@ export async function revokeExecutionAuthorization(
 ): Promise<ExecutionAuthorizationPublic> {
   return request<ExecutionAuthorizationPublic>(
     `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorization/revoke`,
+    { method: "POST", body: payload },
+  );
+}
+
+// Governed Execution Start: a human ATTESTS that execution of ONE explicitly named
+// Authorization began at `started_at`. Idempotent on `client_request_id`. The
+// attestation is never verified against the outside world.
+export async function startExecution(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  authorizationPublicId: string,
+  payload: StartExecutionRequest,
+): Promise<ExecutionAuthorizationPublic> {
+  return request<ExecutionAuthorizationPublic>(
+    `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-authorizations/${encodeURIComponent(authorizationPublicId)}/start`,
     { method: "POST", body: payload },
   );
 }

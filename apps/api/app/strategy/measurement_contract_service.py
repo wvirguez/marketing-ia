@@ -43,11 +43,15 @@ while an ACTIVE ``ExecutionAuthorization`` pins the current Contract tip —
 checked here, under the same Experiment row lock, via
 ``ExecutionAuthorizationRepository.exists_active_for_contract_version``.
 This is the ONLY place the freeze is enforced; ``ExecutionAuthorization``
-itself carries no ``status``/``frozen_at`` field. The freeze lifts
-automatically the moment no active Authorization remains for the
-Experiment (EXAUTH-DF-OBS-1: this reopens on revocation regardless of any
-real-world execution history, since Authorization deliberately carries no
-execution-start awareness).
+itself carries no ``status``/``frozen_at`` field. The ACTIVE-Authorization
+freeze lifts automatically the moment no active Authorization remains for
+the Experiment — but only while NO Execution Start exists (EXAUTH-DF-OBS-1,
+resolved by the Governed Execution Start design, model C1): once ANY
+``ExecutionStartAttestation`` exists for the Experiment the Contract lineage
+is PERMANENTLY frozen (``MeasurementContractFrozenByExecutionStartError``),
+even after the Authorization is revoked. That check runs after the
+base-version check and BEFORE the active-Authorization freeze, so the error
+code is deterministic. Recovery after a start is a new Experiment lineage.
 
 Only the two known unique violations on ``measurement_contract_versions``
 are translated (``experiment_id``+``version`` → ``MEASUREMENT_CONTRACT_
@@ -70,6 +74,7 @@ from app.audit.models import ActorType
 from app.audit.repository import AuditEventRepository
 from app.campaigns.models import Campaign
 from app.core.api_errors import (
+    MeasurementContractFrozenByExecutionStartError,
     ForbiddenError,
     IdempotencyKeyConflictError,
     MeasurementContractBaseStaleError,
@@ -88,6 +93,7 @@ from app.strategy.models import (
 )
 from app.strategy.repository import (
     ExecutionAuthorizationRepository,
+    ExecutionStartAttestationRepository,
     ExperimentDefinitionRepository,
     ExperimentRepository,
     HypothesisRepository,
@@ -141,6 +147,7 @@ class ExperimentMeasurementContractService:
         self.definitions = ExperimentDefinitionRepository(session)
         self.contracts = MeasurementContractRepository(session)
         self.authorizations = ExecutionAuthorizationRepository(session)
+        self.starts = ExecutionStartAttestationRepository(session)
         self.events = AuditEventRepository(session)
 
     # --- reads -------------------------------------------------------------
@@ -264,6 +271,14 @@ class ExperimentMeasurementContractService:
         contract_tip_version = contract_tip.version if contract_tip is not None else 0
         if base_version != contract_tip_version:
             raise MeasurementContractBaseStaleError()
+
+        # Governed Execution Start (EXAUTH-DF-OBS-1, model C1): ANY Start for
+        # this Experiment freezes the Contract lineage PERMANENTLY, even after
+        # the Authorization is revoked. Checked BEFORE the active-Authorization
+        # freeze so the error code is deterministic (revocation resolves only
+        # the latter).
+        if self.starts.exists_for_experiment(experiment_id=experiment_id, workspace_id=workspace_id):
+            raise MeasurementContractFrozenByExecutionStartError()
 
         if contract_tip is not None and self.authorizations.exists_active_for_contract_version(
             contract_version_id=contract_tip.id
