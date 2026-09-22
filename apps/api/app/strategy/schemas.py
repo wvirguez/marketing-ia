@@ -1148,3 +1148,104 @@ def evidence_claim_to_public(view: "EvidenceClaimView", *, experiment_public_id:
         later_correction_exists=view.later_correction_exists,
         excluded_from_aggregate_and_analysis=evidence is not None,
     )
+
+
+EXPERIMENT_MEASUREMENT_SEMANTICS = (
+    "OBSERVATIONAL MEASUREMENT ONLY — NOT AN EXPERIMENT RESULT, HYPOTHESIS VERDICT, "
+    "CAUSAL ATTRIBUTION, OR VALIDATED LEARNING"
+)
+
+
+class CreateExperimentMeasurementRunRequest(BaseModel):
+    """Experiment Measurement: exactly one frozen input. ``extra="forbid"`` —
+    no result, winner, verdict, or claim-selection field is ever accepted;
+    the server derives every input from the Start alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_request_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("client_request_id", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        return _strip_if_str(value)
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _text_rules(cls, value: str) -> str:
+        return _reject_nul(value)
+
+
+class ExperimentMeasurementDatumUsagePublic(BaseModel):
+    """ONE claim this Run's snapshot considered. ``usage_decision`` states
+    only a structural/temporal fact — never eligibility, validity, success,
+    or correctness."""
+
+    claim_id: str
+    required_signal_id: str
+    channel: str
+    temporal_role: Literal["BASELINE", "OBSERVATION"] | None
+    usage_decision: Literal[
+        "CONSUMED", "EXCLUDED_AMBIGUOUS", "EXCLUDED_OUT_OF_WINDOW", "EXCLUDED_MULTI_SIGNAL", "EXCLUDED_CONFLICT"
+    ]
+    recorded_before_declaration: bool
+    later_grouping_entry_exists_at_run: bool
+
+
+class ExperimentMeasurementSliceOutputPublic(BaseModel):
+    """ONE channel slice of ONE signal. ``coverage_state``/``pairing_state``
+    are counting/structural facts only — COVERED means only
+    ``qualifying_count >= required_count``, never valid/successful/
+    significant/result-established. ``signed_arithmetic_difference`` means
+    ONLY arithmetic subtraction (observation - baseline) — never lift,
+    effect, significance, or causality."""
+
+    channel: str
+    qualifying_count: int
+    required_count: int | None
+    coverage_state: Literal["NOT_COVERED", "COVERED"] | None
+    pairing_state: Literal["INCOMPLETE", "SURPLUS", "LENGTH_MISMATCH", "PAIR"] | None
+    ambiguous_excluded_count: int
+    conflict_excluded_count: int
+    multi_signal_excluded_count: int
+    out_of_window_count: int
+    baseline_value: Decimal | None
+    observation_value: Decimal | None
+    signed_arithmetic_difference: Decimal | None
+
+
+class ExperimentMeasurementSignalOutputPublic(BaseModel):
+    """ONE RequiredSignal this Run considered. Zero ``slices`` under an ANY
+    channel binding means NO_CLAIMED_DATA for this signal — derived from row
+    absence, never a stored value."""
+
+    required_signal_id: str
+    declaration_level: Literal["DESCRIPTIVE", "COMPARATIVE"]
+    slices: list[ExperimentMeasurementSliceOutputPublic]
+
+
+class ExperimentMeasurementRunPublic(BaseModel):
+    """ONE immutable, historical Experiment Measurement Run. Public ids only.
+    ``semantics`` is a constant firewall statement. No result/winner/verdict/
+    validity/causal/learning field exists anywhere in this shape — for a
+    LEGACY-Contract Run, ``signal_outputs`` is always empty and every datum
+    usage is POST_HOC provenance only (no temporal_role, no coverage, no
+    pairing)."""
+
+    id: str
+    experiment_id: str
+    start_id: str
+    contract_version_id: str
+    declaration_semantics_version: int
+    semantics: str = EXPERIMENT_MEASUREMENT_SEMANTICS
+    legacy: bool
+    created_by: str | None
+    created_at: datetime
+    signal_outputs: list[ExperimentMeasurementSignalOutputPublic]
+    datum_usages: list[ExperimentMeasurementDatumUsagePublic]
+
+
+class ExperimentMeasurementRunListResponse(BaseModel):
+    experiment_id: str
+    start_id: str
+    runs: list[ExperimentMeasurementRunPublic]

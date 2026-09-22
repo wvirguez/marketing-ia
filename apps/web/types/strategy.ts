@@ -403,3 +403,85 @@ export interface CreateEvidenceClaimRequest {
 export interface DisposeEvidenceClaimRequest {
   reason: string;
 }
+
+// Experiment Measurement: exactly one frozen input — every other identity is
+// derived server-side from the Start alone.
+export interface CreateExperimentMeasurementRunRequest {
+  client_request_id: string;
+}
+
+export type TemporalRole = "BASELINE" | "OBSERVATION";
+export type UsageDecision =
+  | "CONSUMED"
+  | "EXCLUDED_AMBIGUOUS"
+  | "EXCLUDED_OUT_OF_WINDOW"
+  | "EXCLUDED_MULTI_SIGNAL"
+  | "EXCLUDED_CONFLICT";
+export type CoverageState = "NOT_COVERED" | "COVERED";
+export type PairingState = "INCOMPLETE" | "SURPLUS" | "LENGTH_MISMATCH" | "PAIR";
+
+// ONE claim this Run's snapshot considered. usage_decision states only a
+// structural/temporal fact — never eligibility, validity, success, or
+// correctness.
+export interface ExperimentMeasurementDatumUsagePublic {
+  claim_id: string;
+  required_signal_id: string;
+  channel: string;
+  temporal_role: TemporalRole | null;
+  usage_decision: UsageDecision;
+  recorded_before_declaration: boolean;
+  later_grouping_entry_exists_at_run: boolean;
+}
+
+// ONE channel slice of ONE signal. coverage_state/pairing_state are
+// counting/structural facts only. signed_arithmetic_difference means ONLY
+// arithmetic subtraction (observation - baseline) — never lift, effect,
+// significance, or causality.
+export interface ExperimentMeasurementSliceOutputPublic {
+  channel: string;
+  qualifying_count: number;
+  required_count: number | null;
+  coverage_state: CoverageState | null;
+  pairing_state: PairingState | null;
+  ambiguous_excluded_count: number;
+  conflict_excluded_count: number;
+  multi_signal_excluded_count: number;
+  out_of_window_count: number;
+  baseline_value: string | null;
+  observation_value: string | null;
+  signed_arithmetic_difference: string | null;
+}
+
+// ONE RequiredSignal this Run considered. Zero `slices` under an ANY channel
+// binding means NO_CLAIMED_DATA for this signal — derived from row absence,
+// never a stored value.
+export interface ExperimentMeasurementSignalOutputPublic {
+  required_signal_id: string;
+  declaration_level: DeclarationLevel;
+  slices: ExperimentMeasurementSliceOutputPublic[];
+}
+
+// ONE immutable, historical Experiment Measurement Run. No result/winner/
+// verdict/validity/causal/learning field exists anywhere in this shape —
+// for a LEGACY-Contract Run, signal_outputs is always empty and every datum
+// usage is POST_HOC provenance only (no temporal_role, no coverage, no
+// pairing).
+export interface ExperimentMeasurementRunPublic {
+  id: string;
+  experiment_id: string;
+  start_id: string;
+  contract_version_id: string;
+  declaration_semantics_version: number;
+  semantics: string;
+  legacy: boolean;
+  created_by: string | null;
+  created_at: string;
+  signal_outputs: ExperimentMeasurementSignalOutputPublic[];
+  datum_usages: ExperimentMeasurementDatumUsagePublic[];
+}
+
+export interface ExperimentMeasurementRunListResponse {
+  experiment_id: string;
+  start_id: string;
+  runs: ExperimentMeasurementRunPublic[];
+}

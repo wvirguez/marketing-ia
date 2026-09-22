@@ -8,6 +8,7 @@ import { request } from "@/lib/api/client";
 import type {
   AuthorizeExecutionRequest,
   CreateEvidenceClaimRequest,
+  CreateExperimentMeasurementRunRequest,
   CreateExperimentRequest,
   CreateHypothesisRequest,
   DeclareExperimentDefinitionRequest,
@@ -19,6 +20,8 @@ import type {
   ExecutionAuthorizationHistoryResponse,
   ExecutionAuthorizationPublic,
   ExperimentDefinitionPublic,
+  ExperimentMeasurementRunListResponse,
+  ExperimentMeasurementRunPublic,
   ExperimentPublic,
   HypothesisPublic,
   MeasurementContractHistoryResponse,
@@ -251,5 +254,39 @@ export async function disposeEvidenceClaim(
   return request<EvidenceClaimPublic>(
     `${evidenceClaimsPath(campaignPublicId, experimentPublicId, startPublicId)}/${encodeURIComponent(claimPublicId)}/dispose`,
     { method: "POST", body: payload },
+  );
+}
+
+function measurementRunsPath(campaignPublicId: string, experimentPublicId: string, startPublicId: string): string {
+  return `/campaigns/${encodeURIComponent(campaignPublicId)}/experiments/${encodeURIComponent(experimentPublicId)}/execution-starts/${encodeURIComponent(startPublicId)}/measurement-runs`;
+}
+
+// Experiment Measurement: computes and persists ONE immutable, historical, OBSERVATIONAL Run for THIS
+// started execution attempt. Idempotent on `client_request_id` (201 new, 200 replay of the exact original
+// Run — never recomputed). Produces ONLY temporal classification, coverage/pairing facts, descriptive
+// values, strictly bounded comparative arithmetic and disclosures — NEVER a result, verdict, winner, or
+// causal/learning claim.
+export async function createExperimentMeasurementRun(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  startPublicId: string,
+  payload: CreateExperimentMeasurementRunRequest,
+): Promise<ExperimentMeasurementRunPublic> {
+  return request<ExperimentMeasurementRunPublic>(
+    measurementRunsPath(campaignPublicId, experimentPublicId, startPublicId),
+    { method: "POST", body: payload },
+  );
+}
+
+// Every Measurement Run of THIS Start — ascending, unpaginated, immutable historical facts (never a
+// "latest"/"current" designation).
+export async function listExperimentMeasurementRuns(
+  campaignPublicId: string,
+  experimentPublicId: string,
+  startPublicId: string,
+): Promise<ExperimentMeasurementRunListResponse> {
+  return request<ExperimentMeasurementRunListResponse>(
+    measurementRunsPath(campaignPublicId, experimentPublicId, startPublicId),
+    { method: "GET" },
   );
 }

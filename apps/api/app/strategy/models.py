@@ -95,6 +95,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     CheckConstraint,
@@ -104,6 +105,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -1166,6 +1168,23 @@ class ExperimentEvidenceClaim(Base, UUIDPrimaryKeyMixin):
             "disposal_reason IS NULL OR char_length(btrim(disposal_reason)) > 0",
             name="disposal_reason_nonblank",
         ),
+        # Experiment Measurement (frozen Final Relational Integrity Reconciliation
+        # RI-2/§7): two ADDITIVE candidate keys, purely so a downstream
+        # ExperimentMeasurementDatumUsage row can prove, at the database level,
+        # that the claim it references shares the exact Start of the Measurement
+        # Run it belongs to (RI-2), and that it labels the claim under the
+        # claim's OWN true RequiredSignal, never a different one (§7). Neither
+        # changes any existing EEB semantic, data, or row — ``id`` is already
+        # unique, so both are trivially satisfied by every existing row.
+        UniqueConstraint(
+            "id", "start_id", "workspace_id", name="uq_experiment_evidence_claims_id_start_workspace"
+        ),
+        UniqueConstraint(
+            "id",
+            "required_signal_id",
+            "workspace_id",
+            name="uq_experiment_evidence_claims_id_required_signal_workspace",
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -1185,3 +1204,360 @@ class ExperimentEvidenceClaim(Base, UUIDPrimaryKeyMixin):
     disposal_reason: Mapped[str | None] = mapped_column(
         String(EXPERIMENT_EVIDENCE_CLAIM_DISPOSAL_REASON_MAX_LENGTH), default=None
     )
+
+
+EXPERIMENT_MEASUREMENT_RUN_CLIENT_REQUEST_ID_MAX_LENGTH = 100
+EXPERIMENT_MEASUREMENT_CHANNEL_MAX_LENGTH = 100
+_MEASUREMENT_VALUE_PRECISION = 20
+_MEASUREMENT_VALUE_SCALE = 4
+
+
+class ExperimentMeasurementRun(Base, UUIDPrimaryKeyMixin):
+    """Experiment Measurement (frozen Discovery/Design Freeze/Reconciliation ×2):
+    one immutable, append-only, historical snapshot of a governed OBSERVATIONAL
+    reading of the evidence claimed under ONE started execution attempt (the
+    ``ExecutionStartAttestation``). Model D — hybrid: an immutable snapshot plus
+    the provenance metadata (below, and in its children) needed to reproduce —
+    never re-derive from mutable current state — exactly what was computed.
+
+    MEASUREMENT != RESULT != WINNER != HYPOTHESIS VERDICT != EXPERIMENTAL
+    VALIDITY != CAUSALITY != LEARNING. Nothing here is a threshold, an operator,
+    a success/failure state, a Variant/arm attribution, an allocation, an
+    exposure, or a link to CommercialOutcome or a Strategic artifact — no such
+    column exists. A structured declaration is APPLIED here for the first
+    time; DECLARATION != APPLICATION.
+
+    IDENTITY: START-SCOPED, never Experiment-scoped or Authorization-scoped —
+    ``experiment_id``/``authorization_id``/``contract_version_id`` are INTEGRITY
+    columns only (identical reasoning to ``ExperimentEvidenceClaim``'s own),
+    existing so the composite FKs below can be declared; the real identity is
+    ``start_id``. Cross-Start Measurement is forbidden and, via the composite FK
+    chain on this row's own children, DB-impossible (Final Relational Integrity
+    Reconciliation RI-2).
+
+    IMMUTABILITY: append-only, no status, no update/delete method, no
+    supersession/current/latest/active/valid/winner field. A later Run never
+    invalidates an earlier one (both are permanent historical facts). Retry vs
+    intentional rerun: same ``client_request_id`` replays the exact original Run
+    (never recomputed against newer evidence); a deliberate new invocation uses
+    a new key and always appends a new immutable Run, even with unchanged
+    effective inputs.
+
+    TRANSACTION: created under a dedicated REPEATABLE READ transaction (service
+    layer only — see ``ExperimentMeasurementService``), established BEFORE its
+    first read, so every input read (Start, Contract, RequiredSignals, active
+    Claims, MetricEntry/MetricValue, later-grouping-entry facts) shares one
+    consistent snapshot. ``declaration_semantics_version`` is copied (never
+    reached only by FK) so this Run's own historical meaning can never silently
+    drift even if a future semantics version is introduced; every other pinned
+    fact is reached by FK, never duplicated, since the pinned rows are already
+    immutable once a Start exists (C1 freeze, inherited unchanged)."""
+
+    __tablename__ = "experiment_measurement_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["start_id", "authorization_id", "workspace_id"],
+            [
+                "execution_start_attestations.id",
+                "execution_start_attestations.authorization_id",
+                "execution_start_attestations.workspace_id",
+            ],
+            name="fk_measurement_runs_start_authorization",
+        ),
+        ForeignKeyConstraint(
+            ["authorization_id", "contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "execution_authorizations.id",
+                "execution_authorizations.contract_version_id",
+                "execution_authorizations.experiment_id",
+                "execution_authorizations.workspace_id",
+            ],
+            name="fk_measurement_runs_authorization_contract",
+        ),
+        UniqueConstraint(
+            "workspace_id", "client_request_id", name="uq_measurement_runs_workspace_client_request_id"
+        ),
+        # Final Relational Integrity Reconciliation RI-1: purely so
+        # ExperimentMeasurementSignalOutput can prove, at the database level,
+        # that its own copied Contract/Experiment pin is the SAME pin this Run
+        # itself carries (explicit shortened name: the convention-derived name
+        # exceeds PostgreSQL's 63-character identifier limit).
+        UniqueConstraint(
+            "id",
+            "contract_version_id",
+            "experiment_id",
+            "workspace_id",
+            name="uq_measurement_runs_id_contract_experiment_workspace",
+        ),
+        # RI-2: purely so ExperimentMeasurementDatumUsage can prove its
+        # referenced Claim shares this Run's exact Start.
+        UniqueConstraint(
+            "id", "start_id", "workspace_id", name="uq_measurement_runs_id_start_workspace"
+        ),
+        CheckConstraint("declaration_semantics_version = 1", name="semantics_version_v1"),
+    )
+
+    public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    # Explicit, short FK names throughout this table and its three children:
+    # this table's own name is long enough that the naming convention's
+    # auto-generated "fk_<table>_<column>_<referred_table>" would itself
+    # exceed PostgreSQL's 63-character identifier limit.
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", name="fk_measurement_runs_workspace_id"), index=True
+    )
+    experiment_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column
+    authorization_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column
+    start_id: Mapped[uuid.UUID] = mapped_column(index=True)  # the identity scope
+    contract_version_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column
+    declaration_semantics_version: Mapped[int] = mapped_column(Integer)
+    client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_MEASUREMENT_RUN_CLIENT_REQUEST_ID_MAX_LENGTH))
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", name="fk_measurement_runs_created_by_user_id")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExperimentMeasurementSignalOutput(Base, UUIDPrimaryKeyMixin):
+    """A pure child of ONE ``ExperimentMeasurementRun`` — one row per
+    RequiredSignal actually considered by that Run (never independently
+    addressed; no ``public_id``, mirroring ``ExecutionAuthorizationVariant``'s
+    own "pure association" precedent). ``declaration_level`` is a DERIVED
+    SNAPSHOT copied from the pinned Contract at computation time — the final
+    relational reconciliation could not make this a cross-table DB CHECK, so it
+    is explicitly NOT claimed as DB-enforced against the Contract; only ONE
+    code path ever populates it per level, so it cannot diverge in practice
+    (DERIVED-BY-CONSTRUCTION)."""
+
+    __tablename__ = "experiment_measurement_signal_outputs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "experiment_measurement_runs.id",
+                "experiment_measurement_runs.contract_version_id",
+                "experiment_measurement_runs.experiment_id",
+                "experiment_measurement_runs.workspace_id",
+            ],
+            name="fk_measurement_signal_outputs_run_contract",
+        ),
+        ForeignKeyConstraint(
+            ["required_signal_id", "contract_version_id", "experiment_id", "workspace_id"],
+            [
+                "measurement_contract_signals.id",
+                "measurement_contract_signals.contract_version_id",
+                "measurement_contract_signals.experiment_id",
+                "measurement_contract_signals.workspace_id",
+            ],
+            name="fk_measurement_signal_outputs_required_signal",
+        ),
+        UniqueConstraint("run_id", "required_signal_id", name="uq_measurement_signal_outputs_run_signal"),
+        # Tenant-safe superset of the key above (at most one SignalOutput per
+        # Run+signal, workspace-qualified). Not consumed by any FK today —
+        # the corresponding DatumUsage FK was removed as an implementation-
+        # time finding (see ExperimentMeasurementDatumUsage's own docstring:
+        # DERIVED-BY-CONSTRUCTION instead, since it cannot hold for Legacy
+        # runs, which never create a SignalOutput row at all).
+        UniqueConstraint(
+            "run_id",
+            "required_signal_id",
+            "workspace_id",
+            name="uq_measurement_signal_outputs_run_signal_workspace",
+        ),
+        # Purely so ExperimentMeasurementSliceOutput can declare a composite
+        # tenant-safe FK on (signal_output_id, workspace_id) — the same
+        # "candidate key purely so a child can declare a composite FK"
+        # pattern used throughout this domain.
+        UniqueConstraint("id", "workspace_id", name="uq_measurement_signal_outputs_id_workspace"),
+        CheckConstraint("declaration_level IN ('DESCRIPTIVE', 'COMPARATIVE')", name="declaration_level_ok"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", name="fk_measurement_signal_outputs_workspace_id"), index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    required_signal_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    contract_version_id: Mapped[uuid.UUID] = mapped_column()  # integrity column, needed for the FK above
+    experiment_id: Mapped[uuid.UUID] = mapped_column()  # integrity column, needed for the FK above
+    declaration_level: Mapped[str] = mapped_column(String(20))
+
+
+class ExperimentMeasurementSliceOutput(Base, UUIDPrimaryKeyMixin):
+    """A pure child of ONE ``ExperimentMeasurementSignalOutput`` — one row per
+    channel actually represented among that signal's Run-input claims (whether
+    consumed or excluded; Final Relational Integrity Reconciliation R1/§14): an
+    EXACT-bound signal always gets exactly one row (its declared channel, even
+    with zero data); an ANY-bound signal gets one row per distinct claimed
+    channel, and ZERO rows means NO_CLAIMED_DATA for that signal — a state
+    derived structurally from row absence, never a stored value (no
+    ``public_id``, pure detail row)."""
+
+    __tablename__ = "experiment_measurement_slice_outputs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["signal_output_id", "workspace_id"],
+            ["experiment_measurement_signal_outputs.id", "experiment_measurement_signal_outputs.workspace_id"],
+            name="fk_measurement_slice_outputs_signal_output_workspace",
+        ),
+        UniqueConstraint("signal_output_id", "channel", name="uq_measurement_slice_outputs_signal_channel"),
+        CheckConstraint(
+            "coverage_state IS NULL OR coverage_state IN ('NOT_COVERED', 'COVERED')", name="coverage_state_valid"
+        ),
+        CheckConstraint(
+            "pairing_state IS NULL OR pairing_state IN ('INCOMPLETE', 'SURPLUS', 'LENGTH_MISMATCH', 'PAIR')",
+            name="pairing_state_valid",
+        ),
+        # Reconciliation R2: exactly one of the two is set — a plain local
+        # invariant that needs no parent data at all.
+        CheckConstraint(
+            "(coverage_state IS NULL) != (pairing_state IS NULL)", name="coverage_xor_pairing"
+        ),
+        # Reconciliation §10: required_count's presence tracks coverage_state's
+        # presence exactly (and, via the XOR above, the complement of
+        # pairing_state's presence). Short names throughout this table:
+        # "ck_experiment_measurement_slice_outputs_" alone is 41 characters,
+        # leaving only 22 for PostgreSQL's 63-character identifier limit.
+        CheckConstraint(
+            "(required_count IS NOT NULL) = (coverage_state IS NOT NULL)", name="count_matches_state"
+        ),
+        CheckConstraint("required_count IS NULL OR required_count >= 1", name="required_count_min"),
+        CheckConstraint("qualifying_count >= 0", name="qualifying_nonneg"),
+        CheckConstraint("ambiguous_excluded_count >= 0", name="ambiguous_nonneg"),
+        CheckConstraint("conflict_excluded_count >= 0", name="conflict_nonneg"),
+        CheckConstraint("multi_signal_excluded_count >= 0", name="multi_signal_nonneg"),
+        CheckConstraint("out_of_window_count >= 0", name="out_of_window_nonneg"),
+        # Reconciliation §9/§11: the value triple is co-present/co-absent AS A
+        # GROUP, and that group is present IF AND ONLY IF pairing_state = PAIR
+        # (verified by truth table against every declaration_level/state
+        # combination — NULL-passes correctly for DESCRIPTIVE rows).
+        CheckConstraint(
+            "(baseline_value IS NULL) = (observation_value IS NULL) "
+            "AND (observation_value IS NULL) = (signed_arithmetic_difference IS NULL)",
+            name="pair_values_copresent",
+        ),
+        CheckConstraint(
+            "(pairing_state = 'PAIR') = (baseline_value IS NOT NULL)", name="pair_values_iff_pair"
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", name="fk_measurement_slice_outputs_workspace_id"), index=True
+    )
+    signal_output_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FK above
+    channel: Mapped[str] = mapped_column(String(EXPERIMENT_MEASUREMENT_CHANNEL_MAX_LENGTH))
+    qualifying_count: Mapped[int] = mapped_column(Integer)
+    required_count: Mapped[int | None] = mapped_column(Integer, default=None)
+    coverage_state: Mapped[str | None] = mapped_column(String(20), default=None)
+    pairing_state: Mapped[str | None] = mapped_column(String(20), default=None)
+    ambiguous_excluded_count: Mapped[int] = mapped_column(Integer)
+    conflict_excluded_count: Mapped[int] = mapped_column(Integer)
+    multi_signal_excluded_count: Mapped[int] = mapped_column(Integer)
+    out_of_window_count: Mapped[int] = mapped_column(Integer)
+    baseline_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(_MEASUREMENT_VALUE_PRECISION, _MEASUREMENT_VALUE_SCALE), default=None
+    )
+    observation_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(_MEASUREMENT_VALUE_PRECISION, _MEASUREMENT_VALUE_SCALE), default=None
+    )
+    # Arithmetic subtraction ONLY (observation_value - baseline_value) — never
+    # rendered or documented as improvement/change-rate/percentage/lift/
+    # effect/impact/significance (frozen Design Freeze §Y).
+    signed_arithmetic_difference: Mapped[Decimal | None] = mapped_column(
+        Numeric(_MEASUREMENT_VALUE_PRECISION, _MEASUREMENT_VALUE_SCALE), default=None
+    )
+
+
+class ExperimentMeasurementDatumUsage(Base, UUIDPrimaryKeyMixin):
+    """A pure child of ONE ``ExperimentMeasurementRun`` — one row per Claim
+    the Run's input-set snapshot considered (whether consumed or excluded; no
+    ``public_id``, pure detail row). ``claim_disposed_at_run`` does NOT exist:
+    the frozen input rule (active-at-snapshot only) makes it structurally
+    incapable of holding any value but ``false`` for any row that could ever
+    exist (Reconciliation R3, proven, not merely asserted) — a later disposal
+    never mutates this or any other historical Run.
+
+    ``channel`` is a DERIVED SNAPSHOT read through ``claim_id ->
+    metric_entry_id -> channel`` at computation time; it cannot be DB-proven
+    against ``MetricEntry`` without a schema change to an already-shipped table
+    this domain is not authorized to make (Reconciliation §8/§15,
+    DERIVED-BY-CONSTRUCTION, test-backstopped)."""
+
+    __tablename__ = "experiment_measurement_datum_usages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "start_id", "workspace_id"],
+            [
+                "experiment_measurement_runs.id",
+                "experiment_measurement_runs.start_id",
+                "experiment_measurement_runs.workspace_id",
+            ],
+            name="fk_measurement_datum_usages_run_start",
+        ),
+        ForeignKeyConstraint(
+            ["claim_id", "start_id", "workspace_id"],
+            [
+                "experiment_evidence_claims.id",
+                "experiment_evidence_claims.start_id",
+                "experiment_evidence_claims.workspace_id",
+            ],
+            name="fk_measurement_datum_usages_claim_start",
+        ),
+        # Final Relational Integrity Reconciliation §7: the claim's declared
+        # signal here must equal the claim's OWN true signal.
+        ForeignKeyConstraint(
+            ["claim_id", "required_signal_id", "workspace_id"],
+            [
+                "experiment_evidence_claims.id",
+                "experiment_evidence_claims.required_signal_id",
+                "experiment_evidence_claims.workspace_id",
+            ],
+            name="fk_measurement_datum_usages_claim_signal",
+        ),
+        # §7's second fact ("the declared signal has a real SignalOutput
+        # under this exact Run") is deliberately NOT a DB FK here — a real
+        # implementation-time finding (not anticipated by either
+        # reconciliation gate): SignalOutput rows exist ONLY for structured
+        # runs (§AC — Legacy creates none at all), so an unconditional FK to
+        # experiment_measurement_signal_outputs would make persisting ANY
+        # Legacy DatumUsage row impossible, contradicting the repeatedly
+        # frozen requirement that Legacy Measurement remain POST_HOC and
+        # functional. Reclassified DERIVED-BY-CONSTRUCTION instead: every
+        # DatumUsage's required_signal_id is drawn from the same
+        # ``signals_by_id`` map (built once, service-side, from the
+        # Contract's full RequiredSignal list) that
+        # ``_persist_structured_outputs`` iterates to create one SignalOutput
+        # per signal — so for a STRUCTURED run the fact already holds by
+        # single-code-path construction, with no runtime choice that could
+        # diverge; for a LEGACY run neither side of the fact exists at all.
+        UniqueConstraint("run_id", "claim_id", name="uq_measurement_datum_usages_run_claim"),
+        CheckConstraint(
+            "usage_decision IN "
+            "('CONSUMED', 'EXCLUDED_AMBIGUOUS', 'EXCLUDED_OUT_OF_WINDOW', "
+            "'EXCLUDED_MULTI_SIGNAL', 'EXCLUDED_CONFLICT')",
+            name="usage_decision_valid",
+        ),
+        CheckConstraint(
+            "temporal_role IS NULL OR temporal_role IN ('BASELINE', 'OBSERVATION')", name="temporal_role_valid"
+        ),
+        # Reconciliation §12/§17: a role can never coexist with the two
+        # exclusion reasons produced BY the very classification step that
+        # itself found no role (EXCLUDED_AMBIGUOUS/EXCLUDED_OUT_OF_WINDOW).
+        # Short name: "ck_experiment_measurement_datum_usages_" alone is 40
+        # characters, leaving only 23 for the 63-character identifier limit.
+        CheckConstraint(
+            "temporal_role IS NULL OR usage_decision IN ('CONSUMED', 'EXCLUDED_MULTI_SIGNAL', 'EXCLUDED_CONFLICT')",
+            name="role_matches_decision",
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", name="fk_measurement_datum_usages_workspace_id"), index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FKs above
+    start_id: Mapped[uuid.UUID] = mapped_column(index=True)  # integrity column, needed for the FK above
+    claim_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FKs above
+    required_signal_id: Mapped[uuid.UUID] = mapped_column(index=True)  # covered by the composite FKs above
+    channel: Mapped[str] = mapped_column(String(EXPERIMENT_MEASUREMENT_CHANNEL_MAX_LENGTH))
+    temporal_role: Mapped[str | None] = mapped_column(String(20), default=None)
+    usage_decision: Mapped[str] = mapped_column(String(30))
+    recorded_before_declaration: Mapped[bool] = mapped_column()
+    later_grouping_entry_exists_at_run: Mapped[bool] = mapped_column()

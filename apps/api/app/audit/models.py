@@ -318,6 +318,16 @@ class AuditEvent(Base, UUIDPrimaryKeyMixin):
         default=None,
         index=True,
     )
+    # Experiment Measurement: a strategy.experiment_measurement_run.created
+    # event must identify its exact ExperimentMeasurementRun row. Nullable,
+    # single-column, matching every other AuditEvent subject FK. No second
+    # "recomputed" event/FK exists: every Run, first or Nth, is a creation
+    # (frozen Design Freeze §AI).
+    experiment_measurement_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("experiment_measurement_runs.id", name="fk_audit_events_experiment_measurement_run_id"),
+        default=None,
+        index=True,
+    )
     # MVP-28B: same reasoning as commercial_objective_id/offer_id above — an
     # orchestration.strategic_decision.recorded/...superseded event must
     # identify its exact StrategicDecision row. Nullable, single-column,

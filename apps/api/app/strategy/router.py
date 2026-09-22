@@ -96,12 +96,14 @@ from app.strategy.definition_service import ExperimentDefinitionService
 from app.strategy.execution_authorization_service import ExperimentExecutionAuthorizationService
 from app.strategy.execution_start_service import ExperimentExecutionStartService
 from app.strategy.experiment_evidence_claim_service import ExperimentEvidenceClaimService
+from app.strategy.experiment_measurement_service import ExperimentMeasurementService
 from app.strategy.measurement_contract_service import ExperimentMeasurementContractService
 from app.strategy.models import ExecutionAuthorization, ExecutionAuthorizationVariant
-from app.strategy.repository import ExecutionStartAttestationRepository
+from app.strategy.repository import ExecutionStartAttestationRepository, ExperimentMeasurementRunRepository
 from app.strategy.schemas import (
     AuthorizeExecutionRequest,
     CreateEvidenceClaimRequest,
+    CreateExperimentMeasurementRunRequest,
     CreateExperimentRequest,
     CreateHypothesisRequest,
     CreateVariantRequest,
@@ -116,6 +118,11 @@ from app.strategy.schemas import (
     ExecutionStartPublic,
     ExperimentDefinitionHistoryResponse,
     ExperimentDefinitionPublic,
+    ExperimentMeasurementDatumUsagePublic,
+    ExperimentMeasurementRunListResponse,
+    ExperimentMeasurementRunPublic,
+    ExperimentMeasurementSignalOutputPublic,
+    ExperimentMeasurementSliceOutputPublic,
     ExperimentPublic,
     HypothesisPublic,
     MeasurementContractHistoryResponse,
@@ -938,3 +945,163 @@ async def dispose_evidence_claim(
         request_id=request.state.request_id,
     )
     return evidence_claim_to_public(service.view_for_claim(claim), experiment_public_id=experiment_public_id)
+
+
+def _experiment_measurement_run_to_public(
+    db: Session, run, *, experiment_public_id: str, start_public_id: str
+) -> ExperimentMeasurementRunPublic:
+    """Experiment Measurement: assembles the public shape for ONE Run,
+    resolving public ids exactly once per Run (batched, no N+1 across a
+    listing). ``legacy`` derives structurally from the absence of any
+    SignalOutput row (frozen Reconciliation: NO_CLAIMED_DATA/Legacy are both
+    row-absence facts, never a stored flag)."""
+    runs_repo = ExperimentMeasurementRunRepository(db)
+    signal_outputs = runs_repo.list_signal_outputs_for_run(run_id=run.id)
+    slice_outputs = runs_repo.list_slice_outputs_for_signal_outputs(
+        signal_output_ids=[row.id for row in signal_outputs]
+    )
+    datum_usages = runs_repo.list_datum_usages_for_run(run_id=run.id)
+
+    contract_service = ExperimentMeasurementContractService(db)
+    contract = contract_service.contracts.get_by_id(run.contract_version_id)
+    signal_rows = contract_service.contracts.list_signals_for_version(contract_version_id=run.contract_version_id)
+    signal_public_id_by_id = {row.id: row.public_id for row in signal_rows}
+
+    claim_service = ExperimentEvidenceClaimService(db)
+    claim_rows = claim_service.claims.list_for_start(start_id=run.start_id, workspace_id=run.workspace_id)
+    claim_public_id_by_id = {row.id: row.public_id for row in claim_rows}
+
+    slices_by_signal_output: dict = {}
+    for slice_row in slice_outputs:
+        slices_by_signal_output.setdefault(slice_row.signal_output_id, []).append(slice_row)
+
+    return ExperimentMeasurementRunPublic(
+        id=run.public_id,
+        experiment_id=experiment_public_id,
+        start_id=start_public_id,
+        contract_version_id=contract.public_id if contract is not None else "",
+        declaration_semantics_version=run.declaration_semantics_version,
+        legacy=len(signal_outputs) == 0,
+        created_by=None,
+        created_at=run.created_at,
+        signal_outputs=[
+            ExperimentMeasurementSignalOutputPublic(
+                required_signal_id=signal_public_id_by_id.get(signal_output.required_signal_id, ""),
+                declaration_level=signal_output.declaration_level,
+                slices=[
+                    ExperimentMeasurementSliceOutputPublic(
+                        channel=slice_row.channel,
+                        qualifying_count=slice_row.qualifying_count,
+                        required_count=slice_row.required_count,
+                        coverage_state=slice_row.coverage_state,
+                        pairing_state=slice_row.pairing_state,
+                        ambiguous_excluded_count=slice_row.ambiguous_excluded_count,
+                        conflict_excluded_count=slice_row.conflict_excluded_count,
+                        multi_signal_excluded_count=slice_row.multi_signal_excluded_count,
+                        out_of_window_count=slice_row.out_of_window_count,
+                        baseline_value=slice_row.baseline_value,
+                        observation_value=slice_row.observation_value,
+                        signed_arithmetic_difference=slice_row.signed_arithmetic_difference,
+                    )
+                    for slice_row in slices_by_signal_output.get(signal_output.id, [])
+                ],
+            )
+            for signal_output in signal_outputs
+        ],
+        datum_usages=[
+            ExperimentMeasurementDatumUsagePublic(
+                claim_id=claim_public_id_by_id.get(usage.claim_id, ""),
+                required_signal_id=signal_public_id_by_id.get(usage.required_signal_id, ""),
+                channel=usage.channel,
+                temporal_role=usage.temporal_role,
+                usage_decision=usage.usage_decision,
+                recorded_before_declaration=usage.recorded_before_declaration,
+                later_grouping_entry_exists_at_run=usage.later_grouping_entry_exists_at_run,
+            )
+            for usage in datum_usages
+        ],
+    )
+
+
+@router.post(
+    "/experiments/{experiment_public_id}/execution-starts/{start_public_id}/measurement-runs",
+    response_model=ExperimentMeasurementRunPublic,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
+)
+async def create_experiment_measurement_run(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    start_public_id: str,
+    payload: CreateExperimentMeasurementRunRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExperimentMeasurementRunPublic:
+    """Computes and persists ONE immutable, historical, OBSERVATIONAL
+    Experiment Measurement Run for THIS started execution attempt (frozen
+    Discovery/Design Freeze/both Reconciliations). Idempotent on
+    ``client_request_id``: 201 for a new Run, 200 for a matching replay of the
+    exact original Run (never recomputed against newer evidence), 409
+    ``EXPERIMENT_MEASUREMENT_IDEMPOTENCY_KEY_CONFLICT`` for the same key
+    against a different Start. Any active workspace membership may call this
+    (MEMBER+); the audit actor is always the USER. Produces ONLY temporal
+    classification, structural qualification, coverage facts, pairing facts,
+    descriptive values, strictly bounded comparative arithmetic and
+    disclosures — NEVER an Experiment Result, Hypothesis Verdict, winner,
+    causal attribution, or validated learning. A revoked Authorization does
+    not block Measurement of a Start that already occurred."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    service = ExperimentMeasurementService(db)
+    run, created = service.create(
+        campaign=campaign,
+        experiment_public_id=experiment_public_id,
+        start_public_id=start_public_id,
+        client_request_id=payload.client_request_id,
+        actor_user_id=user.id,
+        request_id=request.state.request_id,
+    )
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return _experiment_measurement_run_to_public(
+        db, run, experiment_public_id=experiment_public_id, start_public_id=start_public_id
+    )
+
+
+@router.get(
+    "/experiments/{experiment_public_id}/execution-starts/{start_public_id}/measurement-runs",
+    response_model=ExperimentMeasurementRunListResponse,
+)
+async def list_experiment_measurement_runs(
+    campaign_public_id: str,
+    experiment_public_id: str,
+    start_public_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> ExperimentMeasurementRunListResponse:
+    """Every Measurement Run of THIS Start (active workspace membership,
+    MEMBER+), ascending, unpaginated (mirrors the accepted Evidence Claim
+    history limit) — immutable historical facts, never a "latest" or
+    "current" designation."""
+    campaign = CampaignAccessService(db).get_authorized_campaign(
+        workspace_id=workspace.id, campaign_public_id=campaign_public_id
+    )
+    service = ExperimentMeasurementService(db)
+    experiment = service._resolve_experiment(campaign=campaign, experiment_public_id=experiment_public_id)
+    start, _authorization = service._resolve_start(
+        experiment_id=experiment.id, workspace_id=campaign.workspace_id, start_public_id=start_public_id
+    )
+    runs = ExperimentMeasurementRunRepository(db).list_for_start(start_id=start.id, workspace_id=campaign.workspace_id)
+    return ExperimentMeasurementRunListResponse(
+        experiment_id=experiment.public_id,
+        start_id=start.public_id,
+        runs=[
+            _experiment_measurement_run_to_public(
+                db, run, experiment_public_id=experiment.public_id, start_public_id=start.public_id
+            )
+            for run in runs
+        ],
+    )

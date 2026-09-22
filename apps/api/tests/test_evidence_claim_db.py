@@ -372,7 +372,15 @@ def test_the_claim_table_has_exactly_the_frozen_constraints(db_session) -> None:
     # No strategy/campaign/variant reference of any kind, and no cascade anywhere.
     assert not any(referred[0] in {"strategies", "campaigns", "experiment_variants", "hypotheses"} for referred in fks.values())
     assert all(fk["options"].get("ondelete") != "CASCADE" for fk in inspector.get_foreign_keys(table))
-    assert set(_unique_columns(inspector, table)) == {"uq_experiment_evidence_claims_workspace_client_request_id"}
+    assert set(_unique_columns(inspector, table)) == {
+        "uq_experiment_evidence_claims_workspace_client_request_id",
+        # Experiment Measurement (frozen Final Relational Integrity Reconciliation
+        # RI-2/§7): two ADDITIVE candidate keys, purely so a downstream
+        # ExperimentMeasurementDatumUsage row can prove its Claim shares its Run's
+        # exact Start and is labelled under the claim's own true RequiredSignal.
+        "uq_experiment_evidence_claims_id_start_workspace",
+        "uq_experiment_evidence_claims_id_required_signal_workspace",
+    }
     assert {c["name"] for c in inspector.get_check_constraints(table)} == {
         "ck_experiment_evidence_claims_disposal_complete", "ck_experiment_evidence_claims_disposal_reason_nonblank",
     }

@@ -144,7 +144,12 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
     table pinning the exact Definition/Contract tips, plus its
     Variant-set snapshot children; no allocation/assignment/exposure/
     evidence-binding/tracking-validation/result/winner/validity/
-    causality column, and no execution-started column of any kind). No
+    causality column, and no execution-started column of any kind) — and
+    the Experiment Measurement persistence contract (frozen Discovery/
+    Design Freeze/both Reconciliations; owned by ``strategy`` — one
+    append-only, Start-scoped root (``ExperimentMeasurementRun``) plus its
+    three pure children (SignalOutput/SliceOutput/DatumUsage); no
+    result/winner/verdict/validity/causal/learning column of any kind). No
     Content
     Revision
     Request/Distribution/Paid Media/Measurement Cycle/Performance
@@ -233,6 +238,10 @@ def test_no_agent_execution_or_content_domain_tables_exist_yet() -> None:
         "execution_authorization_variants",
         "execution_start_attestations",
         "experiment_evidence_claims",
+        "experiment_measurement_runs",
+        "experiment_measurement_signal_outputs",
+        "experiment_measurement_slice_outputs",
+        "experiment_measurement_datum_usages",
     }
 
 

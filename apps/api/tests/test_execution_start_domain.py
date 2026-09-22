@@ -561,6 +561,9 @@ def test_the_writer_surface_is_append_only_and_has_no_system_or_agent_path(db_se
         # Experiment Evidence Binding: a read-only strict-scope lookup (Start + its Authorization) — still no
         # update/delete/correct method.
         "get_with_authorization_by_public_id",
+        # Experiment Measurement: the defensive re-read that establishes the
+        # REPEATABLE READ transaction's authoritative snapshot — still read-only.
+        "get_by_id",
     }
     service_public = {n for n in dir(ExperimentExecutionStartService) if not n.startswith("_")}
     assert service_public == {"start"}

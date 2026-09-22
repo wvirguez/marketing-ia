@@ -43,6 +43,7 @@ import type {
   ExperimentPublic,
 } from "@/types/strategy";
 import { EvidenceClaimsSection } from "./evidence-claims-section";
+import { MeasurementRunsSection } from "./measurement-runs-section";
 
 const UNIT_MAX = 200;
 const DESIGN_MAX = 2000;
@@ -623,6 +624,16 @@ export function ExecutionAuthorizationSection({
       {claimsTarget?.execution_start && (
         <EvidenceClaimsSection
           key={claimsTarget.execution_start.id}
+          campaignId={campaignId}
+          experimentId={experiment.id}
+          startId={claimsTarget.execution_start.id}
+          role={role}
+        />
+      )}
+
+      {claimsTarget?.execution_start && (
+        <MeasurementRunsSection
+          key={`measurement-${claimsTarget.execution_start.id}`}
           campaignId={campaignId}
           experimentId={experiment.id}
           startId={claimsTarget.execution_start.id}

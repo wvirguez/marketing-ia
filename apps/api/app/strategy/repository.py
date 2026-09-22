@@ -28,6 +28,10 @@ from app.strategy.models import (
     ExecutionStartAttestation,
     ExperimentDefinitionVersion,
     ExperimentEvidenceClaim,
+    ExperimentMeasurementDatumUsage,
+    ExperimentMeasurementRun,
+    ExperimentMeasurementSignalOutput,
+    ExperimentMeasurementSliceOutput,
     ExperimentVariant,
     Hypothesis,
     HypothesisStatus,
@@ -956,6 +960,18 @@ class ExecutionStartAttestationRepository:
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
 
+    def get_by_id(self, start_id: uuid.UUID) -> ExecutionStartAttestation | None:
+        """Experiment Measurement: the defensive re-read that establishes the
+        REPEATABLE READ transaction's authoritative snapshot (frozen
+        Reconciliation §19/§M) — ``populate_existing=True`` so a Start already
+        cached on this Session from an earlier, now-committed transaction is
+        genuinely re-queried, not merely returned from the identity map."""
+        return self.session.execute(
+            select(ExecutionStartAttestation)
+            .where(ExecutionStartAttestation.id == start_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+
     def get_with_authorization_by_public_id(
         self, *, experiment_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str
     ) -> tuple[ExecutionStartAttestation, ExecutionAuthorization] | None:
@@ -1114,6 +1130,224 @@ class ExperimentEvidenceClaimRepository:
                 )
                 .order_by(ExperimentEvidenceClaim.created_at.asc(), ExperimentEvidenceClaim.id.asc())
                 .execution_options(populate_existing=True)
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_active_for_start(self, *, start_id: uuid.UUID, workspace_id: uuid.UUID) -> list[ExperimentEvidenceClaim]:
+        """Experiment Measurement: the frozen Run input-set query
+        (``disposed_at IS NULL``) — this is the one read whose result is load
+        bearing for the REPEATABLE READ snapshot (frozen Reconciliation §L/§13:
+        Start-scoped, active-at-snapshot only; a claim disposed as of the
+        snapshot is simply absent here, never a separate "excluded" row)."""
+        return list(
+            self.session.execute(
+                select(ExperimentEvidenceClaim)
+                .where(
+                    ExperimentEvidenceClaim.start_id == start_id,
+                    ExperimentEvidenceClaim.workspace_id == workspace_id,
+                    ExperimentEvidenceClaim.disposed_at.is_(None),
+                )
+                .order_by(ExperimentEvidenceClaim.created_at.asc(), ExperimentEvidenceClaim.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+
+class ExperimentMeasurementRunRepository:
+    """Experiment Measurement: data access for ``ExperimentMeasurementRun`` and
+    its three pure children. Append-only by construction — no update, delete
+    or correction method exists anywhere here. No method here calls
+    ``session.commit()`` — the service owns the transaction (frozen
+    Reconciliation §L)."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        workspace_id: uuid.UUID,
+        experiment_id: uuid.UUID,
+        authorization_id: uuid.UUID,
+        start_id: uuid.UUID,
+        contract_version_id: uuid.UUID,
+        declaration_semantics_version: int,
+        client_request_id: str,
+        created_by_user_id: uuid.UUID,
+    ) -> ExperimentMeasurementRun:
+        row = ExperimentMeasurementRun(
+            public_id=generate_public_id("EXM"),
+            workspace_id=workspace_id,
+            experiment_id=experiment_id,
+            authorization_id=authorization_id,
+            start_id=start_id,
+            contract_version_id=contract_version_id,
+            declaration_semantics_version=declaration_semantics_version,
+            client_request_id=client_request_id,
+            created_by_user_id=created_by_user_id,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def add_signal_output(
+        self,
+        *,
+        run: ExperimentMeasurementRun,
+        required_signal_id: uuid.UUID,
+        declaration_level: str,
+    ) -> ExperimentMeasurementSignalOutput:
+        row = ExperimentMeasurementSignalOutput(
+            workspace_id=run.workspace_id,
+            run_id=run.id,
+            required_signal_id=required_signal_id,
+            contract_version_id=run.contract_version_id,
+            experiment_id=run.experiment_id,
+            declaration_level=declaration_level,
+        )
+        self.session.add(row)
+        self.session.flush()  # so row.id is assigned before add_slice_output reads it
+        return row
+
+    def add_slice_output(
+        self,
+        *,
+        signal_output: ExperimentMeasurementSignalOutput,
+        channel: str,
+        qualifying_count: int,
+        required_count: int | None,
+        coverage_state: str | None,
+        pairing_state: str | None,
+        ambiguous_excluded_count: int,
+        conflict_excluded_count: int,
+        multi_signal_excluded_count: int,
+        out_of_window_count: int,
+        baseline_value,
+        observation_value,
+        signed_arithmetic_difference,
+    ) -> ExperimentMeasurementSliceOutput:
+        row = ExperimentMeasurementSliceOutput(
+            workspace_id=signal_output.workspace_id,
+            signal_output_id=signal_output.id,
+            channel=channel,
+            qualifying_count=qualifying_count,
+            required_count=required_count,
+            coverage_state=coverage_state,
+            pairing_state=pairing_state,
+            ambiguous_excluded_count=ambiguous_excluded_count,
+            conflict_excluded_count=conflict_excluded_count,
+            multi_signal_excluded_count=multi_signal_excluded_count,
+            out_of_window_count=out_of_window_count,
+            baseline_value=baseline_value,
+            observation_value=observation_value,
+            signed_arithmetic_difference=signed_arithmetic_difference,
+        )
+        self.session.add(row)
+        return row
+
+    def add_datum_usage(
+        self,
+        *,
+        run: ExperimentMeasurementRun,
+        claim_id: uuid.UUID,
+        required_signal_id: uuid.UUID,
+        channel: str,
+        temporal_role: str | None,
+        usage_decision: str,
+        recorded_before_declaration: bool,
+        later_grouping_entry_exists_at_run: bool,
+    ) -> ExperimentMeasurementDatumUsage:
+        row = ExperimentMeasurementDatumUsage(
+            workspace_id=run.workspace_id,
+            run_id=run.id,
+            start_id=run.start_id,
+            claim_id=claim_id,
+            required_signal_id=required_signal_id,
+            channel=channel,
+            temporal_role=temporal_role,
+            usage_decision=usage_decision,
+            recorded_before_declaration=recorded_before_declaration,
+            later_grouping_entry_exists_at_run=later_grouping_entry_exists_at_run,
+        )
+        self.session.add(row)
+        return row
+
+    def get_by_workspace_and_request_id(
+        self, *, workspace_id: uuid.UUID, client_request_id: str
+    ) -> ExperimentMeasurementRun | None:
+        """Idempotency canonical lookup (frozen Reconciliation §I/§21) —
+        deliberately NOT ``populate_existing`` and deliberately called only
+        from a FRESH, default-isolation transaction after a rollback: a
+        single point lookup needs no multi-statement snapshot."""
+        return self.session.execute(
+            select(ExperimentMeasurementRun).where(
+                ExperimentMeasurementRun.workspace_id == workspace_id,
+                ExperimentMeasurementRun.client_request_id == client_request_id,
+            )
+        ).scalar_one_or_none()
+
+    def get_by_public_id(self, public_id: str) -> ExperimentMeasurementRun | None:
+        return self.session.execute(
+            select(ExperimentMeasurementRun).where(ExperimentMeasurementRun.public_id == public_id)
+        ).scalar_one_or_none()
+
+    def get_for_start_by_public_id(
+        self, *, start_id: uuid.UUID, workspace_id: uuid.UUID, public_id: str
+    ) -> ExperimentMeasurementRun | None:
+        """Non-leaky lookup STRICTLY inside one Start and workspace."""
+        return self.session.execute(
+            select(ExperimentMeasurementRun).where(
+                ExperimentMeasurementRun.public_id == public_id,
+                ExperimentMeasurementRun.start_id == start_id,
+                ExperimentMeasurementRun.workspace_id == workspace_id,
+            )
+        ).scalar_one_or_none()
+
+    def list_for_start(self, *, start_id: uuid.UUID, workspace_id: uuid.UUID) -> list[ExperimentMeasurementRun]:
+        return list(
+            self.session.execute(
+                select(ExperimentMeasurementRun)
+                .where(
+                    ExperimentMeasurementRun.start_id == start_id,
+                    ExperimentMeasurementRun.workspace_id == workspace_id,
+                )
+                .order_by(ExperimentMeasurementRun.created_at.asc(), ExperimentMeasurementRun.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_signal_outputs_for_run(self, *, run_id: uuid.UUID) -> list[ExperimentMeasurementSignalOutput]:
+        return list(
+            self.session.execute(
+                select(ExperimentMeasurementSignalOutput).where(ExperimentMeasurementSignalOutput.run_id == run_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_slice_outputs_for_signal_outputs(
+        self, *, signal_output_ids: list[uuid.UUID]
+    ) -> list[ExperimentMeasurementSliceOutput]:
+        if not signal_output_ids:
+            return []
+        return list(
+            self.session.execute(
+                select(ExperimentMeasurementSliceOutput).where(
+                    ExperimentMeasurementSliceOutput.signal_output_id.in_(signal_output_ids)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    def list_datum_usages_for_run(self, *, run_id: uuid.UUID) -> list[ExperimentMeasurementDatumUsage]:
+        return list(
+            self.session.execute(
+                select(ExperimentMeasurementDatumUsage).where(ExperimentMeasurementDatumUsage.run_id == run_id)
             )
             .scalars()
             .all()

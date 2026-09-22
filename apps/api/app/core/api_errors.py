@@ -887,3 +887,26 @@ class EvidenceClaimAlreadyDisposedError(ApiError):
 
     def __init__(self, message: str = "This evidence claim has already been disposed.") -> None:
         super().__init__(message, status_code=409, code="EVIDENCE_CLAIM_ALREADY_DISPOSED")
+
+
+class ExperimentMeasurementIdempotencyKeyConflictError(ApiError):
+    """Experiment Measurement: the same ``client_request_id`` was already used
+    to create a Run for a DIFFERENT Start (frozen Reconciliation §J/§10) —
+    material replay mismatch is exactly a different ``start_id``, since every
+    other identity (Authorization, Contract, semantics version) is derived
+    from the Start alone. Never recomputed; no material fields to inspect."""
+
+    def __init__(
+        self, message: str = "This idempotency key was already used for a different execution start."
+    ) -> None:
+        super().__init__(message, status_code=409, code="EXPERIMENT_MEASUREMENT_IDEMPOTENCY_KEY_CONFLICT")
+
+
+class ExperimentMeasurementRetryableError(ApiError):
+    """Experiment Measurement: a PostgreSQL serialization failure (SQLSTATE
+    40001) recurred after the one bounded, fresh-snapshot retry the frozen
+    Reconciliation §22/§K authorizes. Never silently converted into an
+    idempotency conflict — the caller may safely retry the whole request."""
+
+    def __init__(self, message: str = "Measurement could not be computed under a consistent snapshot; retry the request.") -> None:
+        super().__init__(message, status_code=503, code="EXPERIMENT_MEASUREMENT_RETRY_REQUIRED")

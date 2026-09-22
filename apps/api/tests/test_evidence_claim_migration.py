@@ -42,8 +42,22 @@ LATER_SIGNAL_CONSTRAINTS = {
         "binding_copresent", "channel_binding_valid", "bound_channel_consistent",
         "binding_text_nonblank_trimmed", "min_data_points_positive", "min_points_requires_binding",
     )
+} | {
+    # Experiment Measurement (5aef32a6dc47, frozen Final Relational Integrity
+    # Reconciliation RI-2/§7) later added these two additive candidate keys to
+    # this very table (experiment_evidence_claims) — excluded from the parity
+    # comparison for the identical reason as the measurement_contract_signals
+    # objects above.
+    "uq_experiment_evidence_claims_id_start_workspace",
+    "uq_experiment_evidence_claims_id_required_signal_workspace",
 }
-LATER_SIGNAL_INDEXES = {"uq_contract_signals_binding_slot"}
+LATER_SIGNAL_INDEXES = {
+    "uq_contract_signals_binding_slot",
+    # Same two Experiment Measurement candidate keys as above — PostgreSQL
+    # backs every UNIQUE constraint with a same-named index.
+    "uq_experiment_evidence_claims_id_start_workspace",
+    "uq_experiment_evidence_claims_id_required_signal_workspace",
+}
 NEW_UNIQUES = {
     "metric_values": ("uq_metric_values_metric_entry_id_metric_name", ["metric_entry_id", "metric_name"]),
     "measurement_contract_signals": (

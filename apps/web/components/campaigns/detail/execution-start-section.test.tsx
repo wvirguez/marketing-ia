@@ -24,6 +24,9 @@ vi.mock("@/lib/api/strategy", () => ({
   createEvidenceClaim: vi.fn(),
   disposeEvidenceClaim: vi.fn(),
   getMeasurementContract: vi.fn(),
+  // Experiment Measurement: the measurement runs section also mounts beneath a started attempt.
+  listExperimentMeasurementRuns: vi.fn(),
+  createExperimentMeasurementRun: vi.fn(),
 }));
 
 import {
@@ -31,6 +34,7 @@ import {
   getExecutionAuthorizationHistory,
   startExecution,
   listEvidenceClaims,
+  listExperimentMeasurementRuns,
 } from "@/lib/api/strategy";
 
 const mockGet = vi.mocked(getExecutionAuthorization);
@@ -137,6 +141,7 @@ async function confirmAndSubmit() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listEvidenceClaims).mockResolvedValue({ experiment_id: "EXP-1", start_id: "", claims: [] });
+  vi.mocked(listExperimentMeasurementRuns).mockResolvedValue({ experiment_id: "EXP-1", start_id: "", runs: [] });
   mockGet.mockResolvedValue(null);
   mockHistory.mockResolvedValue(history([]));
   uuidCounter = 0;
@@ -353,6 +358,7 @@ describe("Execution Start — started state", () => {
 function startSectionText(container: HTMLElement): string {
   const clone = container.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('[data-testid="evidence-claims-section"]').forEach((node) => node.remove());
+  clone.querySelectorAll('[data-testid="measurement-runs-section"]').forEach((node) => node.remove());
   return clone.textContent ?? "";
 }
 

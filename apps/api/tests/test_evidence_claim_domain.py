@@ -688,6 +688,9 @@ def test_the_writer_surface_is_append_only_with_a_single_one_way_disposal() -> N
     assert public == {
         "create", "dispose", "get_by_workspace_and_request_id", "get_active_for_material",
         "get_for_start_by_public_id", "list_for_start",
+        # Experiment Measurement: the frozen Run input-set read (``disposed_at
+        # IS NULL``) — still no update/delete/correct method.
+        "list_active_for_start",
     }
     assert not {"update", "delete", "retarget", "reactivate", "undispose", "restore"} & public
 
