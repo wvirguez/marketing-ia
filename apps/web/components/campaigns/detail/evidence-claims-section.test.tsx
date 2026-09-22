@@ -90,6 +90,9 @@ const CONTRACT = {
   analysis_method_intent: null,
   stopping_rule: null,
   decision_rule_intent: null,
+  declaration_level: null,
+  declaration_semantics_version: null,
+  baseline_window_days: null,
   signals: [
     {
       id: "RSG-1",
@@ -99,6 +102,10 @@ const CONTRACT = {
       expected_direction: null,
       evidence_requirement: null,
       tracking_required: true,
+      bound_metric_name: null,
+      channel_binding: null,
+      bound_channel: null,
+      min_data_points: null,
     },
   ],
   created_at: "2026-01-01T00:00:00Z",
@@ -541,5 +548,77 @@ describe("Evidence claims — dispose", () => {
     await userEvent.click(screen.getByText("Confirmar descarte"));
     expect(await screen.findByRole("alert")).toHaveTextContent(/No pudimos conectar con el servidor/);
     expect(screen.getByText("Confirmar descarte")).toBeInTheDocument();
+  });
+});
+
+describe("Evidence claims — Pre-Execution Measurement Declaration suggestion", () => {
+  const BOUND_CONTRACT = {
+    ...CONTRACT,
+    declaration_level: "DESCRIPTIVE" as const,
+    declaration_semantics_version: 1,
+    signals: [
+      {
+        ...CONTRACT.signals[0],
+        bound_metric_name: "clicks",
+        channel_binding: "EXACT" as const,
+        bound_channel: "Instagram",
+        min_data_points: 2,
+      },
+    ],
+  };
+
+  it("suggests the declared metric and channel for a bound signal without claiming eligibility", async () => {
+    mockContract.mockResolvedValue(BOUND_CONTRACT);
+    renderSection();
+    await openCreate();
+    expect(screen.queryByTestId("declared-binding-hint")).not.toBeInTheDocument(); // no signal chosen yet
+    await userEvent.selectOptions(screen.getByLabelText("Señal requerida"), "RSG-1");
+    const hint = screen.getByTestId("declared-binding-hint");
+    expect(hint).toHaveTextContent(/métrica «clicks» en el canal exacto «Instagram»/);
+    expect(hint).toHaveTextContent(/estructuralmente compatibles/);
+    expect(hint).toHaveTextContent(/no significa que el dato sea elegible, válido ni suficiente/);
+    await userEvent.selectOptions(
+      screen.getByLabelText("Entrada de métricas"),
+      screen.getByRole("option", { name: /MET-1 · Instagram/ }),
+    );
+    expect(screen.getByRole("option", { name: "clicks (declarada)" })).toBeInTheDocument();
+  });
+
+  it("says any channel for an ANY binding and shows no hint for a legacy signal", async () => {
+    mockContract.mockResolvedValue({
+      ...BOUND_CONTRACT,
+      signals: [{ ...BOUND_CONTRACT.signals[0], channel_binding: "ANY" as const, bound_channel: null }],
+    });
+    const { unmount } = renderSection();
+    await openCreate();
+    await userEvent.selectOptions(screen.getByLabelText("Señal requerida"), "RSG-1");
+    expect(screen.getByTestId("declared-binding-hint")).toHaveTextContent(/métrica «clicks» en cualquier canal/);
+    unmount();
+
+    mockContract.mockResolvedValue(CONTRACT);
+    renderSection();
+    await openCreate();
+    await userEvent.selectOptions(screen.getByLabelText("Señal requerida"), "RSG-1");
+    expect(screen.queryByTestId("declared-binding-hint")).not.toBeInTheDocument();
+  });
+
+  it("translates the two binding rejections", async () => {
+    for (const [code, message] of [
+      ["EVIDENCE_CLAIM_METRIC_NOT_BOUND", /no es la que esta señal declara/],
+      ["EVIDENCE_CLAIM_CHANNEL_NOT_BOUND", /no es el canal exacto que esta señal declara/],
+    ] as const) {
+      vi.clearAllMocks();
+      mockCreate.mockReset();
+      mockList.mockResolvedValue(listing([]));
+      mockContract.mockResolvedValue(BOUND_CONTRACT);
+      mockMetrics.mockResolvedValue(METRICS);
+      mockCreate.mockRejectedValueOnce(new ApiError(422, code, "x"));
+      const view = renderSection();
+      await openCreate();
+      await fillCreate();
+      await userEvent.click(screen.getByText("Confirmar afirmación"));
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      view.unmount();
+    }
   });
 });

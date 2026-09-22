@@ -596,6 +596,36 @@ class MeasurementContractVersion(Base, UUIDPrimaryKeyMixin):
             "(decision_rule_intent IS NULL OR char_length(btrim(decision_rule_intent)) > 0)",
             name="optional_text_nonblank",
         ),
+        # Pre-Execution Measurement Declaration (frozen Design Freeze + Design
+        # Reconciliation): row-local backstops for the DB-expressible invariants of a
+        # STRUCTURED declaration. Legacy rows are all-NULL and satisfy every one of
+        # them. Cross-row rules (signal completeness against the level, ANY-vs-EXACT
+        # ownership, CONTROLLED rejection) stay service-level.
+        CheckConstraint(
+            "declaration_level IS NULL OR declaration_level IN ('DESCRIPTIVE', 'COMPARATIVE')",
+            name="declaration_level_valid",
+        ),
+        CheckConstraint(
+            "(declaration_level IS NULL) = (declaration_semantics_version IS NULL)",
+            name="level_version_copresent",
+        ),
+        CheckConstraint(
+            "declaration_semantics_version IS NULL OR declaration_semantics_version = 1",
+            name="semantics_version_v1",
+        ),
+        CheckConstraint(
+            "declaration_level IS NULL OR (measurement_window_days IS NOT NULL "
+            "AND measurement_window_days BETWEEN 4 AND 3650)",
+            name="structured_window_bounds",
+        ),
+        CheckConstraint(
+            "(baseline_window_days IS NOT NULL) = COALESCE(declaration_level = 'COMPARATIVE', false)",
+            name="baseline_iff_comparative",
+        ),
+        CheckConstraint(
+            "baseline_window_days IS NULL OR baseline_window_days BETWEEN 4 AND 3650",
+            name="baseline_window_bounds",
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -616,6 +646,15 @@ class MeasurementContractVersion(Base, UUIDPrimaryKeyMixin):
     decision_rule_intent: Mapped[str | None] = mapped_column(
         String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
     )
+    # Pre-Execution Measurement Declaration: NULL level = LEGACY / UNSPECIFIED (never
+    # backfilled). A structured declaration (DESCRIPTIVE / COMPARATIVE, semantics v1)
+    # is a DECLARATION of how a future Measurement would read evidence — not
+    # pre-registration, not application, not a result. ``measurement_window_days`` is
+    # reused (no duplicate structured window field); ``baseline_window_days`` exists
+    # only for COMPARATIVE.
+    declaration_level: Mapped[str | None] = mapped_column(String(20), default=None)
+    declaration_semantics_version: Mapped[int | None] = mapped_column(Integer, default=None)
+    baseline_window_days: Mapped[int | None] = mapped_column(Integer, default=None)
     client_request_id: Mapped[str] = mapped_column(String(EXPERIMENT_DEFINITION_CLIENT_REQUEST_ID_MAX_LENGTH))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -690,6 +729,45 @@ class MeasurementContractRequiredSignal(Base, UUIDPrimaryKeyMixin):
             "evidence_requirement IS NULL OR char_length(btrim(evidence_requirement)) > 0",
             name="evidence_nonblank_if_present",
         ),
+        # Pre-Execution Measurement Declaration: row-local backstops for a signal's
+        # structured binding. Legacy signals are all-NULL. Whether every signal of a
+        # STRUCTURED Contract is bound (and ``min_data_points`` per level) is cross-row
+        # and therefore service-level.
+        CheckConstraint(
+            "(bound_metric_name IS NULL) = (channel_binding IS NULL)", name="binding_copresent"
+        ),
+        CheckConstraint(
+            "channel_binding IS NULL OR channel_binding IN ('ANY', 'EXACT')", name="channel_binding_valid"
+        ),
+        CheckConstraint(
+            "CASE channel_binding WHEN 'EXACT' THEN bound_channel IS NOT NULL ELSE bound_channel IS NULL END",
+            name="bound_channel_consistent",
+        ),
+        CheckConstraint(
+            "(bound_metric_name IS NULL OR (char_length(btrim(bound_metric_name)) > 0 "
+            "AND bound_metric_name = btrim(bound_metric_name))) AND "
+            "(bound_channel IS NULL OR (char_length(btrim(bound_channel)) > 0 "
+            "AND bound_channel = btrim(bound_channel)))",
+            name="binding_text_nonblank_trimmed",
+        ),
+        CheckConstraint("min_data_points IS NULL OR min_data_points >= 1", name="min_data_points_positive"),
+        CheckConstraint(
+            "min_data_points IS NULL OR bound_metric_name IS NOT NULL", name="min_points_requires_binding"
+        ),
+        # The binding slot (Contract + metric + binding + coalesced channel). A plain
+        # unique expression index — PostgreSQL 14 has no ``NULLS NOT DISTINCT`` — that
+        # blocks a duplicate ANY and a duplicate EXACT of one channel, allows
+        # EXACT(metric, A) + EXACT(metric, B), and never collides for legacy signals
+        # (NULL bound_metric_name / channel_binding are distinct). ANY-vs-EXACT
+        # ownership per metric is a service invariant. Explicit shortened name.
+        Index(
+            "uq_contract_signals_binding_slot",
+            "contract_version_id",
+            "bound_metric_name",
+            "channel_binding",
+            text("COALESCE(bound_channel, '')"),
+            unique=True,
+        ),
     )
 
     public_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -704,6 +782,13 @@ class MeasurementContractRequiredSignal(Base, UUIDPrimaryKeyMixin):
         String(MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH), default=None
     )
     tracking_required: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # Pre-Execution Measurement Declaration: which datum this signal is declared to be
+    # read from. Exact, case-sensitive; no metric ontology, vocabulary, unit, type or
+    # aggregation family. All-NULL = legacy / unbound (never backfilled).
+    bound_metric_name: Mapped[str | None] = mapped_column(String(100), default=None)
+    channel_binding: Mapped[str | None] = mapped_column(String(10), default=None)
+    bound_channel: Mapped[str | None] = mapped_column(String(100), default=None)
+    min_data_points: Mapped[int | None] = mapped_column(Integer, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

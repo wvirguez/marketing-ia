@@ -136,7 +136,10 @@ def test_creation_returns_201_and_the_frozen_public_shape(campaign_run_client: d
         "id", "experiment_id", "definition_version_id", "contract_version_id", "unit_of_assignment",
         "allocation_design", "variants", "signal_count", "tracking_required_signal_count", "active",
         "revoked_at", "revoked_reason", "superseded_by", "execution_start", "created_at",
+        # Pre-Execution Measurement Declaration: the pinned Contract's informational summary (null = legacy).
+        "declaration_level", "declaration_semantics_version", "measurement_window_days", "baseline_window_days",
     }
+    assert data["declaration_level"] is None and data["declaration_semantics_version"] is None
     assert data["active"] is True and data["revoked_at"] is None and data["superseded_by"] is None
     assert data["execution_start"] is None
     assert len(data["variants"]) == 1 and set(data["variants"][0]) == {"id", "label", "condition_description"}

@@ -13,6 +13,11 @@
 // claim evidence exists, is bound, or is sufficient, and the copy below
 // never does.
 //
+// Pre-Execution Measurement Declaration: the form can also declare a STRUCTURED declaration (descriptive or
+// comparative, semantics version 1) — which metric/channel each signal is read from and the window — BEFORE
+// execution starts. It is a DECLARATION: it is not pre-registration, does not validate or prove evidence and
+// produces no eligibility, sufficiency, success or result. Starting execution freezes it permanently.
+//
 // Idempotency: `client_request_id` is generated once per section and KEPT
 // across retryable failures (a lost response replays as a 200); it rotates
 // only on a successful write or IDEMPOTENCY_KEY_CONFLICT. The pin
@@ -26,6 +31,8 @@ import { declareMeasurementContract, getMeasurementContract } from "@/lib/api/st
 import { ApiError } from "@/lib/api/client";
 import { describeCampaignError } from "@/lib/campaigns/error-messages";
 import type {
+  ChannelBinding,
+  DeclarationLevel,
   ExpectedDirection,
   ExperimentDefinitionPublic,
   ExperimentPublic,
@@ -36,6 +43,19 @@ import type {
 const PROSE_MAX = 1000;
 const SIGNAL_NAME_MAX = 200;
 const SIGNAL_DESCRIPTION_MAX = 1000;
+const BINDING_TEXT_MAX = 100;
+// Semantics version 1 bounds (a rule of version 1, not a universal truth; legacy declarations are unchanged).
+const STRUCTURED_WINDOW_MIN = 4;
+const STRUCTURED_WINDOW_MAX = 3650;
+const SEMANTICS_VERSION = 1;
+
+type DeclarationMode = "LEGACY" | DeclarationLevel;
+
+const MODE_COPY: Record<DeclarationMode, string> = {
+  LEGACY: "Sin declaración estructurada (contrato tal como estaba)",
+  DESCRIPTIVE: "Declaración descriptiva",
+  COMPARATIVE: "Declaración comparativa",
+};
 
 const DIRECTION_COPY: Record<ExpectedDirection, string> = {
   INCREASE: "Aumento esperado",
@@ -50,6 +70,10 @@ interface SignalDraft {
   expectedDirection: ExpectedDirection | "";
   evidenceRequirement: string;
   trackingRequired: boolean;
+  boundMetricName: string;
+  channelBinding: ChannelBinding | "";
+  boundChannel: string;
+  minDataPoints: string;
 }
 
 const EMPTY_SIGNAL: SignalDraft = {
@@ -58,9 +82,15 @@ const EMPTY_SIGNAL: SignalDraft = {
   expectedDirection: "",
   evidenceRequirement: "",
   trackingRequired: false,
+  boundMetricName: "",
+  channelBinding: "",
+  boundChannel: "",
+  minDataPoints: "",
 };
 
 interface FormValues {
+  mode: DeclarationMode;
+  baselineWindowDays: string;
   measurementWindowDays: string;
   minimumEvidence: string;
   successCriterion: string;
@@ -71,6 +101,8 @@ interface FormValues {
 }
 
 const EMPTY_FORM: FormValues = {
+  mode: "LEGACY",
+  baselineWindowDays: "",
   measurementWindowDays: "",
   minimumEvidence: "",
   successCriterion: "",
@@ -92,6 +124,8 @@ function signalKey(value: string): string {
 function valuesFromContract(contract: MeasurementContractPublic | null): FormValues {
   if (!contract) return { ...EMPTY_FORM, signals: [{ ...EMPTY_SIGNAL }] };
   return {
+    mode: contract.declaration_level ?? "LEGACY",
+    baselineWindowDays: contract.baseline_window_days === null ? "" : String(contract.baseline_window_days),
     measurementWindowDays: contract.measurement_window_days === null ? "" : String(contract.measurement_window_days),
     minimumEvidence: contract.minimum_evidence ?? "",
     successCriterion: contract.success_criterion ?? "",
@@ -104,12 +138,73 @@ function valuesFromContract(contract: MeasurementContractPublic | null): FormVal
       expectedDirection: signal.expected_direction ?? "",
       evidenceRequirement: signal.evidence_requirement ?? "",
       trackingRequired: signal.tracking_required,
+      boundMetricName: signal.bound_metric_name ?? "",
+      channelBinding: signal.channel_binding ?? "",
+      boundChannel: signal.bound_channel ?? "",
+      minDataPoints: signal.min_data_points === null ? "" : String(signal.min_data_points),
     })),
   };
 }
 
+function isWholeNumber(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && /^\d+$/.test(trimmed);
+}
+
+function validateStructured(values: FormValues, comparisonType: string): string | null {
+  if (values.mode === "LEGACY") return null;
+  if (comparisonType === "CONTROLLED") {
+    return "Las declaraciones estructuradas no están disponibles para comparaciones controladas.";
+  }
+  const windowDays = Number(values.measurementWindowDays);
+  if (!isWholeNumber(values.measurementWindowDays) || windowDays < STRUCTURED_WINDOW_MIN || windowDays > STRUCTURED_WINDOW_MAX) {
+    return `Una declaración estructurada requiere una ventana de medición entre ${STRUCTURED_WINDOW_MIN} y ${STRUCTURED_WINDOW_MAX} días.`;
+  }
+  if (values.mode === "COMPARATIVE") {
+    const baselineDays = Number(values.baselineWindowDays);
+    if (
+      !isWholeNumber(values.baselineWindowDays) ||
+      baselineDays < STRUCTURED_WINDOW_MIN ||
+      baselineDays > STRUCTURED_WINDOW_MAX
+    ) {
+      return `Una declaración comparativa requiere una ventana base entre ${STRUCTURED_WINDOW_MIN} y ${STRUCTURED_WINDOW_MAX} días.`;
+    }
+  }
+  const slots = new Set<string>();
+  const anyMetrics = new Set<string>();
+  const exactMetrics = new Set<string>();
+  for (const signal of values.signals) {
+    const metric = signal.boundMetricName.trim();
+    if (metric.length === 0) return 'Cada señal requiere una "Métrica vinculada".';
+    if (metric.length > BINDING_TEXT_MAX || /[\r\n]/.test(metric)) {
+      return `La métrica vinculada debe ser una sola línea de hasta ${BINDING_TEXT_MAX} caracteres.`;
+    }
+    if (signal.channelBinding === "") return "Cada señal requiere indicar si aplica a cualquier canal o a un canal exacto.";
+    const channel = signal.boundChannel.trim();
+    if (signal.channelBinding === "EXACT") {
+      if (channel.length === 0) return 'Un canal exacto requiere indicar el "Canal".';
+      if (channel.length > BINDING_TEXT_MAX || /[\r\n]/.test(channel)) {
+        return `El canal debe ser una sola línea de hasta ${BINDING_TEXT_MAX} caracteres.`;
+      }
+    }
+    if (values.mode === "DESCRIPTIVE") {
+      if (!isWholeNumber(signal.minDataPoints) || Number(signal.minDataPoints) < 1) {
+        return 'Cada señal de una declaración descriptiva requiere "Mínimo de datos" (entero mayor que cero).';
+      }
+    }
+    const slot = `${metric}|${signal.channelBinding}|${signal.channelBinding === "EXACT" ? channel : ""}`;
+    if (slots.has(slot)) return "Dos señales no pueden declarar la misma métrica y el mismo canal.";
+    slots.add(slot);
+    (signal.channelBinding === "ANY" ? anyMetrics : exactMetrics).add(metric);
+    if (anyMetrics.has(metric) && exactMetrics.has(metric)) {
+      return "Una métrica no puede vincularse a la vez a cualquier canal y a un canal exacto.";
+    }
+  }
+  return null;
+}
+
 function validateForm(values: FormValues, comparisonType: string): string | null {
-  if (values.measurementWindowDays.trim().length > 0) {
+  if (values.mode === "LEGACY" && values.measurementWindowDays.trim().length > 0) {
     const parsed = Number(values.measurementWindowDays);
     if (!Number.isInteger(parsed) || parsed < 1) {
       return 'El campo "Ventana de medición (días)" debe ser un número entero mayor que cero.';
@@ -130,6 +225,8 @@ function validateForm(values: FormValues, comparisonType: string): string | null
   if (values.signals.length === 0) {
     return "Debe declarar al menos una señal requerida.";
   }
+  const structured = validateStructured(values, comparisonType);
+  if (structured) return structured;
   const seen = new Set<string>();
   for (const signal of values.signals) {
     const name = signal.name.trim();
@@ -164,6 +261,12 @@ function describeContractError(error: unknown): string {
         return "No hay cambios respecto al contrato de medición vigente.";
       case "MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED":
         return "Una comparación controlada requiere declarar un criterio de éxito.";
+      case "MEASUREMENT_CONTRACT_DECLARATION_INVALID":
+        return "La declaración estructurada está incompleta o es inconsistente. Revisa las ventanas, las métricas vinculadas y los canales.";
+      case "MEASUREMENT_CONTRACT_CONTROLLED_DECLARATION_NOT_SUPPORTED":
+        return "Las declaraciones estructuradas no están disponibles para comparaciones controladas.";
+      case "MEASUREMENT_CONTRACT_BINDING_CONFLICT":
+        return "Las señales declaran vínculos de métrica y canal en conflicto: una misma métrica no puede vincularse a cualquier canal y a un canal exacto, ni repetirse en el mismo canal.";
       case "IDEMPOTENCY_KEY_CONFLICT":
         return "Esta solicitud no coincide con un envío anterior. Revisa los datos e inténtalo de nuevo.";
     }
@@ -256,12 +359,22 @@ export function MeasurementContractSection({
     setPending(true);
     setError("");
     try {
+      const structured = values.mode !== "LEGACY";
       const signals: RequiredSignalRequest[] = values.signals.map((signal) => ({
         name: signal.name.trim(),
         description: signal.description.trim(),
         expected_direction: signal.expectedDirection === "" ? null : signal.expectedDirection,
         evidence_requirement: signal.evidenceRequirement.trim().length > 0 ? signal.evidenceRequirement.trim() : null,
         tracking_required: signal.trackingRequired,
+        // A LEGACY declaration sends none of the binding fields, exactly as before.
+        ...(structured
+          ? {
+              bound_metric_name: signal.boundMetricName.trim(),
+              channel_binding: signal.channelBinding === "" ? null : signal.channelBinding,
+              bound_channel: signal.channelBinding === "EXACT" ? signal.boundChannel.trim() : null,
+              min_data_points: values.mode === "DESCRIPTIVE" ? Number(signal.minDataPoints) : null,
+            }
+          : {}),
       }));
       await declareMeasurementContract(campaignId, experiment.id, {
         base_version: contract?.version ?? 0,
@@ -275,6 +388,13 @@ export function MeasurementContractSection({
           values.analysisMethodIntent.trim().length > 0 ? values.analysisMethodIntent.trim() : null,
         stopping_rule: values.stoppingRule.trim().length > 0 ? values.stoppingRule.trim() : null,
         decision_rule_intent: values.decisionRuleIntent.trim().length > 0 ? values.decisionRuleIntent.trim() : null,
+        ...(structured
+          ? {
+              declaration_level: values.mode as DeclarationLevel,
+              declaration_semantics_version: SEMANTICS_VERSION,
+              baseline_window_days: values.mode === "COMPARATIVE" ? Number(values.baselineWindowDays) : null,
+            }
+          : {}),
         signals,
       });
       clientRequestIdRef.current = crypto.randomUUID();
@@ -313,10 +433,22 @@ export function MeasurementContractSection({
         <p className="muted small-text">No se ha declarado un contrato de medición para esta versión de la definición.</p>
       ) : (
         <dl className="small-text" style={{ marginTop: 4 }}>
+          <dt>Declaración de medición</dt>
+          <dd>
+            {contract.declaration_level === null
+              ? "Sin declaración estructurada (heredado): describe la intención, pero no fija qué métrica ni qué canal se leerán."
+              : `${MODE_COPY[contract.declaration_level]} · semántica versión ${contract.declaration_semantics_version}`}
+          </dd>
           {contract.measurement_window_days !== null && (
             <>
               <dt>Ventana de medición</dt>
               <dd>{contract.measurement_window_days} días</dd>
+            </>
+          )}
+          {contract.baseline_window_days !== null && (
+            <>
+              <dt>Ventana base</dt>
+              <dd>{contract.baseline_window_days} días</dd>
             </>
           )}
           {contract.minimum_evidence && (
@@ -362,6 +494,13 @@ export function MeasurementContractSection({
                   {signal.evidence_requirement && (
                     <span style={{ whiteSpace: "pre-wrap", display: "block" }}>{signal.evidence_requirement}</span>
                   )}
+                  {signal.bound_metric_name !== null && (
+                    <span className="muted" style={{ display: "block" }}>
+                      Métrica declarada «{signal.bound_metric_name}» ·{" "}
+                      {signal.channel_binding === "EXACT" ? `canal exacto «${signal.bound_channel}»` : "cualquier canal"}
+                      {signal.min_data_points !== null ? ` · mínimo de datos: ${signal.min_data_points}` : ""}
+                    </span>
+                  )}
                   {signal.tracking_required && <span className="muted"> · requiere seguimiento (declarativo)</span>}
                 </li>
               ))}
@@ -398,16 +537,87 @@ export function MeasurementContractSection({
       {open && (
         <div className="panel" style={{ marginTop: 8 }}>
           <div className="settings-field">
-            <label htmlFor={`${idPrefix}-window`}>Ventana de medición (días, opcional)</label>
+            <label htmlFor={`${idPrefix}-mode`}>Tipo de declaración de medición</label>
+            <select
+              id={`${idPrefix}-mode`}
+              value={values.mode}
+              disabled={pending}
+              onChange={(event) => setValues((current) => ({ ...current, mode: event.target.value as DeclarationMode }))}
+            >
+              <option value="LEGACY">{MODE_COPY.LEGACY}</option>
+              <option value="DESCRIPTIVE" disabled={definition.comparison_type === "CONTROLLED"}>
+                {MODE_COPY.DESCRIPTIVE}
+              </option>
+              <option value="COMPARATIVE" disabled={definition.comparison_type === "CONTROLLED"}>
+                {MODE_COPY.COMPARATIVE}
+              </option>
+            </select>
+            {definition.comparison_type === "CONTROLLED" && (
+              <p className="muted small-text">
+                Las declaraciones estructuradas no están disponibles para comparaciones controladas.
+              </p>
+            )}
+          </div>
+          {values.mode !== "LEGACY" && (
+            <div className="muted small-text" data-testid="declaration-explanation" style={{ marginBottom: 8 }}>
+              <p>
+                Esta declaración fija, antes de ejecutar, cómo una medición futura leería la evidencia. Es una
+                declaración: no valida ni prueba la evidencia y no establece atribución ni causalidad.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                <li>La métrica y el canal se comparan de forma exacta y distinguiendo mayúsculas de minúsculas.</li>
+                <li>
+                  La ventana se cuenta en periodos de 24 horas transcurridas desde el inicio atestiguado de la ejecución.
+                  El mínimo estructurado es de {STRUCTURED_WINDOW_MIN} días.
+                </li>
+                <li>
+                  Las fechas límite ambiguas (cuando no se puede saber de qué lado del inicio caen) serán excluidas por la
+                  medición futura y se informará de ello.
+                </li>
+                <li>Si una señal aplica a cualquier canal, cada canal se evaluará por separado.</li>
+                {values.mode === "COMPARATIVE" && (
+                  <li>
+                    La versión 1 de la declaración comparativa admite un dato por lado (base y observación) en cada canal,
+                    con periodos de igual duración y sin emparejar entre canales.
+                  </li>
+                )}
+                <li>
+                  Al atestiguar el inicio de la ejecución, esta declaración queda congelada de forma permanente; cambiarla
+                  después exigiría un nuevo experimento. Las ejecuciones ya iniciadas no se pueden reconvertir.
+                </li>
+              </ul>
+            </div>
+          )}
+          <div className="settings-field">
+            <label htmlFor={`${idPrefix}-window`}>
+              {values.mode === "LEGACY"
+                ? "Ventana de medición (días, opcional)"
+                : `Ventana de medición (días, entre ${STRUCTURED_WINDOW_MIN} y ${STRUCTURED_WINDOW_MAX})`}
+            </label>
             <input
               id={`${idPrefix}-window`}
               type="number"
-              min={1}
+              min={values.mode === "LEGACY" ? 1 : STRUCTURED_WINDOW_MIN}
               value={values.measurementWindowDays}
               disabled={pending}
               onChange={(event) => setValues((current) => ({ ...current, measurementWindowDays: event.target.value }))}
             />
           </div>
+          {values.mode === "COMPARATIVE" && (
+            <div className="settings-field">
+              <label htmlFor={`${idPrefix}-baseline`}>
+                Ventana base (días, entre {STRUCTURED_WINDOW_MIN} y {STRUCTURED_WINDOW_MAX})
+              </label>
+              <input
+                id={`${idPrefix}-baseline`}
+                type="number"
+                min={STRUCTURED_WINDOW_MIN}
+                value={values.baselineWindowDays}
+                disabled={pending}
+                onChange={(event) => setValues((current) => ({ ...current, baselineWindowDays: event.target.value }))}
+              />
+            </div>
+          )}
           <div className="settings-field">
             <label htmlFor={`${idPrefix}-evidence`}>Evidencia mínima esperada (opcional)</label>
             <textarea
@@ -504,6 +714,63 @@ export function MeasurementContractSection({
                   onChange={(event) => updateSignal(index, { evidenceRequirement: event.target.value })}
                 />
               </div>
+              {values.mode !== "LEGACY" && (
+                <>
+                  <div className="settings-field">
+                    <label htmlFor={`${idPrefix}-signal-${index}-metric`}>Métrica vinculada</label>
+                    <input
+                      id={`${idPrefix}-signal-${index}-metric`}
+                      type="text"
+                      value={signal.boundMetricName}
+                      disabled={pending}
+                      onChange={(event) => updateSignal(index, { boundMetricName: event.target.value })}
+                    />
+                  </div>
+                  <div className="settings-field">
+                    <label htmlFor={`${idPrefix}-signal-${index}-binding`}>Canal</label>
+                    <select
+                      id={`${idPrefix}-signal-${index}-binding`}
+                      value={signal.channelBinding}
+                      disabled={pending}
+                      onChange={(event) =>
+                        updateSignal(index, {
+                          channelBinding: event.target.value as ChannelBinding | "",
+                          boundChannel: event.target.value === "EXACT" ? signal.boundChannel : "",
+                        })
+                      }
+                    >
+                      <option value="">Sin declarar</option>
+                      <option value="ANY">Cualquier canal (cada canal por separado)</option>
+                      <option value="EXACT">Un canal exacto</option>
+                    </select>
+                  </div>
+                  {signal.channelBinding === "EXACT" && (
+                    <div className="settings-field">
+                      <label htmlFor={`${idPrefix}-signal-${index}-channel`}>Nombre exacto del canal</label>
+                      <input
+                        id={`${idPrefix}-signal-${index}-channel`}
+                        type="text"
+                        value={signal.boundChannel}
+                        disabled={pending}
+                        onChange={(event) => updateSignal(index, { boundChannel: event.target.value })}
+                      />
+                    </div>
+                  )}
+                  {values.mode === "DESCRIPTIVE" && (
+                    <div className="settings-field">
+                      <label htmlFor={`${idPrefix}-signal-${index}-minpoints`}>Mínimo de datos</label>
+                      <input
+                        id={`${idPrefix}-signal-${index}-minpoints`}
+                        type="number"
+                        min={1}
+                        value={signal.minDataPoints}
+                        disabled={pending}
+                        onChange={(event) => updateSignal(index, { minDataPoints: event.target.value })}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
               <div className="settings-field">
                 <label htmlFor={`${idPrefix}-signal-${index}-tracking`}>
                   <input

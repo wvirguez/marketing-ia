@@ -50,6 +50,10 @@ function describeClaimError(error: unknown): string {
         return "La métrica elegida no existe en esa entrada de métricas.";
       case "EVIDENCE_CLAIM_SIGNAL_NOT_IN_PINNED_CONTRACT":
         return "Esa señal no pertenece al contrato de medición fijado por este inicio.";
+      case "EVIDENCE_CLAIM_METRIC_NOT_BOUND":
+        return "La métrica elegida no es la que esta señal declara en el contrato de medición (se compara de forma exacta, distinguiendo mayúsculas).";
+      case "EVIDENCE_CLAIM_CHANNEL_NOT_BOUND":
+        return "El canal de esa entrada no es el canal exacto que esta señal declara en el contrato de medición.";
       case "IDEMPOTENCY_KEY_CONFLICT":
         return "Esta solicitud no coincide con un envío anterior. Revisa los datos e inténtalo de nuevo.";
     }
@@ -228,6 +232,10 @@ export function EvidenceClaimsSection({
 
   const selectedEntry = entries.find((entry) => entry.id === entryId) ?? null;
   const metricNames = selectedEntry ? Object.keys(selectedEntry.values) : [];
+  // Pre-Execution Measurement Declaration: a signal of a STRUCTURED contract declares which metric/channel it is read
+  // from. Only a suggestion — structural compatibility, never eligibility or validation.
+  const selectedSignal = signals.find((signal) => signal.id === signalId) ?? null;
+  const declaredMetric = selectedSignal?.bound_metric_name ?? null;
 
   return (
     <div style={{ marginTop: 16 }} data-testid="evidence-claims-section">
@@ -384,6 +392,16 @@ export function EvidenceClaimsSection({
                 </option>
               ))}
             </select>
+            {selectedSignal && declaredMetric !== null && (
+              <p className="muted small-text" data-testid="declared-binding-hint">
+                Esta señal declara la métrica «{declaredMetric}» en{" "}
+                {selectedSignal.channel_binding === "EXACT"
+                  ? `el canal exacto «${selectedSignal.bound_channel}»`
+                  : "cualquier canal"}
+                . Solo se aceptan afirmaciones estructuralmente compatibles con esa declaración (comparación exacta,
+                distinguiendo mayúsculas); eso no significa que el dato sea elegible, válido ni suficiente.
+              </p>
+            )}
           </div>
           <div className="settings-field">
             <label htmlFor={`${idPrefix}-entry`}>Entrada de métricas</label>
@@ -416,6 +434,7 @@ export function EvidenceClaimsSection({
               {metricNames.map((name) => (
                 <option key={name} value={name}>
                   {name}
+                  {declaredMetric !== null && name === declaredMetric ? " (declarada)" : ""}
                 </option>
               ))}
             </select>

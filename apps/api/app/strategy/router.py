@@ -465,6 +465,9 @@ async def write_measurement_contract(
         analysis_method_intent=payload.analysis_method_intent,
         stopping_rule=payload.stopping_rule,
         decision_rule_intent=payload.decision_rule_intent,
+        declaration_level=payload.declaration_level,
+        declaration_semantics_version=payload.declaration_semantics_version,
+        baseline_window_days=payload.baseline_window_days,
         signals=[
             {
                 "name": signal.name,
@@ -472,6 +475,10 @@ async def write_measurement_contract(
                 "expected_direction": signal.expected_direction.value if signal.expected_direction else None,
                 "evidence_requirement": signal.evidence_requirement,
                 "tracking_required": signal.tracking_required,
+                "bound_metric_name": signal.bound_metric_name,
+                "channel_binding": signal.channel_binding,
+                "bound_channel": signal.bound_channel,
+                "min_data_points": signal.min_data_points,
             }
             for signal in payload.signals
         ],
@@ -597,6 +604,7 @@ def _execution_authorization_to_public(
         tracking_required_signal_count=sum(1 for signal in signals if signal.tracking_required),
         superseded_by_public_id=superseded_by_public_id,
         execution_start=_execution_start_public(db, authorization),
+        contract=contract,
     )
 
 

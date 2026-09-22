@@ -29,6 +29,26 @@ DEFINITIONS = "experiment_definition_versions"
 # migrates only to its own revision, so the create_all application-test DB (current models) legitimately carries one
 # extra constraint; it is excluded from the parity comparison rather than the parity assertion being weakened.
 LATER_CONSTRAINTS = {"uq_contract_signals_id_contract_experiment_workspace"}
+# Pre-Execution Measurement Declaration (9d4b7e2a51c3) later added nullable columns, CHECKs and one unique expression index to
+# the two tables created by THIS revision; the same exclusion applies (columns are excluded from the column-set parity).
+LATER_COLUMNS = {
+    "measurement_contract_versions": {"declaration_level", "declaration_semantics_version", "baseline_window_days"},
+    "measurement_contract_signals": {"bound_metric_name", "channel_binding", "bound_channel", "min_data_points"},
+}
+LATER_CONSTRAINTS |= {
+    "ck_measurement_contract_versions_" + n
+    for n in (
+        "declaration_level_valid", "level_version_copresent", "semantics_version_v1",
+        "structured_window_bounds", "baseline_iff_comparative", "baseline_window_bounds",
+    )
+} | {
+    "ck_measurement_contract_signals_" + n
+    for n in (
+        "binding_copresent", "channel_binding_valid", "bound_channel_consistent",
+        "binding_text_nonblank_trimmed", "min_data_points_positive", "min_points_requires_binding",
+    )
+}
+LATER_INDEXES = {"uq_contract_signals_binding_slot"}
 
 
 @pytest.fixture(autouse=True)
@@ -101,8 +121,11 @@ def test_measurement_contract_migration_round_trip(monkeypatch, postgres_engine)
 
             for name, model_table in ((TABLE, MeasurementContractVersion.__table__), (SIGNAL_TABLE, MeasurementContractRequiredSignal.__table__)):
                 columns = inspector.get_columns(name)
-                assert {c["name"] for c in columns} == set(model_table.columns.keys())
-                assert {c["name"]: c["nullable"] for c in columns} == {c.name: c.nullable for c in model_table.columns}
+                later = LATER_COLUMNS.get(name, set())
+                assert {c["name"] for c in columns} == set(model_table.columns.keys()) - later
+                assert {c["name"]: c["nullable"] for c in columns} == {
+                    c.name: c.nullable for c in model_table.columns if c.name not in later
+                }
                 fks = inspector.get_foreign_keys(name)
                 assert {tuple(fk["constrained_columns"]) for fk in fks} == {
                     tuple(c.name for c in fk.columns) for fk in model_table.foreign_key_constraints

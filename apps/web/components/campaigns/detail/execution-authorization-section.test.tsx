@@ -82,6 +82,10 @@ function authorization(overrides: Partial<ExecutionAuthorizationPublic> = {}): E
     variants: [{ id: "VAR-1", label: "Condición A", condition_description: "Pregunta directa." }],
     signal_count: 2,
     tracking_required_signal_count: 1,
+    declaration_level: null,
+    declaration_semantics_version: null,
+    measurement_window_days: null,
+    baseline_window_days: null,
     active: true,
     revoked_at: null,
     revoked_reason: null,
@@ -163,6 +167,32 @@ describe("ExecutionAuthorizationSection — state and dependencies", () => {
     expect(screen.getByText("División 50/50 por sesión.")).toBeInTheDocument();
     expect(screen.getByText(/2 declaradas, 1 con seguimiento declarado/)).toHaveTextContent("informativo");
     expect(screen.getByText("Revocar autorización")).toBeInTheDocument();
+  });
+
+  it("shows the pinned declaration summary: structured, comparative with a baseline, and legacy", async () => {
+    const structured = authorization({
+      declaration_level: "COMPARATIVE",
+      declaration_semantics_version: 1,
+      measurement_window_days: 14,
+      baseline_window_days: 7,
+    });
+    mockGet.mockResolvedValue(structured);
+    mockHistory.mockResolvedValue(history([structured]));
+    const { unmount } = render(
+      <ExecutionAuthorizationSection campaignId="campaign-1" experiment={EXPERIMENT} definition={definition()} role="OWNER" onChanged={vi.fn()} />,
+    );
+    const summary = await screen.findByTestId("pinned-declaration-summary");
+    expect(summary).toHaveTextContent(/Comparativa · semántica versión 1 · ventana de medición 14 días · ventana base 7 días/);
+    expect(summary).toHaveTextContent(/congelada de forma permanente/);
+    expect(summary).toHaveTextContent(/no valida ni prueba la evidencia/);
+    for (const forbidden of [/elegible/i, /exitos[oa]/i, /ganador/i]) expect(summary).not.toHaveTextContent(forbidden);
+    unmount();
+
+    const legacy = authorization();
+    mockGet.mockResolvedValue(legacy);
+    mockHistory.mockResolvedValue(history([legacy]));
+    renderSection(definition());
+    expect(await screen.findByTestId("pinned-declaration-summary")).toHaveTextContent("Sin declaración estructurada (heredado).");
   });
 
   it("shows earlier authorizations with their supersession / revocation state", async () => {

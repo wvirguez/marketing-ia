@@ -33,6 +33,17 @@ REVISION = "7c1e9a4d2b68"
 PREDECESSOR = "53b4bd83a005"
 TABLE = "experiment_evidence_claims"
 AUDIT_FK = "fk_audit_events_experiment_evidence_claim_id"
+# Pre-Execution Measurement Declaration (9d4b7e2a51c3) later added these objects to measurement_contract_signals. This test
+# migrates only to its own revision, so the create_all application-test DB (current models) legitimately carries them;
+# they are excluded from the parity comparison rather than the parity assertion being weakened.
+LATER_SIGNAL_CONSTRAINTS = {
+    "ck_measurement_contract_signals_" + n
+    for n in (
+        "binding_copresent", "channel_binding_valid", "bound_channel_consistent",
+        "binding_text_nonblank_trimmed", "min_data_points_positive", "min_points_requires_binding",
+    )
+}
+LATER_SIGNAL_INDEXES = {"uq_contract_signals_binding_slot"}
 NEW_UNIQUES = {
     "metric_values": ("uq_metric_values_metric_entry_id_metric_name", ["metric_entry_id", "metric_name"]),
     "measurement_contract_signals": (
@@ -196,8 +207,16 @@ def test_evidence_claim_migration_round_trip(monkeypatch, postgres_engine):
             # Model <-> DB parity (constraints and indexes) against the create_all application-test DB — for the
             # new table AND for every existing table that gained a candidate key.
             for table in (TABLE, *NEW_UNIQUES):
-                assert _constraint_definitions(engine, table) == _constraint_definitions(postgres_engine, table), table
-                assert _index_definitions(engine, table) == _index_definitions(postgres_engine, table), table
+                assert _constraint_definitions(engine, table) == {
+                    name: definition
+                    for name, definition in _constraint_definitions(postgres_engine, table).items()
+                    if name not in LATER_SIGNAL_CONSTRAINTS
+                }, table
+                assert _index_definitions(engine, table) == {
+                    name: definition
+                    for name, definition in _index_definitions(postgres_engine, table).items()
+                    if name not in LATER_SIGNAL_INDEXES
+                }, table
 
             if cycle == 0:
                 command.downgrade(config, PREDECESSOR)

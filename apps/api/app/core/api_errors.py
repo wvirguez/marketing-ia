@@ -636,6 +636,43 @@ class MeasurementContractSuccessCriterionRequiredError(ApiError):
         super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_SUCCESS_CRITERION_REQUIRED")
 
 
+class MeasurementContractDeclarationInvalidError(ApiError):
+    """Pre-Execution Measurement Declaration: the declaration is not a well-formed
+    LEGACY or STRUCTURED (DESCRIPTIVE / COMPARATIVE, semantics v1) declaration — it
+    is partially structured, a bound is violated, or a signal is incomplete for the
+    declared level (422). The service re-checks what the request schema already
+    checks so a direct service caller can never persist a partial declaration."""
+
+    def __init__(self, message: str = "The measurement declaration is incomplete or inconsistent.") -> None:
+        super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_DECLARATION_INVALID")
+
+
+class MeasurementContractControlledDeclarationNotSupportedError(ApiError):
+    """Pre-Execution Measurement Declaration: a STRUCTURED declaration cannot be
+    attached to a CONTROLLED comparison (422). CONTROLLED measurement is future
+    scope; a fact only the server knows (the pinned Definition's ``comparison_type``)."""
+
+    def __init__(
+        self,
+        message: str = "A structured measurement declaration is not supported for a CONTROLLED comparison.",
+    ) -> None:
+        super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_CONTROLLED_DECLARATION_NOT_SUPPORTED")
+
+
+class MeasurementContractBindingConflictError(ApiError):
+    """Pre-Execution Measurement Declaration: two signals of one Contract claim the
+    same binding slot, or one metric is bound both ANY and EXACT (422). Per metric a
+    Contract holds EITHER one ANY binding OR one-or-more EXACT bindings with distinct
+    channels — never both (a service invariant; the database backstops only a
+    duplicate slot)."""
+
+    def __init__(
+        self,
+        message: str = "The required signals declare a conflicting metric/channel binding.",
+    ) -> None:
+        super().__init__(message, status_code=422, code="MEASUREMENT_CONTRACT_BINDING_CONFLICT")
+
+
 class ExecutionAuthorizationStrategyStaleError(ApiError):
     """MVP-40 (frozen Design Freeze §C/§Q): a new Execution Authorization may
     only be created for an Experiment whose parent Strategy is still the
@@ -811,6 +848,27 @@ class EvidenceClaimMetricNotInEntryError(ApiError):
 
     def __init__(self, message: str = "The named metric does not exist in this metric entry.") -> None:
         super().__init__(message, status_code=422, code="EVIDENCE_CLAIM_METRIC_NOT_IN_ENTRY")
+
+
+class EvidenceClaimMetricNotBoundError(ApiError):
+    """Pre-Execution Measurement Declaration: the pinned Contract is STRUCTURED and the
+    claimed metric name is not the metric this signal is declared to be read from
+    (exact, case-sensitive) (422). Structural compatibility only — never eligibility."""
+
+    def __init__(
+        self, message: str = "The claimed metric is not the metric declared for this required signal."
+    ) -> None:
+        super().__init__(message, status_code=422, code="EVIDENCE_CLAIM_METRIC_NOT_BOUND")
+
+
+class EvidenceClaimChannelNotBoundError(ApiError):
+    """Pre-Execution Measurement Declaration: the signal is declared for one EXACT
+    channel and the metric entry's channel differs (exact, case-sensitive) (422)."""
+
+    def __init__(
+        self, message: str = "The metric entry channel is not the channel declared for this required signal."
+    ) -> None:
+        super().__init__(message, status_code=422, code="EVIDENCE_CLAIM_CHANNEL_NOT_BOUND")
 
 
 class EvidenceClaimAlreadyActiveError(ApiError):

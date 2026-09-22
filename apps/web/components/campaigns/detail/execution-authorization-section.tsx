@@ -392,6 +392,16 @@ export function ExecutionAuthorizationSection({
             {current.signal_count} declaradas, {current.tracking_required_signal_count} con seguimiento declarado
             (informativo; no indica que exista o esté validado)
           </dd>
+          <dt>Declaración de medición fijada</dt>
+          <dd data-testid="pinned-declaration-summary">
+            {current.declaration_level === null
+              ? "Sin declaración estructurada (heredado)."
+              : `${current.declaration_level === "COMPARATIVE" ? "Comparativa" : "Descriptiva"} · semántica versión ${current.declaration_semantics_version} · ventana de medición ${current.measurement_window_days} días${
+                  current.baseline_window_days !== null ? ` · ventana base ${current.baseline_window_days} días` : ""
+                }. `}
+            {current.declaration_level !== null &&
+              "Al atestiguar el inicio queda congelada de forma permanente. Es una declaración: no valida ni prueba la evidencia."}
+          </dd>
           <dt>Autorizada</dt>
           <dd>{formatDate(current.created_at)}</dd>
           {started && (

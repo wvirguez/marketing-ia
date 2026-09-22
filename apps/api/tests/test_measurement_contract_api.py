@@ -126,13 +126,18 @@ def test_creation_returns_201_and_the_frozen_public_shape(campaign_run_client: d
         "id", "experiment_id", "definition_version_id", "version", "measurement_window_days", "minimum_evidence",
         "success_criterion", "analysis_method_intent", "stopping_rule", "decision_rule_intent", "signals",
         "created_at",
+        # Pre-Execution Measurement Declaration (additive; all null for a LEGACY declaration).
+        "declaration_level", "declaration_semantics_version", "baseline_window_days",
     }
+    assert data["declaration_level"] is None and data["declaration_semantics_version"] is None
     assert len(data["signals"]) == 1
     signal = data["signals"][0]
     assert signal["id"].startswith("RSG-") and len(signal["id"]) == 16
     assert set(signal) == {
         "id", "ordinal", "name", "description", "expected_direction", "evidence_requirement", "tracking_required",
+        "bound_metric_name", "channel_binding", "bound_channel", "min_data_points",
     }
+    assert signal["bound_metric_name"] is None and signal["channel_binding"] is None
     assert signal["ordinal"] == 1 and signal["tracking_required"] is False
 
 

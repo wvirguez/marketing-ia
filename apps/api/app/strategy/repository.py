@@ -601,6 +601,9 @@ class MeasurementContractRepository:
         decision_rule_intent: str | None,
         client_request_id: str,
         signals: list[dict],
+        declaration_level: str | None = None,
+        declaration_semantics_version: int | None = None,
+        baseline_window_days: int | None = None,
     ) -> tuple[MeasurementContractVersion, list[MeasurementContractRequiredSignal]]:
         row = MeasurementContractVersion(
             public_id=generate_public_id("MSC"),
@@ -614,6 +617,9 @@ class MeasurementContractRepository:
             analysis_method_intent=analysis_method_intent,
             stopping_rule=stopping_rule,
             decision_rule_intent=decision_rule_intent,
+            declaration_level=declaration_level,
+            declaration_semantics_version=declaration_semantics_version,
+            baseline_window_days=baseline_window_days,
             client_request_id=client_request_id,
         )
         self.session.add(row)
@@ -630,6 +636,10 @@ class MeasurementContractRepository:
                 expected_direction=signal.get("expected_direction"),
                 evidence_requirement=signal.get("evidence_requirement"),
                 tracking_required=signal.get("tracking_required", False),
+                bound_metric_name=signal.get("bound_metric_name"),
+                channel_binding=signal.get("channel_binding"),
+                bound_channel=signal.get("bound_channel"),
+                min_data_points=signal.get("min_data_points"),
             )
             for ordinal, signal in enumerate(signals, start=1)
         ]

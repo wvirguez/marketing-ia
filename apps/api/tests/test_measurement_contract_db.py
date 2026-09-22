@@ -238,10 +238,14 @@ def test_columns_are_exactly_the_frozen_set_and_identifiers_fit_postgresql() -> 
         "id", "public_id", "workspace_id", "experiment_id", "definition_version_id", "version",
         "measurement_window_days", "minimum_evidence", "success_criterion", "analysis_method_intent",
         "stopping_rule", "decision_rule_intent", "client_request_id", "created_at",
+        # Pre-Execution Measurement Declaration (additive, nullable, no backfill).
+        "declaration_level", "declaration_semantics_version", "baseline_window_days",
     }
     assert set(MeasurementContractRequiredSignal.__table__.columns.keys()) == {
         "id", "public_id", "workspace_id", "experiment_id", "contract_version_id", "ordinal", "name", "description",
         "expected_direction", "evidence_requirement", "tracking_required", "created_at",
+        # Pre-Execution Measurement Declaration (additive, nullable, no backfill).
+        "bound_metric_name", "channel_binding", "bound_channel", "min_data_points",
     }
     assert "fk_measurement_contract_versions_definition_version_workspace" in {
         c.name for c in MeasurementContractVersion.__table__.constraints

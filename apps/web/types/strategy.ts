@@ -162,15 +162,31 @@ export interface RequiredSignalPublic {
   expected_direction: ExpectedDirection | null;
   evidence_requirement: string | null;
   tracking_required: boolean;
+  // Pre-Execution Measurement Declaration: the metric/channel this signal is declared to be read from. All null
+  // for a LEGACY / unspecified declaration. Exact, case-sensitive; a declaration, never evidence or validation.
+  bound_metric_name: string | null;
+  channel_binding: ChannelBinding | null;
+  bound_channel: string | null;
+  min_data_points: number | null;
 }
 
-// MVP-39: the request shape for one declared RequiredSignal.
+// Pre-Execution Measurement Declaration: a null level is LEGACY / UNSPECIFIED (nothing is structured).
+export type DeclarationLevel = "DESCRIPTIVE" | "COMPARATIVE";
+// ANY = any channel (each channel is evaluated separately later); EXACT = one named channel.
+export type ChannelBinding = "ANY" | "EXACT";
+
+// MVP-39: the request shape for one declared RequiredSignal. The four binding fields are omitted (or null) for a
+// LEGACY declaration; a structured declaration is all-or-nothing.
 export interface RequiredSignalRequest {
   name: string;
   description: string;
   expected_direction: ExpectedDirection | null;
   evidence_requirement: string | null;
   tracking_required: boolean;
+  bound_metric_name?: string | null;
+  channel_binding?: ChannelBinding | null;
+  bound_channel?: string | null;
+  min_data_points?: number | null;
 }
 
 // MVP-39: one immutable Measurement Contract version — the PRE-EXECUTION
@@ -188,6 +204,10 @@ export interface MeasurementContractPublic {
   analysis_method_intent: string | null;
   stopping_rule: string | null;
   decision_rule_intent: string | null;
+  // Pre-Execution Measurement Declaration (null level = LEGACY / UNSPECIFIED; semantics version 1 is the only one).
+  declaration_level: DeclarationLevel | null;
+  declaration_semantics_version: number | null;
+  baseline_window_days: number | null;
   signals: RequiredSignalPublic[];
   created_at: string;
 }
@@ -213,6 +233,9 @@ export interface DeclareMeasurementContractRequest {
   analysis_method_intent: string | null;
   stopping_rule: string | null;
   decision_rule_intent: string | null;
+  declaration_level?: DeclarationLevel | null;
+  declaration_semantics_version?: number | null;
+  baseline_window_days?: number | null;
   signals: RequiredSignalRequest[];
 }
 
@@ -253,6 +276,12 @@ export interface ExecutionAuthorizationPublic {
   variants: ExecutionAuthorizationVariantPublic[];
   signal_count: number;
   tracking_required_signal_count: number;
+  // Pre-Execution Measurement Declaration: the PINNED contract's declaration summary (informational only; a null
+  // level means LEGACY / UNSPECIFIED). Never a claim that the declaration validated or proved anything.
+  declaration_level: DeclarationLevel | null;
+  declaration_semantics_version: number | null;
+  measurement_window_days: number | null;
+  baseline_window_days: number | null;
   active: boolean;
   revoked_at: string | null;
   revoked_reason: string | null;

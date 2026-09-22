@@ -62,6 +62,8 @@ from app.content.models import ContentDistribution
 from app.core.api_errors import (
     EvidenceClaimAlreadyActiveError,
     EvidenceClaimAlreadyDisposedError,
+    EvidenceClaimChannelNotBoundError,
+    EvidenceClaimMetricNotBoundError,
     EvidenceClaimMetricNotInEntryError,
     EvidenceClaimSignalNotInPinnedContractError,
     ForbiddenError,
@@ -73,6 +75,7 @@ from app.measurement.repository import (
     MetricEntryRepository,
     MetricValueRepository,
 )
+from app.strategy.measurement_declaration import CHANNEL_BINDING_EXACT
 from app.strategy.models import (
     ExecutionAuthorization,
     ExecutionStartAttestation,
@@ -206,6 +209,9 @@ class ExperimentEvidenceClaimService:
             raise EvidenceClaimSignalNotInPinnedContractError()
         if metric_name not in {value.metric_name for value in self.values.list_for_entry(entry_id)}:
             raise EvidenceClaimMetricNotInEntryError()
+        self._require_declared_binding(
+            contract_version_id=contract_version_id, signal=signal, entry=entry, metric_name=metric_name
+        )
         if (
             self.claims.get_active_for_material(
                 start_id=start_id, required_signal_id=signal_id, metric_entry_id=entry_id, metric_name=metric_name
@@ -267,6 +273,28 @@ class ExperimentEvidenceClaimService:
                     raise EvidenceClaimAlreadyActiveError() from exc
             raise
         return row, True
+
+    def _require_declared_binding(
+        self,
+        *,
+        contract_version_id: uuid.UUID,
+        signal: MeasurementContractRequiredSignal,
+        entry: MetricEntry,
+        metric_name: str,
+    ) -> None:
+        """Pre-Execution Measurement Declaration: for a STRUCTURED pinned Contract ONLY, the
+        claim must be structurally compatible with the signal's declared binding — the claimed
+        metric name equals ``bound_metric_name`` and, for an EXACT binding, the entry's channel
+        equals ``bound_channel`` (both exact and case-sensitive; ANY accepts any channel). A
+        LEGACY Contract keeps the previous behavior unchanged. Compatible means ONLY structurally
+        compatible: never eligible, valid, sufficient, current, correct or successful."""
+        contract = self.contracts.get_by_id(contract_version_id)
+        if contract is None or contract.declaration_level is None:
+            return
+        if signal.bound_metric_name != metric_name:
+            raise EvidenceClaimMetricNotBoundError()
+        if signal.channel_binding == CHANNEL_BINDING_EXACT and entry.channel != signal.bound_channel:
+            raise EvidenceClaimChannelNotBoundError()
 
     def dispose(
         self,

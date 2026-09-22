@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.measurement.models import MetricSource
+from app.strategy.measurement_declaration import (
+    BOUND_CHANNEL_MAX_LENGTH,
+    BOUND_METRIC_NAME_MAX_LENGTH,
+    declaration_shape_problems,
+)
 from app.strategy.models import (
     EXECUTION_AUTHORIZATION_ALLOCATION_DESIGN_MAX_LENGTH,
     EXECUTION_AUTHORIZATION_CLIENT_REQUEST_ID_MAX_LENGTH,
@@ -526,6 +531,24 @@ class RequiredSignalRequest(BaseModel):
     expected_direction: ExpectedDirection | None = None
     evidence_requirement: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
     tracking_required: bool = False
+    # Pre-Execution Measurement Declaration: the signal's structured binding. All four
+    # are omitted (None) for a LEGACY declaration; whether they are complete for the
+    # declared level is checked once, on the whole request. Exact, case-sensitive;
+    # outer whitespace is trimmed and a blank value is unset.
+    bound_metric_name: str | None = Field(default=None, max_length=BOUND_METRIC_NAME_MAX_LENGTH)
+    channel_binding: Literal["ANY", "EXACT"] | None = None
+    bound_channel: str | None = Field(default=None, max_length=BOUND_CHANNEL_MAX_LENGTH)
+    min_data_points: int | None = Field(default=None, strict=True, ge=1, le=2_147_483_646)
+
+    @field_validator("bound_metric_name", "bound_channel", mode="before")
+    @classmethod
+    def _binding_text_before(cls, value: Any) -> Any:
+        return _optional_prose(value)
+
+    @field_validator("bound_metric_name", "bound_channel")
+    @classmethod
+    def _binding_text_rules(cls, value: str | None) -> str | None:
+        return _require_single_line(_reject_nul(value)) if value is not None else None
 
     @field_validator("name", "description", mode="before")
     @classmethod
@@ -575,6 +598,11 @@ class DeclareMeasurementContractRequest(BaseModel):
     analysis_method_intent: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
     stopping_rule: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
     decision_rule_intent: str | None = Field(default=None, max_length=MEASUREMENT_CONTRACT_PROSE_MAX_LENGTH)
+    # Pre-Execution Measurement Declaration: omitted = LEGACY / UNSPECIFIED. A structured
+    # request is all-or-nothing (see ``_declaration_rules``).
+    declaration_level: Literal["DESCRIPTIVE", "COMPARATIVE"] | None = None
+    declaration_semantics_version: int | None = Field(default=None, strict=True)
+    baseline_window_days: int | None = Field(default=None, strict=True)
     signals: list[RequiredSignalRequest] = Field(min_length=1)
 
     @field_validator("client_request_id", "definition_version_id", mode="before")
@@ -617,6 +645,21 @@ class DeclareMeasurementContractRequest(BaseModel):
             seen.add(key)
         return self
 
+    @model_validator(mode="after")
+    def _declaration_rules(self) -> "DeclareMeasurementContractRequest":
+        """A partially structured declaration is invalid (422). The same pure function
+        the service re-runs, so schema and service can never disagree."""
+        problems = declaration_shape_problems(
+            declaration_level=self.declaration_level,
+            declaration_semantics_version=self.declaration_semantics_version,
+            measurement_window_days=self.measurement_window_days,
+            baseline_window_days=self.baseline_window_days,
+            signals=[signal.model_dump() for signal in self.signals],
+        )
+        if problems:
+            raise ValueError(" ".join(problems))
+        return self
+
 
 class RequiredSignalPublic(BaseModel):
     """MVP-39: one immutable RequiredSignal. Public ids only (``RSG-…``) —
@@ -629,6 +672,10 @@ class RequiredSignalPublic(BaseModel):
     expected_direction: str | None
     evidence_requirement: str | None
     tracking_required: bool
+    bound_metric_name: str | None = None
+    channel_binding: str | None = None
+    bound_channel: str | None = None
+    min_data_points: int | None = None
 
 
 class MeasurementContractPublic(BaseModel):
@@ -646,6 +693,9 @@ class MeasurementContractPublic(BaseModel):
     analysis_method_intent: str | None
     stopping_rule: str | None
     decision_rule_intent: str | None
+    declaration_level: str | None = None
+    declaration_semantics_version: int | None = None
+    baseline_window_days: int | None = None
     signals: list[RequiredSignalPublic]
     created_at: datetime
 
@@ -666,6 +716,10 @@ def required_signal_to_public(signal: MeasurementContractRequiredSignal) -> Requ
         expected_direction=signal.expected_direction,
         evidence_requirement=signal.evidence_requirement,
         tracking_required=signal.tracking_required,
+        bound_metric_name=signal.bound_metric_name,
+        channel_binding=signal.channel_binding,
+        bound_channel=signal.bound_channel,
+        min_data_points=signal.min_data_points,
     )
 
 
@@ -687,6 +741,9 @@ def measurement_contract_to_public(
         analysis_method_intent=contract.analysis_method_intent,
         stopping_rule=contract.stopping_rule,
         decision_rule_intent=contract.decision_rule_intent,
+        declaration_level=contract.declaration_level,
+        declaration_semantics_version=contract.declaration_semantics_version,
+        baseline_window_days=contract.baseline_window_days,
         signals=[required_signal_to_public(signal) for signal in signals],
         created_at=contract.created_at,
     )
@@ -832,6 +889,12 @@ class ExecutionAuthorizationPublic(BaseModel):
     # signals — never a claim that tracking exists, is implemented or valid.
     signal_count: int
     tracking_required_signal_count: int
+    # Pre-Execution Measurement Declaration: the PINNED Contract's declaration summary, informational only — a
+    # null level means LEGACY / UNSPECIFIED. Never a claim that the declaration validated or proved anything.
+    declaration_level: str | None = None
+    declaration_semantics_version: int | None = None
+    measurement_window_days: int | None = None
+    baseline_window_days: int | None = None
     active: bool
     revoked_at: datetime | None
     revoked_reason: str | None
@@ -859,6 +922,7 @@ def execution_authorization_to_public(
     tracking_required_signal_count: int,
     superseded_by_public_id: str | None,
     execution_start: ExecutionStartPublic | None = None,
+    contract: MeasurementContractVersion | None = None,
 ) -> ExecutionAuthorizationPublic:
     return ExecutionAuthorizationPublic(
         id=authorization.public_id,
@@ -870,6 +934,10 @@ def execution_authorization_to_public(
         variants=variants,
         signal_count=signal_count,
         tracking_required_signal_count=tracking_required_signal_count,
+        declaration_level=contract.declaration_level if contract is not None else None,
+        declaration_semantics_version=contract.declaration_semantics_version if contract is not None else None,
+        measurement_window_days=contract.measurement_window_days if contract is not None else None,
+        baseline_window_days=contract.baseline_window_days if contract is not None else None,
         active=authorization.revoked_at is None,
         revoked_at=authorization.revoked_at,
         revoked_reason=authorization.revoked_reason,
